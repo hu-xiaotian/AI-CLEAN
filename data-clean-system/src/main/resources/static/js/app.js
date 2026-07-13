@@ -5,6 +5,57 @@ const API = '/api';
 let currentTitleId = null;
 let currentExtraTitleId = null;
 
+// ==================== 认证相关 ====================
+
+const TOKEN_KEY = 'dc_token';
+const USER_KEY = 'dc_user';
+
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+
+function getCurrentUser() {
+    try { return JSON.parse(localStorage.getItem(USER_KEY) || '{}'); }
+    catch (e) { return {}; }
+}
+
+function clearAuth() {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+}
+
+function redirectToLogin() {
+    clearAuth();
+    location.replace('/login.html');
+}
+
+async function logout() {
+    try { await api('/auth/logout', { method: 'POST' }); } catch (e) { /* 忽略 */ }
+    redirectToLogin();
+}
+
+// 全局包装原生 fetch：为所有 /api 请求自动附加 Token，并统一处理 401
+(function () {
+    const rawFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+        init = init || {};
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        const isApi = url.indexOf('/api') !== -1;
+        const token = getToken();
+        if (isApi && token) {
+            const headers = new Headers(init.headers || (typeof input !== 'string' && input.headers) || {});
+            if (!headers.has('Authorization')) {
+                headers.set('Authorization', 'Bearer ' + token);
+            }
+            init.headers = headers;
+        }
+        return rawFetch(input, init).then(function (res) {
+            if (isApi && res.status === 401) {
+                redirectToLogin();
+            }
+            return res;
+        });
+    };
+})();
+
 // ==================== 工具函数 ====================
 
 function $(sel) { return document.querySelector(sel); }
@@ -15,6 +66,11 @@ async function api(url, options = {}) {
         headers: { 'Content-Type': 'application/json' },
         ...options,
     };
+    // 附加认证 Token
+    const token = getToken();
+    if (token) {
+        config.headers['Authorization'] = 'Bearer ' + token;
+    }
     if (config.body && typeof config.body === 'object' && !(config.body instanceof FormData)) {
         config.body = JSON.stringify(config.body);
     }
@@ -22,7 +78,16 @@ async function api(url, options = {}) {
         delete config.headers['Content-Type'];
     }
     const res = await fetch(API + url, config);
+    // 未授权：登录失效，跳转登录页
+    if (res.status === 401) {
+        redirectToLogin();
+        throw new Error('登录已过期，请重新登录');
+    }
     const data = await res.json();
+    if (data.code === 401) {
+        redirectToLogin();
+        throw new Error(data.msg || '登录已过期，请重新登录');
+    }
     if (data.code !== 200) {
         throw new Error(data.msg || '请求失败');
     }
@@ -102,15 +167,17 @@ function switchPage(name) {
             loadStandardTitles('mapStandardTitleId'); 
         },
         'result': async () => { 
-            // 先填充文件下拉框，再联动过滤标准/补充表头，避免读到空值而加载全部
-            await loadTitlesForSelect('resultTitleId'); 
-            await onResultTitleChange(); 
-            // 如果已有选中数据，自动刷新结果数据
-            const standardTitleId = $('#resultStandardTitleId').value;
-            if (standardTitleId) reloadResultData(standardTitleId);
+            // 仅首次进入时填充下拉框并联动过滤标准/补充表头，
+            // 之后切换页面不再重新加载下拉框，保留用户已选条件、结果与翻页位置
+            if (!_resultSelectsReady) {
+                await loadTitlesForSelect('resultTitleId');
+                await onResultTitleChange();
+                _resultSelectsReady = true;
+            }
         },
         'search': () => { loadCategories(); },
         'standard': () => { loadStandardTitleList(); },              // 刷新标准字段表头列表
+        'users': () => { loadUsers(1); },                            // 刷新用户列表
         'unmapped': () => { loadTitlesForUnmapped(); },
     };
     if (loaders[name]) loaders[name]();
@@ -123,12 +190,15 @@ async function onResultTitleChange() {
         // 未选择数据文件，加载全部
         loadStandardTitles('resultStandardTitleId');
         loadExtraTitlesForSelect('resultExtraTitleId');
+        $('#failedCard').style.display = 'none';
         return;
     }
     // 根据选中的数据文件过滤标准字段表头
     await loadStandardTitles('resultStandardTitleId', titleId);
     // 根据选中的数据文件过滤补充数据表头
     await loadExtraTitlesForSelect('resultExtraTitleId', titleId);
+    // 联动刷新填充失败记录
+    loadFailedResults();
 }
 
 // 刷新结果数据列表（如果已选择标准表头）
@@ -161,6 +231,14 @@ function handleFileSelect(e) {
 
 // 拖拽支持
 document.addEventListener('DOMContentLoaded', () => {
+    // 登录校验：未登录直接跳转登录页
+    if (!getToken()) {
+        redirectToLogin();
+        return;
+    }
+    // 渲染当前登录用户信息
+    renderCurrentUser();
+
     const area = $('#uploadArea');
     area.addEventListener('dragover', e => { e.preventDefault(); area.classList.add('drag-over'); });
     area.addEventListener('dragleave', () => area.classList.remove('drag-over'));
@@ -172,6 +250,70 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     switchPage('import');
 });
+
+// 渲染侧边栏底部当前用户信息，并从后端刷新最新资料
+function renderCurrentUser() {
+    const box = $('#currentUserBox');
+    if (!box) return;
+    const user = getCurrentUser();
+    const nameEl = $('#currentUserName');
+    if (nameEl) nameEl.textContent = user.realName || user.username || '未知用户';
+    // 后台静默刷新用户信息
+    api('/auth/current').then(u => {
+        if (u) {
+            localStorage.setItem(USER_KEY, JSON.stringify(u));
+            if (nameEl) nameEl.textContent = u.realName || u.username || '未知用户';
+        }
+        applyRoleVisibility();
+    }).catch(() => { /* 忽略：401 已由全局处理 */ });
+}
+
+// 根据当前用户角色控制管理员专属元素的显示
+function applyRoleVisibility() {
+    const user = getCurrentUser();
+    const isAdmin = user && user.role === 'admin';
+    document.querySelectorAll('[data-role="admin"]').forEach(el => {
+        el.style.display = isAdmin ? '' : 'none';
+    });
+}
+
+// 修改密码弹窗
+function openChangePasswordModal() {
+    showModal('修改密码', `
+        <div class="form-group" style="margin-bottom:14px">
+            <label>旧密码</label>
+            <input type="password" id="cpOldPwd" class="form-input" placeholder="请输入旧密码">
+        </div>
+        <div class="form-group" style="margin-bottom:14px">
+            <label>新密码</label>
+            <input type="password" id="cpNewPwd" class="form-input" placeholder="请输入新密码">
+        </div>
+        <div class="form-group" style="margin-bottom:20px">
+            <label>确认新密码</label>
+            <input type="password" id="cpNewPwd2" class="form-input" placeholder="请再次输入新密码">
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button class="btn btn-default" onclick="closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="submitChangePassword()">确定</button>
+        </div>
+    `);
+}
+
+async function submitChangePassword() {
+    const oldPassword = $('#cpOldPwd').value;
+    const newPassword = $('#cpNewPwd').value;
+    const newPassword2 = $('#cpNewPwd2').value;
+    if (!oldPassword || !newPassword) { showToast('请填写完整', 'error'); return; }
+    if (newPassword !== newPassword2) { showToast('两次输入的新密码不一致', 'error'); return; }
+    try {
+        await api('/auth/change-password', { method: 'POST', body: { oldPassword, newPassword } });
+        showToast('密码修改成功，请重新登录');
+        closeModal();
+        setTimeout(logout, 1000);
+    } catch (e) {
+        showToast(e.message || '修改失败', 'error');
+    }
+}
 
 async function uploadFile(file) {
     const formData = new FormData();
@@ -1262,6 +1404,9 @@ let resultPageState = {
     totalPages: 0,
 };
 
+// 结果数据页下拉框是否已初始化（仅首次进入时填充，避免切换页面时重置已选条件与结果）
+let _resultSelectsReady = false;
+
 async function loadResultData(page) {
     const standardTitleId = $('#resultStandardTitleId').value;
     const titleId = $('#resultTitleId').value;
@@ -1407,6 +1552,72 @@ async function fillResultDataManual() {
     $('#mapTitleId').value = titleId;
     if (extraTitleId) $('#mapExtraTitleId').value = extraTitleId;
     startFillWithSocket(standardTitleId, titleId, extraTitleId || 0);
+}
+
+// 填充失败列表是否处于显示状态（供切换数据文件时判断是否自动刷新）
+let _failedCardVisible = false;
+
+async function loadFailedResults() {
+    const titleId = $('#resultTitleId').value;
+    if (!titleId) {
+        _failedCardVisible = false;
+        $('#failedCard').style.display = 'none';
+        return;
+    }
+    try {
+        const data = await api(`/cleaning/failed-results?titleId=${titleId}`);
+        renderFailedResults(data || []);
+        // 仅在用户主动展开时才显示，避免切换数据文件时列表自动弹出
+        $('#failedCard').style.display = _failedCardVisible ? 'block' : 'none';
+    } catch (e) {
+        // 查询失败不影响主流程，仅隐藏失败列表
+        $('#failedCard').style.display = 'none';
+        console.warn('查询填充失败记录失败:', e.message);
+    }
+}
+
+// 查看填充失败：参考"显示映射状态"，再次点击可隐藏
+function showFailedResults() {
+    const card = $('#failedCard');
+    // 再次点击则隐藏填充失败列表
+    if (card.style.display === 'block') {
+        _failedCardVisible = false;
+        card.style.display = 'none';
+        return;
+    }
+    if (!$('#resultTitleId').value) {
+        showToast('请先选择数据文件', 'warning');
+        return;
+    }
+    _failedCardVisible = true;
+    loadFailedResults();
+}
+
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderFailedResults(list) {
+    $('#failedCount').textContent = list.length ? `（共 ${list.length} 条）` : '';
+    const tbody = $('#failedTbody');
+    if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">无填充失败记录</td></tr>';
+        return;
+    }
+    tbody.innerHTML = list.map(f => `<tr>
+        <td>${f.id ?? ''}</td>
+        <td>${f.tempDataId ?? ''}</td>
+        <td>${f.categoryCode ?? ''}</td>
+        <td>${escapeHtml(f.reason ?? '')}</td>
+        <td style="max-width:340px;white-space:pre-wrap;word-break:break-all">${escapeHtml(f.rawData ?? '')}</td>
+        <td>${f.createdAt ?? ''}</td>
+    </tr>`).join('');
 }
 
 function showMappingStatus() {
@@ -1921,14 +2132,30 @@ async function loadStandardTitleMappingStatus() {
     }
 
     try {
-        const [standardTitles, allMappings] = await Promise.all([
-            api('/cleaning/standard-titles'),
-            loadExistingMappings(null, titleId, null),
-        ]);
+        // 先加载当前数据文件的映射（单表查询，较快）
+        const allMappings = await loadExistingMappings(null, titleId, null);
+
+        // 收集有关联映射的标准表头 ID
+        const stdIdSet = new Set();
+        (allMappings || []).forEach(m => { if (m.standardTitleId) stdIdSet.add(m.standardTitleId); });
+
+        // 仅按需获取这些标准表头，避免 /cleaning/standard-titles 全量请求（后端 N+1 查询极慢）
+        let standardTitles = [];
+        if (stdIdSet.size > 0) {
+            const ids = Array.from(stdIdSet);
+            standardTitles = await Promise.all(ids.map(id => {
+                if (_standardTitlesCache) {
+                    const c = _standardTitlesCache.find(s => s.id == id);
+                    if (c) return c;
+                }
+                return api(`/cleaning/standard-title/${id}`).catch(() => null);
+            }));
+            standardTitles = standardTitles.filter(Boolean);
+        }
 
         // 按 standardTitleId 分组映射
         const mappingMap = {};
-        allMappings.forEach(m => {
+        (allMappings || []).forEach(m => {
             if (m.standardTitleId) {
                 if (!mappingMap[m.standardTitleId]) mappingMap[m.standardTitleId] = [];
                 mappingMap[m.standardTitleId].push(m);
@@ -1938,26 +2165,14 @@ async function loadStandardTitleMappingStatus() {
         $('#mfStatusCard').style.display = 'block';
         const tbody = $('#mfStatusTbody');
 
-        if (!standardTitles || standardTitles.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="empty-hint">暂无标准字段表头</td></tr>';
-            return;
-        }
-
-        // 只显示与当前数据文件有关联映射的标准表头（避免用户对无关标准表头配置后填充全部跳过）
-        const relevantIds = Object.keys(mappingMap);
-        const relevantTitles = relevantIds.length > 0
-            ? standardTitles.filter(st => mappingMap[st.id])
-            : [];
-
-        if (relevantTitles.length === 0) {
+        if (standardTitles.length === 0) {
             tbody.innerHTML = `<tr><td colspan="5" class="empty-hint">
                 暂无关联映射，请先在<a href="javascript:void(0)" onclick="switchPage('mapping')" style="color:var(--accent);text-decoration:underline">字段映射页面</a>执行"自动映射字段"
             </td></tr>`;
-            // 仍然展示所有标准表头供参考（折叠）
             return;
         }
 
-        tbody.innerHTML = relevantTitles.map(st => {
+        tbody.innerHTML = standardTitles.map(st => {
             const mappings = mappingMap[st.id] || [];
             const hasMapping = mappings.length > 0;
             const badge = hasMapping
@@ -2711,6 +2926,227 @@ async function downloadUnmappedResults() {
         showToast('导出失败: ' + e.message, 'error');
     } finally {
         hideLoading();
+    }
+}
+
+// ==================== 用户管理 ====================
+
+let userPageState = {
+    page: 1,
+    size: 10,
+    total: 0,
+    pages: 1,
+    keyword: '',
+};
+
+let userCache = {};
+let userSearchTimer = null;
+let editingUserId = null;
+
+function esc(str) {
+    if (str == null) return '';
+    return String(str).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+function onUserSearchInput() {
+    const kw = $('#userSearchInput').value.trim();
+    userPageState.keyword = kw;
+    if (userSearchTimer) clearTimeout(userSearchTimer);
+    userSearchTimer = setTimeout(() => loadUsers(1), 300);
+}
+
+async function loadUsers(page) {
+    if (page) userPageState.page = page;
+    const { page: curPage, size, keyword } = userPageState;
+    try {
+        const qs = `page=${curPage}&size=${size}` + (keyword ? '&keyword=' + encodeURIComponent(keyword) : '');
+        const data = await api('/users?' + qs);
+        userPageState.total = data.total || 0;
+        userPageState.pages = data.pages || 1;
+        renderUsersTable(data.records || []);
+        updateUsersPagination();
+    } catch (e) {
+        showToast('加载用户列表失败: ' + e.message, 'error');
+    }
+}
+
+function renderUsersTable(users) {
+    const tbody = $('#userTbody');
+    const count = $('#userRecordCount');
+    if (!users || users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无用户</td></tr>';
+        if (count) count.textContent = '共 0 条';
+        return;
+    }
+    if (count) count.textContent = `共 ${userPageState.total} 条`;
+    userCache = {};
+    const start = (userPageState.page - 1) * userPageState.size;
+    tbody.innerHTML = users.map((u, i) => {
+        userCache[u.id] = u;
+        const statusBadge = u.status === 1
+            ? '<span class="badge badge-success">启用</span>'
+            : '<span class="badge badge-danger">禁用</span>';
+        const roleBadge = u.role === 'admin'
+            ? '<span class="badge badge-info">管理员</span>'
+            : '<span class="badge badge-default">普通用户</span>';
+        const toggleBtn = u.status === 1
+            ? `<button class="btn btn-sm btn-warning" onclick="toggleUserStatus(${u.id}, 0)">禁用</button>`
+            : `<button class="btn btn-sm btn-success" onclick="toggleUserStatus(${u.id}, 1)">启用</button>`;
+        const isSelf = String(u.id) === String(getCurrentUser().id);
+        const delBtn = isSelf
+            ? `<button class="btn btn-sm btn-danger" disabled title="不能删除当前账号">删除</button>`
+            : `<button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id})">删除</button>`;
+        return `<tr data-id="${u.id}">
+            <td style="text-align:center;color:var(--text-secondary)">${start + i + 1}</td>
+            <td>${u.id}</td>
+            <td>${esc(u.username)}</td>
+            <td>${esc(u.realName)}</td>
+            <td>${roleBadge}</td>
+            <td>${statusBadge}</td>
+            <td>${formatDate(u.lastLoginTime)}</td>
+            <td>
+                <div class="action-btn-group">
+                    <button class="btn btn-sm btn-primary" onclick="openUserModal(${u.id})">编辑</button>
+                    ${toggleBtn}
+                    <button class="btn btn-sm btn-default" onclick="resetUserPassword(${u.id})">重置密码</button>
+                    ${delBtn}
+                </div>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function updateUsersPagination() {
+    const { page, size, total, pages } = userPageState;
+    $('#userPageInfo').textContent = `共 ${total} 条`;
+    $('#userCurPage').textContent = page;
+    $('#userTotalPages').textContent = pages;
+
+    let html = '';
+    html += `<button class="btn btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="loadUsers(1)">首页</button>`;
+    html += `<button class="btn btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="loadUsers(${page - 1})">上一页</button>`;
+    const maxBtns = 5;
+    let startPage = Math.max(1, page - Math.floor(maxBtns / 2));
+    let endPage = Math.min(pages, startPage + maxBtns - 1);
+    if (endPage - startPage < maxBtns - 1) {
+        startPage = Math.max(1, endPage - maxBtns + 1);
+    }
+    for (let i = startPage; i <= endPage; i++) {
+        html += `<button class="btn btn-sm ${i === page ? 'btn-primary' : ''}" onclick="loadUsers(${i})">${i}</button>`;
+    }
+    html += `<button class="btn btn-sm" ${page >= pages ? 'disabled' : ''} onclick="loadUsers(${page + 1})">下一页</button>`;
+    html += `<button class="btn btn-sm" ${page >= pages ? 'disabled' : ''} onclick="loadUsers(${pages})">末页</button>`;
+    html += ` <span style="font-size:12px;margin-left:8px">每页 ${size} 条</span>`;
+    $('#userPageBtns').innerHTML = html;
+}
+
+function openUserModal(id) {
+    editingUserId = id || null;
+    const u = id ? userCache[id] : null;
+    const isEdit = !!u;
+    const formHtml = `
+        <div class="form-group" style="margin-bottom:14px">
+            <label>用户名</label>
+            <input type="text" id="uUsername" class="form-input" value="${isEdit ? esc(u.username) : ''}" placeholder="登录账号" ${isEdit ? 'readonly' : ''}>
+        </div>
+        <div class="form-group" style="margin-bottom:14px">
+            <label>${isEdit ? '密码（留空则不修改）' : '密码（留空则默认 admin123）'}</label>
+            <input type="password" id="uPassword" class="form-input" placeholder="请输入密码">
+        </div>
+        <div class="form-group" style="margin-bottom:14px">
+            <label>姓名</label>
+            <input type="text" id="uRealName" class="form-input" value="${isEdit ? esc(u.realName) : ''}" placeholder="真实姓名">
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:14px">
+            <div class="form-group" style="flex:1;margin:0">
+                <label>邮箱</label>
+                <input type="text" id="uEmail" class="form-input" value="${isEdit ? esc(u.email) : ''}" placeholder="邮箱">
+            </div>
+            <div class="form-group" style="flex:1;margin:0">
+                <label>手机号</label>
+                <input type="text" id="uPhone" class="form-input" value="${isEdit ? esc(u.phone) : ''}" placeholder="手机号">
+            </div>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:20px">
+            <div class="form-group" style="flex:1;margin:0">
+                <label>角色</label>
+                <select id="uRole" class="form-input">
+                    <option value="user" ${isEdit && u.role === 'user' ? 'selected' : ''}>普通用户</option>
+                    <option value="admin" ${isEdit && u.role === 'admin' ? 'selected' : ''}>管理员</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex:1;margin:0">
+                <label>状态</label>
+                <select id="uStatus" class="form-input">
+                    <option value="1" ${isEdit && u.status === 1 ? 'selected' : ''}>启用</option>
+                    <option value="0" ${isEdit && u.status === 0 ? 'selected' : ''}>禁用</option>
+                </select>
+            </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button class="btn btn-default" onclick="closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="saveUser()">确定</button>
+        </div>
+    `;
+    showModal(isEdit ? '编辑用户' : '新建用户', formHtml);
+}
+
+async function saveUser() {
+    const username = $('#uUsername').value.trim();
+    const password = $('#uPassword').value;
+    const realName = $('#uRealName').value.trim();
+    const email = $('#uEmail').value.trim();
+    const phone = $('#uPhone').value.trim();
+    const role = $('#uRole').value;
+    const status = parseInt($('#uStatus').value);
+    if (!username) { showToast('请输入用户名', 'error'); return; }
+    const body = { username, realName, email, phone, role, status };
+    if (password) body.password = password;
+    try {
+        if (editingUserId) {
+            await api(`/users/${editingUserId}`, { method: 'PUT', body });
+            showToast('更新成功');
+        } else {
+            await api('/users', { method: 'POST', body });
+            showToast('创建成功');
+        }
+        closeModal();
+        loadUsers(editingUserId ? userPageState.page : 1);
+    } catch (e) {
+        showToast(e.message || '保存失败', 'error');
+    }
+}
+
+async function deleteUser(id) {
+    if (!confirm('确定删除该用户？此操作不可恢复。')) return;
+    try {
+        await api(`/users/${id}`, { method: 'DELETE' });
+        showToast('删除成功');
+        loadUsers(userPageState.page);
+    } catch (e) {
+        showToast(e.message || '删除失败', 'error');
+    }
+}
+
+async function toggleUserStatus(id, status) {
+    try {
+        await api(`/users/${id}/status?status=${status}`, { method: 'POST' });
+        showToast(status === 1 ? '已启用' : '已禁用');
+        loadUsers(userPageState.page);
+    } catch (e) {
+        showToast(e.message || '操作失败', 'error');
+    }
+}
+
+async function resetUserPassword(id) {
+    if (!confirm('确定将该用户密码重置为 admin123？')) return;
+    try {
+        await api(`/users/${id}/reset-password`, { method: 'POST' });
+        showToast('密码已重置为 admin123');
+    } catch (e) {
+        showToast(e.message || '重置失败', 'error');
     }
 }
 

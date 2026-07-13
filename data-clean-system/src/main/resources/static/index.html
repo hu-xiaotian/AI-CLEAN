@@ -17,13 +17,24 @@
             <a class="nav-item active" data-page="import" onclick="switchPage('import')">数据导入</a>
             <a class="nav-item" data-page="rule" onclick="switchPage('rule')">规则配置</a>
             <a class="nav-item" data-page="extract" onclick="switchPage('extract')">属性提取</a>
-            <a class="nav-item" data-page="clean" onclick="switchPage('clean')">数据清洗</a>
+            <a class="nav-item" data-page="clean" onclick="switchPage('clean')">智能分类</a>
             <a class="nav-item" data-page="mapping" onclick="switchPage('mapping')">字段映射</a>
             <a class="nav-item" data-page="result" onclick="switchPage('result')">结果数据</a>
             <a class="nav-item" data-page="unmapped" onclick="switchPage('unmapped')">无效数据</a>
             <a class="nav-item" data-page="search" onclick="switchPage('search')">数据检索</a>
             <a class="nav-item" data-page="standard" onclick="switchPage('standard')">标准列表</a>
+            <a class="nav-item" data-page="users" data-role="admin" onclick="switchPage('users')">用户管理</a>
         </nav>
+        <div class="user-box" id="currentUserBox">
+            <div class="user-info">
+                <span class="user-avatar" id="currentUserAvatar">&#128100;</span>
+                <span class="user-name" id="currentUserName">-</span>
+            </div>
+            <div class="user-actions">
+                <a class="user-action" onclick="openChangePasswordModal()">修改密码</a>
+                <a class="user-action" onclick="logout()">退出登录</a>
+            </div>
+        </div>
     </aside>
 
     <main class="main-content">
@@ -167,6 +178,7 @@
                     <span style="color:var(--success)">成功: <strong id="fillLiveSuccess">0</strong></span>
                     <span style="color:var(--danger)">失败: <strong id="fillLiveError">0</strong></span>
                 </div>
+                <div id="fillLiveStatus" class="mt-2"></div>
                 <div class="table-scroll mt-2" style="max-height:500px;overflow-y:auto">
                     <table class="data-table" id="fillLiveTable">
                         <thead>
@@ -184,7 +196,6 @@
                         </tbody>
                     </table>
                 </div>
-                <div id="fillLiveStatus" class="mt-2"></div>
             </div>
         </section>
 
@@ -202,6 +213,7 @@
                         <button class="btn btn-info" onclick="showMappingStatus()">显示映射状态</button>
                         <button class="btn btn-default" onclick="openManualFillModal()">手动填充</button>
                         <button class="btn btn-warning" onclick="fillAllStandardTitles()">全部填充</button>
+                        <button class="btn btn-danger" onclick="showFailedResults()">查看填充失败</button>
                     </div>
                 </div>
             </div>
@@ -235,6 +247,23 @@
                 <div id="resultPaginationBottom" class="pagination" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
                     <div class="pagination-info"><span id="resultPageInfo">共 0 条</span>，第 <strong id="resultCurPage">1</strong>/<strong id="resultTotalPages">1</strong> 页</div>
                     <div class="pagination-btns" id="resultPageBtnsBottom"></div>
+                </div>
+            </div>
+            <div class="card" id="failedCard" style="display:none">
+                <h3>填充失败记录 <span id="failedCount" style="font-size:13px;color:var(--danger);font-weight:400"></span></h3>
+                <p class="desc">以下数据因未匹配到对应的标准字段表头（standard_title_id 非空约束）而未能写入结果数据，已跳过并记录，不影响其余数据正常填充。</p>
+                <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+                    <table class="data-table" id="failedTable">
+                        <thead><tr>
+                            <th style="width:60px">ID</th>
+                            <th style="width:90px">原始数据ID</th>
+                            <th style="width:120px">分类编码</th>
+                            <th>失败原因</th>
+                            <th>原始数据</th>
+                            <th style="width:160px">记录时间</th>
+                        </tr></thead>
+                        <tbody id="failedTbody"></tbody>
+                    </table>
                 </div>
             </div>
         </section>
@@ -296,6 +325,49 @@
                         </thead>
                         <tbody id="standardTbody"><tr><td colspan="6" class="empty-hint">暂无数据</td></tr></tbody>
                     </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== 用户管理 ===== -->
+        <section id="page-users" class="page">
+            <h2>用户管理</h2>
+            <p class="desc">管理系统用户账号（仅管理员可见）</p>
+            <div class="card">
+                <div class="standard-toolbar">
+                    <div class="toolbar-left">
+                        <div class="search-box">
+                            <input type="text" id="userSearchInput" class="form-input" placeholder="搜索用户名 / 姓名…" oninput="onUserSearchInput()">
+                        </div>
+                    </div>
+                    <div class="toolbar-right">
+                        <span class="record-count" id="userRecordCount">共 0 条</span>
+                        <button class="btn btn-primary" onclick="openUserModal()">新建用户</button>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <h3>用户列表</h3>
+                <div class="table-container">
+                    <table class="data-table" id="userTable">
+                        <thead>
+                            <tr>
+                                <th style="width:50px">#</th>
+                                <th style="width:60px">ID</th>
+                                <th>用户名</th>
+                                <th>姓名</th>
+                                <th>角色</th>
+                                <th>状态</th>
+                                <th>最后登录</th>
+                                <th style="width:240px">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="userTbody"><tr><td colspan="8" class="empty-hint">暂无数据</td></tr></tbody>
+                    </table>
+                </div>
+                <div id="userPagination" class="pagination" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
+                    <div class="pagination-info"><span id="userPageInfo">共 0 条</span>，第 <strong id="userCurPage">1</strong>/<strong id="userTotalPages">1</strong> 页</div>
+                    <div class="pagination-btns" id="userPageBtns"></div>
                 </div>
             </div>
         </section>

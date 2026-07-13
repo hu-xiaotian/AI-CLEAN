@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 - Data Clean 数据清洗系统</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+    body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #3b82f6 100%);
+    }
+    .login-wrapper {
+        width: 400px;
+        max-width: 92vw;
+        background: var(--surface);
+        border-radius: var(--radius-lg);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, .25);
+        padding: 40px 36px 32px;
+    }
+    .login-brand { text-align: center; margin-bottom: 28px; }
+    .login-brand h1 { font-size: 24px; font-weight: 700; color: var(--text); letter-spacing: .5px; }
+    .login-brand p { font-size: 13px; color: var(--text-secondary); margin-top: 6px; }
+    .login-form .form-group { margin-bottom: 18px; }
+    .login-form label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+    .login-form .form-input { width: 100%; height: 42px; padding: 0 14px; font-size: 14px; }
+    .login-btn {
+        width: 100%; height: 44px; margin-top: 8px;
+        font-size: 15px; font-weight: 600;
+    }
+    .login-error {
+        display: none;
+        background: var(--danger-subtle); color: var(--danger);
+        border: 1px solid #fecaca; border-radius: var(--radius-sm);
+        padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
+    }
+    .login-error.show { display: block; }
+    .login-tip { text-align: center; font-size: 12px; color: var(--text-tertiary); margin-top: 20px; }
+</style>
+</head>
+<body>
+<div class="login-wrapper">
+    <div class="login-brand">
+        <h1>Data Clean</h1>
+        <p>数据清洗系统 · 用户登录</p>
+    </div>
+    <div class="login-error" id="loginError"></div>
+    <form class="login-form" id="loginForm" autocomplete="off">
+        <div class="form-group">
+            <label for="username">用户名</label>
+            <input type="text" id="username" class="form-input" placeholder="请输入用户名" autofocus>
+        </div>
+        <div class="form-group">
+            <label for="password">密码</label>
+            <input type="password" id="password" class="form-input" placeholder="请输入密码">
+        </div>
+        <button type="submit" class="btn btn-primary login-btn" id="loginBtn">登 录</button>
+    </form>
+    <p class="login-tip">默认管理员账号：admin / admin123</p>
+</div>
+
+<script>
+    const TOKEN_KEY = 'dc_token';
+    const USER_KEY = 'dc_user';
+
+    // 已登录则直接进入主页
+    if (localStorage.getItem(TOKEN_KEY)) {
+        location.replace('/index.html');
+    }
+
+    const form = document.getElementById('loginForm');
+    const errorBox = document.getElementById('loginError');
+    const loginBtn = document.getElementById('loginBtn');
+
+    function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.classList.add('show');
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorBox.classList.remove('show');
+
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value;
+        if (!username || !password) {
+            showError('请输入用户名和密码');
+            return;
+        }
+
+        loginBtn.disabled = true;
+        loginBtn.textContent = '登录中…';
+        try {
+            const res = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password }),
+            });
+            const data = await res.json();
+            if (data.code === 200 && data.data && data.data.token) {
+                localStorage.setItem(TOKEN_KEY, data.data.token);
+                localStorage.setItem(USER_KEY, JSON.stringify(data.data.user || {}));
+                location.replace('/index.html');
+            } else {
+                showError(data.msg || '登录失败');
+            }
+        } catch (err) {
+            showError('网络异常，请稍后重试');
+        } finally {
+            loginBtn.disabled = false;
+            loginBtn.textContent = '登 录';
+        }
+    });
+</script>
+</body>
+</html>

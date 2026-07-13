@@ -300,6 +300,24 @@ CREATE INDEX idx_rd_standard_title_id ON result_data(standard_title_id);
 CREATE INDEX idx_rd_status ON result_data(status);
 CREATE INDEX idx_rd_temp_data_id ON result_data(temp_data_id);
 
+-- 9.1 填充失败结果数据表 (failed_result_data)
+-- 记录因未匹配到标准字段表头（standard_title_id 非空约束）等原因而未能写入 result_data 的数据
+CREATE TABLE failed_result_data (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    temp_data_id BIGINT,
+    cleaned_data_id BIGINT,
+    category_code VARCHAR2(100),
+    reason VARCHAR2(500),
+    raw_data CLOB,
+    status VARCHAR2(50) DEFAULT 'FAILED',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR2(50) DEFAULT 'system',
+    updated_by VARCHAR2(50) DEFAULT 'system'
+);
+CREATE INDEX idx_frd_temp_data_id ON failed_result_data(temp_data_id);
+CREATE INDEX idx_frd_category_code ON failed_result_data(category_code);
+
 -- 10. 清洗后数据表 (cleaned_data)
 -- 经过清洗和分类匹配后的数据
 CREATE TABLE cleaned_data (

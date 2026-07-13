@@ -14,6 +14,7 @@ import org.springframework.http.converter.json.MappingJackson2HttpMessageConvert
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -24,6 +25,28 @@ import java.util.List;
  */
 @Configuration
 public class WebConfig implements WebMvcConfigurer {
+
+    private final JwtAuthInterceptor jwtAuthInterceptor;
+
+    public WebConfig(JwtAuthInterceptor jwtAuthInterceptor) {
+        this.jwtAuthInterceptor = jwtAuthInterceptor;
+    }
+
+    /**
+     * 注册 JWT 认证拦截器
+     */
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(jwtAuthInterceptor)
+                // 仅拦截 API 接口
+                .addPathPatterns("/api/**")
+                // 放行登录认证相关接口
+                .excludePathPatterns(
+                        "/api/auth/login",
+                        "/api/auth/logout",
+                        "/api/system/health"
+                );
+    }
 
     /**
      * 配置跨域
@@ -101,17 +124,5 @@ public class WebConfig implements WebMvcConfigurer {
         // 上传文件访问路径
         registry.addResourceHandler("/uploads/**")
                 .addResourceLocations("file:uploads/");
-    }
-
-    /**
-     * 配置Jackson ObjectMapper
-     */
-    @Bean
-    public ObjectMapper objectMapper() {
-        ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.registerModule(new JavaTimeModule());
-        objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
-        return objectMapper;
     }
 }

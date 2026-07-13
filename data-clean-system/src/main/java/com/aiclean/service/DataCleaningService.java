@@ -75,6 +75,9 @@ public interface DataCleaningService {
     List<ResultDataEntity> searchResultData(SearchCondition condition);
     long countResultData(SearchCondition condition);
 
+    /** 查询某数据文件下填充失败的结果数据（未匹配标准表头） */
+    List<FailedResultDataEntity> getFailedResults(Long titleId);
+
     // ===== 统计 =====
     Map<String, Object> getCleaningStatistics(Long titleId);
     Map<String, Object> getQualityReport(Long titleId);

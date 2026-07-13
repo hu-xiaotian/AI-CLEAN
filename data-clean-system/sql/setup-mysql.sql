@@ -322,6 +322,25 @@ CREATE INDEX `idx_rd_standard_title_id` ON `result_data`(`standard_title_id`);
 CREATE INDEX `idx_rd_status` ON `result_data`(`status`);
 CREATE INDEX `idx_rd_temp_data_id` ON `result_data`(`temp_data_id`);
 
+-- 9.1 填充失败结果数据表 (failed_result_data)
+-- 记录因未匹配到标准字段表头（standard_title_id 非空约束）等原因而未能写入 result_data 的数据
+DROP TABLE IF EXISTS `failed_result_data`;
+CREATE TABLE `failed_result_data` (
+                               `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+                               `temp_data_id` BIGINT DEFAULT NULL COMMENT '关联原始数据ID',
+                               `cleaned_data_id` BIGINT DEFAULT NULL COMMENT '关联清洗后数据ID',
+                               `category_code` VARCHAR(100) DEFAULT NULL COMMENT '导致失败的分类编码',
+                               `reason` VARCHAR(500) DEFAULT NULL COMMENT '失败原因',
+                               `raw_data` TEXT COMMENT '原始数据快照',
+                               `status` VARCHAR(50) DEFAULT 'FAILED' COMMENT '状态',
+                               `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                               `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                               `created_by` VARCHAR(50) DEFAULT 'system' COMMENT '创建人',
+                               `updated_by` VARCHAR(50) DEFAULT 'system' COMMENT '更新人'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='填充失败结果数据表';
+CREATE INDEX `idx_frd_temp_data_id` ON `failed_result_data`(`temp_data_id`);
+CREATE INDEX `idx_frd_category_code` ON `failed_result_data`(`category_code`);
+
 -- 10. 清洗后数据表 (cleaned_data)
 -- 经过清洗和分类匹配后的数据
 DROP TABLE IF EXISTS `cleaned_data`;

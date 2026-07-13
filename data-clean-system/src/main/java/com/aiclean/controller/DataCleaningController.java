@@ -204,6 +204,12 @@ public class DataCleaningController {
         return R.success(dataCleaningService.countResultData(condition));
     }
 
+    @GetMapping("/failed-results")
+    @Operation(summary = "查询填充失败的结果数据", description = "查询因未匹配标准字段表头（standard_title_id 非空约束）而跳过并记录的数据")
+    public R<List<FailedResultDataEntity>> getFailedResults(@RequestParam Long titleId) {
+        return R.success(dataCleaningService.getFailedResults(titleId));
+    }
+
     // ==================== 查询 ====================
 
     @PostMapping("/cleaned-data/search")

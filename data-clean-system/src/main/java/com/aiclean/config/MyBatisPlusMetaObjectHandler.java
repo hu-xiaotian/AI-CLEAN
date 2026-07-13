@@ -1,5 +1,6 @@
 package com.aiclean.config;
 
+import com.aiclean.common.UserContext;
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import org.apache.ibatis.reflection.MetaObject;
 import org.springframework.stereotype.Component;
@@ -41,11 +42,10 @@ public class MyBatisPlusMetaObjectHandler implements MetaObjectHandler {
     }
     
     /**
-     * 获取当前用户（实际项目中从安全上下文中获取）
+     * 获取当前用户（从登录用户上下文中获取，无登录用户时回退为 system）
      */
     private String getCurrentUser() {
-        // TODO: 从Spring Security上下文中获取当前用户
-        // 临时返回固定值
-        return "system";
+        String username = UserContext.getUsername();
+        return username != null ? username : "system";
     }
 }

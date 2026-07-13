@@ -45,6 +45,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Autowired private ExtraDataMapper extraDataMapper;
     @Autowired private StandardTitleMapper standardTitleMapper;
     @Autowired private ResultDataMapper resultDataMapper;
+    @Autowired private FailedResultDataMapper failedResultDataMapper;
     @Autowired private ParseRuleMapper parseRuleMapper;
     @Autowired private FieldMappingAuditMapper fieldMappingAuditMapper;
     @Autowired private TitleStandardTitleMapper titleStandardTitleMapper;
@@ -1189,14 +1190,14 @@ public class DataCleaningServiceImpl implements DataCleaningService {
      * 同时满足“找不到对应分类代码时可填充空值”的需求。
      */
     private void fillNoTitleResults(Long tempDataTitleId, Long extraDataTitleId) {
-        // 清除该文件下旧的“未匹配标准表头”空值记录，实现覆盖而非累加
-        resultDataMapper.deleteByTitleIdAndNullStandard(tempDataTitleId);
+        // 清除该文件下旧的填充失败记录，实现覆盖而非累加
+        failedResultDataMapper.deleteByTitleId(tempDataTitleId);
 
         List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(tempDataTitleId);
         if (tempDataList == null || tempDataList.isEmpty()) return;
 
         Map<String, StandardTitleEntity> cache = new HashMap<>();
-        List<ResultDataEntity> noTitleResults = new ArrayList<>();
+        List<FailedResultDataEntity> failedList = new ArrayList<>();
         for (TempDataEntity td : tempDataList) {
             CleanedDataEntity cd = cleanedDataMapper.selectByTempDataId(td.getId());
             if (cd == null || StrUtil.isBlank(cd.getCategoryCode())) continue;
@@ -1204,20 +1205,36 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             StandardTitleEntity st = resolveStandardTitle(cd, cache, null);
             if (st != null) continue;
 
-            ResultDataEntity result = new ResultDataEntity();
-            result.setStandardTitleId(null);
-            result.setTempDataId(td.getId());
-            result.setCleanedDataId(cd.getId());
-            result.setStatus("draft");
-            noTitleResults.add(result);
+            // 找不到对应标准字段表头：result_data.standard_title_id 为 NOT NULL，无法直接写入，
+            // 因此跳过写入并记为“填充失败”，便于在页面展示失败列表，而不影响其余数据的正常填充。
+            FailedResultDataEntity failed = new FailedResultDataEntity();
+            failed.setTempDataId(td.getId());
+            failed.setCleanedDataId(cd.getId());
+            failed.setCategoryCode(cd.getCategoryCode());
+            failed.setReason("未找到匹配的标准字段表头（分类编码: " + cd.getCategoryCode() + "）");
+            failed.setStatus("FAILED");
+            failed.setRawData(buildRawData(td));
+            failedList.add(failed);
         }
 
-        if (!noTitleResults.isEmpty()) {
-            resultDataMapper.insertBatch(noTitleResults);
-            log.info("填充未匹配标准表头的空值结果记录 {} 条", noTitleResults.size());
+        if (!failedList.isEmpty()) {
+            failedResultDataMapper.insertBatch(failedList);
+            log.warn("填充结果中存在 {} 条因未匹配标准表头而跳过的数据，已记录为填充失败", failedList.size());
         } else {
-            log.info("无“未匹配标准表头”的数据，跳过空值结果填充");
+            log.info("无“未匹配标准表头”的数据，无需记录填充失败");
         }
+    }
+
+    /**
+     * 将原始数据的 col1..col10 拼接为可读快照，用于填充失败记录的回看展示。
+     */
+    private String buildRawData(TempDataEntity td) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 1; i <= 10; i++) {
+            if (i > 1) sb.append(" | ");
+            sb.append(td.getColData(i));
+        }
+        return sb.toString();
     }
 
     @Override
@@ -1394,6 +1411,12 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     public long countResultData(SearchCondition condition) {
         Long count = resultDataMapper.countByConditions(condition);
         return count != null ? count : 0;
+    }
+
+    @Override
+    public List<FailedResultDataEntity> getFailedResults(Long titleId) {
+        if (titleId == null) return new ArrayList<>();
+        return failedResultDataMapper.selectByTitleId(titleId);
     }
 
     // ==================== 未映射结果 ====================
