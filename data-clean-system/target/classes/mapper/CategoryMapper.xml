@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiclean.mapper.CategoryMapper">
+
+    <resultMap id="BaseResultMap" type="com.aiclean.entity.CategoryEntity">
+        <id column="id" property="id"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="category_code" property="categoryCode"/>
+        <result column="category_name" property="categoryName"/>
+        <result column="parent_id" property="parentId"/>
+        <result column="level" property="level"/>
+        <result column="full_path" property="fullPath"/>
+        <result column="sort_order" property="sortOrder"/>
+        <result column="old_code_1" property="oldCode1"/>
+        <result column="old_code_2" property="oldCode2"/>
+        <result column="old_code_3" property="oldCode3"/>
+        <result column="old_code_4" property="oldCode4"/>
+        <result column="old_code_5" property="oldCode5"/>
+        <result column="old_name_1" property="oldName1"/>
+        <result column="old_name_2" property="oldName2"/>
+        <result column="old_name_3" property="oldName3"/>
+        <result column="old_name_4" property="oldName4"/>
+        <result column="old_name_5" property="oldName5"/>
+    </resultMap>
+
+    <select id="selectCategoryTree" resultMap="BaseResultMap">
+        WITH RECURSIVE category_tree AS (
+            SELECT * FROM main_data_category
+            WHERE parent_id = #{parentId}
+            UNION ALL
+            SELECT c.* FROM main_data_category c
+            INNER JOIN category_tree ct ON c.parent_id = ct.id
+        )
+        SELECT * FROM category_tree ORDER BY sort_order, category_code
+    </select>
+
+    <update id="updateCategoryHierarchy">
+        UPDATE main_data_category
+        SET level = #{level},
+            full_path = #{fullPath},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+</mapper>

@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiclean.mapper.CleanedDataMapper">
+
+    <resultMap id="BaseResultMap" type="com.aiclean.entity.CleanedDataEntity">
+        <id column="id" property="id"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="temp_data_id" property="tempDataId"/>
+        <result column="category_id" property="categoryId"/>
+        <result column="category_code" property="categoryCode"/>
+        <result column="category_level" property="categoryLevel"/>
+        <result column="category_full_path" property="categoryFullPath"/>
+        <result column="standard_title_id" property="standardTitleId"/>
+        <result column="material_code" property="materialCode"/>
+        <result column="material_name" property="materialName"/>
+        <result column="specification" property="specification"/>
+        <result column="technical_standard" property="technicalStandard"/>
+        <result column="grade" property="grade"/>
+        <result column="unit" property="unit"/>
+        <result column="status" property="status"/>
+        <result column="quality_score" property="qualityScore"/>
+        <result column="completeness_score" property="completenessScore"/>
+        <result column="accuracy_score" property="accuracyScore"/>
+        <result column="review_comment" property="reviewComment"/>
+        <result column="reviewed_by" property="reviewedBy"/>
+        <result column="reviewed_at" property="reviewedAt"/>
+        <result column="export_batch_id" property="exportBatchId"/>
+        <result column="exported_at" property="exportedAt"/>
+    </resultMap>
+
+    <resultMap id="UnmappedResultMap" type="com.aiclean.entity.CleanedDataEntity" extends="BaseResultMap">
+        <association property="tempData" javaType="com.aiclean.entity.TempDataEntity">
+            <id column="td_id" property="id"/>
+            <result column="td_row_index" property="rowIndex"/>
+            <result column="td_col1" property="col1"/>
+            <result column="td_col2" property="col2"/>
+            <result column="td_col3" property="col3"/>
+            <result column="td_col4" property="col4"/>
+            <result column="td_col5" property="col5"/>
+            <result column="td_col6" property="col6"/>
+            <result column="td_col7" property="col7"/>
+            <result column="td_col8" property="col8"/>
+            <result column="td_col9" property="col9"/>
+            <result column="td_col10" property="col10"/>
+            <result column="td_temp_data_title_id" property="tempDataTitleId"/>
+            <result column="td_status" property="status"/>
+            <result column="td_error_msg" property="errorMsg"/>
+            <result column="td_created_at" property="createdAt"/>
+            <result column="td_updated_at" property="updatedAt"/>
+        </association>
+    </resultMap>
+
+    <select id="selectUnmappedByTitleId" resultMap="UnmappedResultMap">
+        SELECT cd.*,
+               td.id AS td_id, td.row_index AS td_row_index,
+               td.col1 AS td_col1, td.col2 AS td_col2, td.col3 AS td_col3,
+               td.col4 AS td_col4, td.col5 AS td_col5, td.col6 AS td_col6,
+               td.col7 AS td_col7, td.col8 AS td_col8, td.col9 AS td_col9,
+               td.col10 AS td_col10, td.temp_data_title_id AS td_temp_data_title_id,
+               td.status AS td_status, td.error_msg AS td_error_msg,
+               td.created_at AS td_created_at, td.updated_at AS td_updated_at
+        FROM cleaned_data cd
+        INNER JOIN temp_data td ON cd.temp_data_id = td.id
+        LEFT JOIN result_data rd ON cd.id = rd.cleaned_data_id
+        WHERE td.temp_data_title_id = #{titleId} AND rd.id IS NULL
+        ORDER BY cd.id DESC
+    </select>
+
+    <sql id="whereCondition">
+        <if test="condition != null">
+            <if test="condition.hasConditions() or condition.page != null">
+                WHERE 1=1
+            </if>
+            <if test="!condition.hasConditions() and condition.page == null">
+                WHERE 1=1
+            </if>
+            <if test="condition.categoryCodes != null and condition.categoryCodes.size() > 0">
+                AND category_code IN
+                <foreach collection="condition.categoryCodes" item="code" open="(" separator="," close=")">
+                    #{code}
+                </foreach>
+            </if>
+            <if test="condition.categoryLevel != null">
+                AND category_level = #{condition.categoryLevel}
+            </if>
+            <if test="condition.categoryPathPrefix != null and condition.categoryPathPrefix != ''">
+                AND category_full_path LIKE CONCAT(#{condition.categoryPathPrefix}, '%')
+            </if>
+            <if test="condition.materialCode != null and condition.materialCode != ''">
+                AND material_code LIKE CONCAT('%', #{condition.materialCode}, '%')
+            </if>
+            <if test="condition.materialName != null and condition.materialName != ''">
+                AND material_name LIKE CONCAT('%', #{condition.materialName}, '%')
+            </if>
+            <if test="condition.specification != null and condition.specification != ''">
+                AND specification LIKE CONCAT('%', #{condition.specification}, '%')
+            </if>
+            <if test="condition.technicalStandard != null and condition.technicalStandard != ''">
+                AND technical_standard LIKE CONCAT('%', #{condition.technicalStandard}, '%')
+            </if>
+            <if test="condition.statuses != null and condition.statuses.size() > 0">
+                AND status IN
+                <foreach collection="condition.statuses" item="status" open="(" separator="," close=")">
+                    #{status.code}
+                </foreach>
+            </if>
+            <if test="condition.qualityScoreMin != null">
+                AND quality_score &gt;= #{condition.qualityScoreMin}
+            </if>
+            <if test="condition.qualityScoreMax != null">
+                AND quality_score &lt;= #{condition.qualityScoreMax}
+            </if>
+            <if test="condition.createdStart != null">
+                AND created_at &gt;= #{condition.createdStart}
+            </if>
+            <if test="condition.createdEnd != null">
+                AND created_at &lt;= #{condition.createdEnd}
+            </if>
+            <if test="condition.reviewedStart != null">
+                AND reviewed_at &gt;= #{condition.reviewedStart}
+            </if>
+            <if test="condition.reviewedEnd != null">
+                AND reviewed_at &lt;= #{condition.reviewedEnd}
+            </if>
+            <if test="condition.exportedStart != null">
+                AND exported_at &gt;= #{condition.exportedStart}
+            </if>
+            <if test="condition.exportedEnd != null">
+                AND exported_at &lt;= #{condition.exportedEnd}
+            </if>
+            <if test="condition.exportable != null and condition.exportable == true">
+                AND status IN ('export_ready', 'approved')
+            </if>
+            <if test="condition.reviewed != null and condition.reviewed == true">
+                AND reviewed_at IS NOT NULL
+            </if>
+        </if>
+    </sql>
+
+    <select id="searchByConditions" resultMap="BaseResultMap">
+        SELECT * FROM cleaned_data
+        <include refid="whereCondition"/>
+        ORDER BY
+        <choose>
+            <when test="condition != null and condition.sortBy != null">
+                ${condition.sortField} ${condition.sortDirection}
+            </when>
+            <otherwise>created_at DESC</otherwise>
+        </choose>
+        <if test="condition != null and condition.page != null">
+            LIMIT #{condition.offset}, #{condition.limit}
+        </if>
+    </select>
+
+    <select id="countByConditions" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM cleaned_data
+        <include refid="whereCondition"/>
+    </select>
+
+    <update id="updateBatchStatus">
+        UPDATE cleaned_data
+        SET status = #{status},
+            reviewed_by = #{reviewedBy},
+            review_comment = #{reviewComment},
+            updated_at = NOW()
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND 1=1
+    </update>
+
+    <update id="updateExportBatch">
+        UPDATE cleaned_data
+        SET export_batch_id = #{batchId},
+            exported_at = NOW(),
+            updated_at = NOW()
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND 1=1
+    </update>
+
+</mapper>
