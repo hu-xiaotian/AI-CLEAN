@@ -1,0 +1,141 @@
+# Python 相关
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+
+# 虚拟环境
+venv/
+.venv/
+env/
+.env/
+.virtualenv/
+
+# IDE 相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.pbxuser
+*.mode1v3
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# 数据文件
+*.csv
+*.xlsx
+*.xls
+*.db
+*.sqlite
+*.sqlite3
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.npz
+*.npy
+
+# 模型文件（如果是机器学习项目）
+*.pth
+*.pt
+*.onnx
+*.pb
+*.h5
+*.tflite
+*.mlmodel
+models/
+checkpoints/
+weights/
+
+# 日志文件
+*.log
+logs/
+*.log.*
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.temp
+*.cache
+*.cached
+
+# 配置文件（包含敏感信息）
+*.env
+*.secret
+*.key
+*.pem
+*.crt
+*.csr
+config.local.*
+settings.local.*
+secrets.yaml
+config.yaml.local
+
+# 测试覆盖率
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# 构建输出
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+.eggs/
+*.whl
+
+# Docker
+*.dockerignore
+.docker/
+docker-compose.override.yml
+
+# OS 系统文件
+Thumbs.db
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+*.swp
+
+# 项目特定
+data/
+output/
+results/
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# 日志相关
+/logs
+
+# 上传
+/uploads
