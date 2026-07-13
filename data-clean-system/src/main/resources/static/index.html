@@ -15,14 +15,42 @@
         </div>
         <nav class="nav-menu">
             <a class="nav-item active" data-page="import" onclick="switchPage('import')">数据导入</a>
-            <a class="nav-item" data-page="rule" onclick="switchPage('rule')">规则配置</a>
-            <a class="nav-item" data-page="extract" onclick="switchPage('extract')">属性提取</a>
-            <a class="nav-item" data-page="clean" onclick="switchPage('clean')">智能分类</a>
-            <a class="nav-item" data-page="mapping" onclick="switchPage('mapping')">字段映射</a>
-            <a class="nav-item" data-page="result" onclick="switchPage('result')">结果数据</a>
-            <a class="nav-item" data-page="unmapped" onclick="switchPage('unmapped')">无效数据</a>
-            <a class="nav-item" data-page="search" onclick="switchPage('search')">数据检索</a>
-            <a class="nav-item" data-page="standard" onclick="switchPage('standard')">标准列表</a>
+
+            <div class="nav-group">
+                <div class="nav-group-title" onclick="toggleNavGroup(this)">
+                    <span>分步数据清洗</span>
+                    <span class="nav-group-arrow">&#9662;</span>
+                </div>
+                <div class="nav-group-items">
+                    <a class="nav-item" data-page="clean" onclick="switchPage('clean')">智能分类</a>
+                    <a class="nav-item" data-page="extract" onclick="switchPage('extract')">属性提取</a>
+                    <a class="nav-item" data-page="mapping" onclick="switchPage('mapping')">属性补全</a>
+                </div>
+            </div>
+
+            <div class="nav-group">
+                <div class="nav-group-title" onclick="toggleNavGroup(this)">
+                    <span>数据输出</span>
+                    <span class="nav-group-arrow">&#9662;</span>
+                </div>
+                <div class="nav-group-items">
+                    <a class="nav-item" data-page="result" onclick="switchPage('result')">结果数据</a>
+                    <a class="nav-item" data-page="unmapped" onclick="switchPage('unmapped')">无效数据</a>
+                    <a class="nav-item" data-page="search" onclick="switchPage('search')">数据检索</a>
+                </div>
+            </div>
+
+            <div class="nav-group">
+                <div class="nav-group-title" onclick="toggleNavGroup(this)">
+                    <span>规则配置</span>
+                    <span class="nav-group-arrow">&#9662;</span>
+                </div>
+                <div class="nav-group-items">
+                    <a class="nav-item" data-page="rule" onclick="switchPage('rule')">属性拆分规则配置</a>
+                    <a class="nav-item" data-page="standard" onclick="switchPage('standard')">标准列表</a>
+                </div>
+            </div>
+
             <a class="nav-item" data-page="users" data-role="admin" onclick="switchPage('users')">用户管理</a>
         </nav>
         <div class="user-box" id="currentUserBox">

@@ -156,6 +156,17 @@ function switchPage(name) {
     $(`#page-${name}`).classList.add('active');
     $(`.nav-item[data-page="${name}"]`).classList.add('active');
 
+    // 同步导航分组状态：展开当前项所在分组并标记高亮
+    $$('.nav-group').forEach(g => g.classList.remove('has-active'));
+    const activeItem = $(`.nav-item[data-page="${name}"]`);
+    if (activeItem) {
+        const group = activeItem.closest('.nav-group');
+        if (group) {
+            group.classList.remove('collapsed');
+            group.classList.add('has-active');
+        }
+    }
+
     const loaders = {
         'import': () => { loadTitles(); },                          // 刷新导入文件列表
         'rule': () => { loadRules(); },                               // 刷新解析规则列表
@@ -181,6 +192,12 @@ function switchPage(name) {
         'unmapped': () => { loadTitlesForUnmapped(); },
     };
     if (loaders[name]) loaders[name]();
+}
+
+// 折叠/展开导航分组
+function toggleNavGroup(titleEl) {
+    const group = titleEl.closest('.nav-group');
+    if (group) group.classList.toggle('collapsed');
 }
 
 // 数据文件变更时的联动过滤
