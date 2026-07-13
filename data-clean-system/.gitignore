@@ -139,3 +139,6 @@ results/
 
 # 上传
 /uploads
+
+# 包
+/target
