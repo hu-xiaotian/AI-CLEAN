@@ -10,8 +10,15 @@
 <div class="app-container">
     <aside class="sidebar">
         <div class="logo">
-            <h1>Data Clean</h1>
-            <small>数据清洗工作台</small>
+            <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true">
+                <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                <path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>
+            </svg>
+            <div class="logo-text">
+                <h1>Data Clean</h1>
+                <small>数据清洗工作台</small>
+            </div>
         </div>
         <nav class="nav-menu">
             <a class="nav-item active" data-page="import" onclick="switchPage('import')">数据导入</a>
@@ -37,7 +44,6 @@
                 <div class="nav-group-items">
                     <a class="nav-item" data-page="result" onclick="switchPage('result')">结果数据</a>
                     <a class="nav-item" data-page="unmapped" onclick="switchPage('unmapped')">无效数据</a>
-<!--                    <a class="nav-item" data-page="search" onclick="switchPage('search')">数据检索</a>-->
                 </div>
             </div>
 
@@ -56,7 +62,7 @@
         </nav>
         <div class="user-box" id="currentUserBox">
             <div class="user-info">
-                <span class="user-avatar" id="currentUserAvatar">&#128100;</span>
+                <svg class="user-avatar" id="currentUserAvatar" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                 <span class="user-name" id="currentUserName">-</span>
             </div>
             <div class="user-actions">
