@@ -183,6 +183,54 @@ a:hover { text-decoration: underline; }
     border-left: 2px solid var(--accent);
 }
 
+/* 一键数据清洗 - 分步状态 */
+.oc-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.oc-step {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    transition: border-color .15s, background .15s;
+}
+
+.oc-step-icon {
+    flex: 0 0 28px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--border-light);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 13px;
+    transition: background .15s, color .15s;
+}
+
+.oc-step-body { flex: 1; }
+.oc-step-name { font-weight: 500; color: var(--text); }
+.oc-step-status { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+.oc-step[data-state="running"] { border-color: var(--accent); background: rgba(37,99,235,.04); }
+.oc-step[data-state="running"] .oc-step-icon { background: var(--accent); color: #fff; }
+.oc-step[data-state="running"] .oc-step-status { color: var(--accent); }
+
+.oc-step[data-state="done"] .oc-step-icon { background: var(--success); color: #fff; }
+.oc-step[data-state="done"] .oc-step-status { color: var(--success); }
+
+.oc-step[data-state="error"] { border-color: var(--danger); background: var(--danger-subtle); }
+.oc-step[data-state="error"] .oc-step-icon { background: var(--danger); color: #fff; }
+.oc-step[data-state="error"] .oc-step-status { color: var(--danger); }
+
 /* User box (login info) */
 .user-box {
     margin-top: auto;

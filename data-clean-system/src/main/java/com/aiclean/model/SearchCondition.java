@@ -133,6 +133,11 @@ public class SearchCondition {
     private Long standardTitleId;
     
     /**
+     * 数据文件ID（结果数据按当前数据文件过滤，避免跨文件查询）
+     */
+    private Long tempDataTitleId;
+    
+    /**
      * 是否查询所有数据
      */
     private Boolean queryAll;

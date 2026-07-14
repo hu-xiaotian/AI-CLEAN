@@ -15,6 +15,7 @@
         </div>
         <nav class="nav-menu">
             <a class="nav-item active" data-page="import" onclick="switchPage('import')">数据导入</a>
+            <a class="nav-item" data-page="oneclick" onclick="switchPage('oneclick')">一键数据清洗</a>
 
             <div class="nav-group">
                 <div class="nav-group-title" onclick="toggleNavGroup(this)">
@@ -93,6 +94,56 @@
                     <thead><tr><th>ID</th><th>文件名</th><th>行数</th><th>指定分类列</th><th>状态</th><th>上传时间</th><th>操作</th></tr></thead>
                     <tbody id="titleTbody"><tr><td colspan="7" class="empty-hint">暂无数据</td></tr></tbody>
                 </table>
+            </div>
+        </section>
+
+        <!-- ===== 一键数据清洗 ===== -->
+        <section id="page-oneclick" class="page">
+            <h2>一键数据清洗</h2>
+            <p class="desc">依次自动执行：智能分类 → 属性补全（自动映射并填充，补充数据表头默认取第一项）</p>
+            <div class="card">
+                <div class="form-grid">
+                    <div class="form-group"><label>数据文件</label><select id="ocTitleId" class="form-input"></select></div>
+                    <div class="form-group"><label>解析规则</label><select id="ocRuleId" class="form-input"></select></div>
+                    <div class="form-group"><button class="btn btn-primary" id="ocStartBtn" onclick="runOneClickClean()">开始一键清洗</button></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>整体进度</h3>
+                <div class="progress-bar has-text mt-2">
+                    <div class="progress-fill" id="ocOverallFill" style="width:0%;background:var(--accent)">0%</div>
+                </div>
+                <p id="ocOverallText" class="mt-1" style="font-size:13px;color:var(--text-secondary)">等待开始</p>
+
+                <div class="oc-steps mt-3">
+                    <div class="oc-step" id="ocStep-clean">
+                        <span class="oc-step-icon">1</span>
+                        <div class="oc-step-body">
+                            <div class="oc-step-name">智能分类（数据清洗）</div>
+                            <div class="oc-step-status" data-state="waiting">等待中</div>
+                        </div>
+                    </div>
+                    <div class="oc-step" id="ocStep-map">
+                        <span class="oc-step-icon">2</span>
+                        <div class="oc-step-body">
+                            <div class="oc-step-name">属性补全（自动映射并填充）</div>
+                            <div class="oc-step-status" data-state="waiting">等待中</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" id="ocCleanStatsCard" style="display:none">
+                <h3 id="ocCleanStatsTitle">清洗实时进度</h3>
+                <div class="progress-bar has-text mt-2">
+                    <div class="progress-fill" id="ocCleanFill" style="width:0%;background:var(--accent)">0%</div>
+                </div>
+                <div class="clean-stats-inline mt-2" style="display:flex;gap:24px;flex-wrap:wrap">
+                    <span>已处理: <strong id="ocCleanCurrent">0</strong> / <strong id="ocCleanTotal">0</strong></span>
+                    <span style="color:var(--success)">成功: <strong id="ocCleanSuccess">0</strong></span>
+                    <span style="color:var(--danger)">失败: <strong id="ocCleanError">0</strong></span>
+                </div>
             </div>
         </section>
 

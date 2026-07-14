@@ -190,6 +190,7 @@ function switchPage(name) {
         'standard': () => { loadStandardTitleList(); },              // 刷新标准字段表头列表
         'users': () => { loadUsers(1); },                            // 刷新用户列表
         'unmapped': () => { loadTitlesForUnmapped(); },
+        'oneclick': () => { loadOneClickPage(); },
     };
     if (loaders[name]) loaders[name]();
 }
@@ -200,12 +201,228 @@ function toggleNavGroup(titleEl) {
     if (group) group.classList.toggle('collapsed');
 }
 
+// ==================== 一键数据清洗 ====================
+let ocRunning = false;
+let ocStompClient = null;
+let ocPollTimer = null;
+
+// 初始化一键清洗页下拉框
+async function loadOneClickPage() {
+    await loadTitlesForSelect('ocTitleId');
+    await loadRulesForSelect('ocRuleId');
+}
+
+function setOcStep(name, state) {
+    const step = $('#ocStep-' + name);
+    if (!step) return;
+    step.setAttribute('data-state', state);
+    const statusEl = step.querySelector('.oc-step-status');
+    const textMap = {
+        waiting: '等待中',
+        running: '执行中…',
+        done: '已完成',
+        error: '失败',
+    };
+    if (statusEl) statusEl.textContent = textMap[state] || state;
+}
+
+function setOcOverall(percent, text) {
+    $('#ocOverallFill').style.width = percent + '%';
+    $('#ocOverallFill').textContent = percent + '%';
+    if (text) $('#ocOverallText').textContent = text;
+}
+
+function resetOcUI() {
+    ['clean', 'map'].forEach(n => setOcStep(n, 'waiting'));
+    setOcOverall(0, '等待开始');
+    $('#ocCleanStatsCard').style.display = 'none';
+    const ocTitleEl = $('#ocCleanStatsTitle');
+    if (ocTitleEl) ocTitleEl.textContent = '清洗实时进度';
+    $('#ocCleanFill').style.width = '0%';
+    $('#ocCleanFill').textContent = '0%';
+    $('#ocCleanCurrent').textContent = '0';
+    $('#ocCleanTotal').textContent = '0';
+    $('#ocCleanSuccess').textContent = '0';
+    $('#ocCleanError').textContent = '0';
+}
+
+// 步骤一：智能分类（数据清洗）
+function ocDoCleaning(titleId, ruleId) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let started = false; // 是否已观测到任务开始（避免复用历史 completed 状态误判）
+        let timeout = null;
+        const finish = (ok, msg) => {
+            if (settled) return;
+            settled = true;
+            if (ocPollTimer) { clearInterval(ocPollTimer); ocPollTimer = null; }
+            if (ocStompClient) { try { ocStompClient.disconnect(); } catch (e) {} ocStompClient = null; }
+            if (timeout) { clearTimeout(timeout); timeout = null; }
+            if (ok) resolve(); else reject(new Error(msg || '清洗失败'));
+        };
+
+        // 启动清洗任务
+        fetch(API + `/cleaning/start?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' })
+            .then(res => res.json())
+            .then(data => { if (data.code !== 200) throw new Error(data.msg); })
+            .catch(e => finish(false, '清洗启动失败: ' + e.message));
+
+        // 实时进度（WebSocket，主要完成信号）
+        try {
+            const socket = new SockJS('/ws-cleaning');
+            ocStompClient = Stomp.over(socket);
+            ocStompClient.debug = null;
+            ocStompClient.connect({}, () => {
+                ocStompClient.subscribe('/topic/cleaning/' + titleId, message => {
+                    const msg = JSON.parse(message.body);
+                    if (msg.type === 'start' || msg.type === 'progress') started = true;
+                    ocUpdateCleanProgress(msg);
+                    if (msg.type === 'complete') finish(true);
+                    else if (msg.type === 'error') finish(false, '清洗异常终止');
+                });
+            }, () => { /* WebSocket 失败，依赖轮询兜底 */ });
+        } catch (e) { /* 忽略，走轮询 */ }
+
+        // 轮询兜底：仅在已观测到任务开始后，才信任 completed 状态
+        ocPollTimer = setInterval(async () => {
+            try {
+                const p = await api(`/cleaning/progress/${titleId}`);
+                if (p.status === 'rejected') finish(false, '清洗异常终止');
+                else if (p.status === 'completed' && started) finish(true);
+            } catch (e) { /* 忽略轮询错误 */ }
+        }, 1500);
+
+        // 超时兜底：WebSocket 完全不可用时，按最终表头状态判定
+        timeout = setTimeout(async () => {
+            try {
+                const p = await api(`/cleaning/progress/${titleId}`);
+                if (p.status === 'completed') finish(true);
+                else finish(false, '清洗超时，请到“智能分类”页查看状态');
+            } catch (e) { finish(false, '清洗超时'); }
+        }, 30 * 60 * 1000);
+    });
+}
+
+function ocRenderCleanStatsCard(msg) {
+    const percent = msg.progressPercent || 0;
+    const current = msg.current || 0;
+    const total = msg.total || 0;
+    $('#ocCleanFill').style.width = percent + '%';
+    $('#ocCleanFill').textContent = percent + '%';
+    $('#ocCleanCurrent').textContent = current;
+    $('#ocCleanTotal').textContent = total;
+    $('#ocCleanSuccess').textContent = msg.successCount || 0;
+    $('#ocCleanError').textContent = msg.errorCount || 0;
+}
+
+function ocUpdateCleanProgress(msg) {
+    $('#ocCleanStatsCard').style.display = 'block';
+    ocRenderCleanStatsCard(msg);
+    // 整体进度映射到 5% ~ 40%
+    setOcOverall(5 + Math.round((msg.progressPercent || 0) * 0.35), `正在执行：智能分类（${msg.progressPercent || 0}%）`);
+}
+
+// 步骤二：属性补全（自动映射 + 填充全部标准表头，补充数据表头默认第一项）
+async function ocDoMapFill(titleId) {
+    // 补充数据表头默认取第一项（需在自动映射前确定，否则补充字段无法被映射，填充结果为空）
+    let extraTitleId = '';
+    try {
+        const extraTitles = await api('/cleaning/extra-titles');
+        const filtered = (extraTitles || []).filter(et => et.tempDataTitleId == titleId);
+        if (filtered.length > 0) extraTitleId = filtered[0].id;
+    } catch (e) { /* 无补充表头也可继续 */ }
+
+    // 自动映射字段（带上补充数据表头，确保补充字段也能被映射，否则填充结果为空）
+    const mapParams = new URLSearchParams({ tempDataTitleId: titleId });
+    if (extraTitleId) mapParams.append('extraDataTitleId', extraTitleId);
+    const mapRes = await fetch(API + `/cleaning/auto-map-fields?${mapParams}`, { method: 'POST' });
+    const mapData = await mapRes.json();
+    if (mapData.code !== 200) throw new Error(mapData.msg);
+
+    // 复用“清洗实时进展”卡片展示属性补全进度
+    $('#ocCleanStatsCard').style.display = 'block';
+    $('#ocCleanStatsTitle').textContent = '属性补全实时进度';
+    $('#ocCleanFill').style.width = '0%';
+    $('#ocCleanFill').textContent = '0%';
+    $('#ocCleanCurrent').textContent = '0';
+    $('#ocCleanTotal').textContent = '0';
+    $('#ocCleanSuccess').textContent = '0';
+    $('#ocCleanError').textContent = '0';
+
+    // 通过 WebSocket 实时展示属性补全进度（消息格式与清洗一致）
+    let stompClient = null;
+    try {
+        const socket = new SockJS('/ws-cleaning');
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null;
+        stompClient.connect({}, () => {
+            stompClient.subscribe('/topic/fill/*', message => {
+                try { ocRenderCleanStatsCard(JSON.parse(message.body)); } catch (e) {}
+            });
+        }, () => { /* WebSocket 失败，无实时进度，依赖最终完成态兜底 */ });
+    } catch (e) { /* 忽略，走完成态兜底 */ }
+
+    // 填充全部标准表头（服务端同步执行，请求返回即代表全部完成）
+    const fillParams = new URLSearchParams({ tempDataTitleId: titleId });
+    if (extraTitleId) fillParams.append('extraDataTitleId', extraTitleId);
+    const fillRes = await fetch(API + `/cleaning/fill-result/fill-all?${fillParams}`, { method: 'POST' });
+    const fillData = await fillRes.json();
+    if (stompClient) { try { stompClient.disconnect(); } catch (e) {} }
+    if (fillData.code !== 200) throw new Error(fillData.msg);
+
+    // 兜底：强制刷新为完成态（避免 WebSocket 消息延迟导致卡片未到 100%）
+    $('#ocCleanFill').style.width = '100%';
+    $('#ocCleanFill').textContent = '100%';
+}
+
+// 一键清洗主流程
+async function runOneClickClean() {
+    if (ocRunning) { showToast('正在执行中，请稍候', 'warning'); return; }
+    const titleId = $('#ocTitleId').value;
+    const ruleId = $('#ocRuleId').value;
+    if (!titleId || !ruleId) { showToast('请选择数据文件和解析规则', 'warning'); return; }
+
+    ocRunning = true;
+    $('#ocStartBtn').disabled = true;
+    resetOcUI();
+    try {
+        // 步骤一：智能分类
+        setOcStep('clean', 'running');
+        setOcOverall(5, '正在执行：智能分类');
+        await ocDoCleaning(titleId, ruleId);
+        setOcStep('clean', 'done');
+        setOcOverall(40, '已完成：智能分类');
+
+        // 步骤二：属性补全
+        setOcStep('map', 'running');
+        setOcOverall(45, '正在执行：属性补全');
+        await ocDoMapFill(titleId);
+        setOcStep('map', 'done');
+        setOcOverall(100, '全部完成');
+        showToast('一键数据清洗全部完成！');
+    } catch (e) {
+        // 标记当前进行中的步骤为失败
+        ['clean', 'map'].forEach(n => {
+            const step = $('#ocStep-' + n);
+            if (step && step.getAttribute('data-state') === 'running') setOcStep(n, 'error');
+        });
+        showToast('执行失败: ' + e.message, 'error');
+        setOcOverall($('#ocOverallFill').style.width.replace('%', '') || 0, '执行中断：' + e.message);
+    } finally {
+        ocRunning = false;
+        $('#ocStartBtn').disabled = false;
+        if (ocPollTimer) { clearInterval(ocPollTimer); ocPollTimer = null; }
+        if (ocStompClient) { try { ocStompClient.disconnect(); } catch (e) {} ocStompClient = null; }
+    }
+}
+
 // 数据文件变更时的联动过滤
 async function onResultTitleChange() {
     const titleId = $('#resultTitleId').value;
     if (!titleId) {
-        // 未选择数据文件，加载全部
-        loadStandardTitles('resultStandardTitleId');
+        // 未选择数据文件：标准字段表头不显示全部列表，提示先选择文件
+        const sel = $('#resultStandardTitleId');
+        if (sel) sel.innerHTML = '<option value="">-- 请先选择数据文件 --</option>';
         loadExtraTitlesForSelect('resultExtraTitleId');
         $('#failedCard').style.display = 'none';
         return;
@@ -779,6 +996,7 @@ async function loadExtraTitlesForSelect(selId, titleId) {
 
 async function loadStandardTitles(selId, titleId) {
     const sel = $(`#${selId}`);
+    const prev = sel.value;   // 保留当前选中，避免重建下拉框时丢失用户已选条件
     sel.innerHTML = '<option value="">加载中…</option>';
     try {
         let standardTitles;
@@ -797,6 +1015,7 @@ async function loadStandardTitles(selId, titleId) {
         }
         sel.innerHTML = '<option value="">-- 请选择 --</option>' +
             filtered.map(st => `<option value="${st.id}">${st.categoryName || st.categoryCode || '标准表头#' + st.id}</option>`).join('');
+        if (prev) sel.value = prev;   // 恢复选中（若该项仍在新列表中）
     } catch (e) {
         console.error('加载标准字段表头失败:', e);
         sel.innerHTML = '<option value="">-- 请选择 --</option>';
@@ -1436,6 +1655,8 @@ async function loadResultData(page) {
     try {
         const condition = { page: curPage, pageSize: pageSize };
         if (standardTitleId) condition.standardTitleId = parseInt(standardTitleId);
+        // 按当前数据文件过滤，避免结果数据跨文件显示（当前文件匹配）
+        if (titleId) condition.tempDataTitleId = parseInt(titleId);
 
         // 并行查询数据和总数
         const [results, total] = await Promise.all([
@@ -1463,6 +1684,7 @@ async function downloadResultData() {
     try {
         // 先获取总数
         const condition = { page: 1, pageSize: 1, standardTitleId: parseInt(standardTitleId) };
+        if (titleId) condition.tempDataTitleId = parseInt(titleId);
         const total = await api('/cleaning/result-data/count', { method: 'POST', body: condition });
         if (!total || total === 0) {
             showToast('没有可下载的数据', 'warning');
@@ -1472,6 +1694,7 @@ async function downloadResultData() {
 
         // 一次性获取全部数据
         const allCondition = { page: 1, pageSize: total, standardTitleId: parseInt(standardTitleId) };
+        if (titleId) allCondition.tempDataTitleId = parseInt(titleId);
         const allResults = await api('/cleaning/result-data/search', { method: 'POST', body: allCondition });
 
         if (!allResults || allResults.length === 0) {
@@ -2668,10 +2891,10 @@ async function saveStandardTitleFromModal() {
         }
         closeStandardEditModal();
         loadStandardTitlesTable();
-        // 刷新其他页面的下拉框
+        // 刷新其他页面的下拉框（保持结果页当前数据文件过滤与已选标准表头）
         invalidateStandardTitlesCache();
         loadStandardTitles('mapStandardTitleId');
-        loadStandardTitles('resultStandardTitleId');
+        loadStandardTitles('resultStandardTitleId', $('#resultTitleId').value);
     } catch (e) {
         showToast('保存失败: ' + e.message, 'error');
     } finally {
@@ -2686,10 +2909,10 @@ async function deleteStandardTitleById(id) {
         await api(`/cleaning/standard-title/${id}`, { method: 'DELETE' });
         showToast('标准字段表头已删除');
         loadStandardTitlesTable();
-        // 刷新下拉框
+        // 刷新下拉框（保持结果页当前数据文件过滤与已选标准表头）
         invalidateStandardTitlesCache();
         loadStandardTitles('mapStandardTitleId');
-        loadStandardTitles('resultStandardTitleId');
+        loadStandardTitles('resultStandardTitleId', $('#resultTitleId').value);
     } catch (e) {
         showToast('删除失败: ' + e.message, 'error');
     } finally {
