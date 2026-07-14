@@ -4,6 +4,9 @@ import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson.JSON;
 import com.aiclean.entity.*;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.aiclean.entity.enums.DataStatus;
 import com.aiclean.mapper.*;
 import com.aiclean.match.*;
@@ -373,7 +376,6 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
         if (qualityScore < thresholdReview) {
             cleanedData.setStatus(DataStatus.NEEDS_REVIEW);
-            createReviewTask(cleanedData, "质量评分过低: " + qualityScore);
         } else if (qualityScore >= thresholdExport) {
             cleanedData.setStatus(DataStatus.EXPORT_READY);
         } else {
@@ -387,6 +389,11 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         }
 
         cleanedDataMapper.insert(cleanedData);
+
+        // 入库后再创建审核任务，确保能拿到自增主键 entity_id
+        if (qualityScore < thresholdReview) {
+            createReviewTask(cleanedData, "质量评分过低: " + qualityScore);
+        }
 
         // 更新原始数据状态
         tempData.setStatus(DataStatus.PROCESSED);
@@ -417,10 +424,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 // 0. 如果该批次已清洗过，先清理旧数据，确保重新生成
                 cleanPreviousCleaningData(titleId);
 
-                // 1. 先提取全描述属性
-                ExtraDataTitleEntity extraTitle = extractExtraData(titleId, parseRuleId);
-
-                // 2. 预加载共享数据，避免循环内重复查询
+                // 1. 预加载共享数据，避免循环内重复查询
+                // 说明：全描述属性提取（extractExtraData）已拆分为独立步骤，
+                // 不再在智能分类时自动执行，需由调用方（如一键数据清洗）显式触发。
                 TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
                 ParseRuleEntity ruleEntity = parseRuleMapper.selectById(parseRuleId);
                 ParseRule parseRule = ruleEntity != null ? ruleEntity.toParseRule() : getDefaultParseRule();
@@ -428,7 +434,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 List<CategorySynonymEntity> synonyms = categorySynonymMapper.selectList(null);
                 log.info("预加载完成，分类总数: {}, 同义词数: {}, 待清洗数据: {}", allCategories.size(), synonyms.size(), tempDataMapper.countByTitleId(titleId));
 
-                // 3. 批量匹配清洗
+                // 2. 批量匹配清洗
                 List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(titleId);
                 int successCount = 0;
                 int errorCount = 0;
@@ -441,7 +447,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
                 for (int i = 0; i < tempDataList.size(); i++) {
                     try {
-                        CleanedDataEntity cleaned = matchAndCleanInternal(tempDataList.get(i), extraTitle.getId(), parseRule,
+                        CleanedDataEntity cleaned = matchAndCleanInternal(tempDataList.get(i), null, parseRule,
                                 titleEntity, allCategories, synonyms);
                         successCount++;
                         consecutiveErrors = 0;
@@ -572,7 +578,6 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
         if (qualityScore < thresholdReview) {
             cleanedData.setStatus(DataStatus.NEEDS_REVIEW);
-            createReviewTask(cleanedData, "质量评分过低: " + qualityScore);
         } else if (qualityScore >= thresholdExport) {
             cleanedData.setStatus(DataStatus.EXPORT_READY);
         } else {
@@ -586,6 +591,11 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         }
 
         cleanedDataMapper.insert(cleanedData);
+
+        // 入库后再创建审核任务，确保能拿到自增主键 entity_id
+        if (qualityScore < thresholdReview) {
+            createReviewTask(cleanedData, "质量评分过低: " + qualityScore);
+        }
 
         // 更新原始数据状态
         tempData.setStatus(DataStatus.PROCESSED);
@@ -1363,6 +1373,29 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             }
         }
         return titles;
+    }
+
+    @Override
+    public IPage<StandardTitleEntity> pageStandardTitles(long page, long size, String keyword) {
+        Page<StandardTitleEntity> pageReq = new Page<>(page, size);
+        LambdaQueryWrapper<StandardTitleEntity> wrapper = new LambdaQueryWrapper<>();
+        if (keyword != null && !keyword.trim().isEmpty()) {
+            wrapper.like(StandardTitleEntity::getCategoryCode, keyword.trim());
+        }
+        wrapper.orderByDesc(StandardTitleEntity::getId);
+        IPage<StandardTitleEntity> result = standardTitleMapper.selectPage(pageReq, wrapper);
+        // 补全分类名称
+        if (result.getRecords() != null) {
+            for (StandardTitleEntity title : result.getRecords()) {
+                if (StrUtil.isNotBlank(title.getCategoryCode())) {
+                    CategoryEntity cat = categoryMapper.selectByCode(title.getCategoryCode());
+                    if (cat != null) {
+                        title.setCategoryName(cat.getCategoryName());
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     @Override

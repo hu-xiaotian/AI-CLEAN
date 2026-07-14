@@ -3,6 +3,7 @@ package com.aiclean.service;
 import com.aiclean.entity.*;
 import com.aiclean.model.ParseRule;
 import com.aiclean.model.SearchCondition;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
@@ -65,6 +66,7 @@ public interface DataCleaningService {
     void deleteStandardTitle(Long id);
     StandardTitleEntity getStandardTitleById(Long id);
     List<StandardTitleEntity> getAllStandardTitles();
+    IPage<StandardTitleEntity> pageStandardTitles(long page, long size, String keyword);
 
     // ===== 数据文件-标准表头关联 =====
     /** 记录某数据文件关联了某个标准字段表头（幂等，已存在则跳过） */

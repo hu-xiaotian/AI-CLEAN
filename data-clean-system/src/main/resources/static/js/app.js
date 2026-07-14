@@ -233,7 +233,7 @@ function setOcOverall(percent, text) {
 }
 
 function resetOcUI() {
-    ['clean', 'map'].forEach(n => setOcStep(n, 'waiting'));
+    ['clean', 'extract', 'map'].forEach(n => setOcStep(n, 'waiting'));
     setOcOverall(0, '等待开始');
     $('#ocCleanStatsCard').style.display = 'none';
     const ocTitleEl = $('#ocCleanStatsTitle');
@@ -318,8 +318,8 @@ function ocRenderCleanStatsCard(msg) {
 function ocUpdateCleanProgress(msg) {
     $('#ocCleanStatsCard').style.display = 'block';
     ocRenderCleanStatsCard(msg);
-    // 整体进度映射到 5% ~ 40%
-    setOcOverall(5 + Math.round((msg.progressPercent || 0) * 0.35), `正在执行：智能分类（${msg.progressPercent || 0}%）`);
+    // 整体进度映射到 5% ~ 35%（智能分类完成态为 35%）
+    setOcOverall(5 + Math.round((msg.progressPercent || 0) * 0.30), `正在执行：智能分类（${msg.progressPercent || 0}%）`);
 }
 
 // 步骤二：属性补全（自动映射 + 填充全部标准表头，补充数据表头默认第一项）
@@ -375,6 +375,14 @@ async function ocDoMapFill(titleId) {
     $('#ocCleanFill').textContent = '100%';
 }
 
+// 步骤二：属性提取（全描述解析，独立步骤，不再由智能分类自动触发）
+async function ocDoExtract(titleId, ruleId) {
+    const res = await fetch(API + `/cleaning/extract-extra?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' });
+    const data = await res.json();
+    if (data.code !== 200) throw new Error(data.msg || '属性提取失败');
+    return data.data;
+}
+
 // 一键清洗主流程
 async function runOneClickClean() {
     if (ocRunning) { showToast('正在执行中，请稍候', 'warning'); return; }
@@ -391,18 +399,25 @@ async function runOneClickClean() {
         setOcOverall(5, '正在执行：智能分类');
         await ocDoCleaning(titleId, ruleId);
         setOcStep('clean', 'done');
-        setOcOverall(40, '已完成：智能分类');
+        setOcOverall(35, '已完成：智能分类');
 
-        // 步骤二：属性补全
+        // 步骤二：属性提取（全描述解析）
+        setOcStep('extract', 'running');
+        setOcOverall(40, '正在执行：属性提取');
+        await ocDoExtract(titleId, ruleId);
+        setOcStep('extract', 'done');
+        setOcOverall(60, '已完成：属性提取');
+
+        // 步骤三：属性补全
         setOcStep('map', 'running');
-        setOcOverall(45, '正在执行：属性补全');
+        setOcOverall(65, '正在执行：属性补全');
         await ocDoMapFill(titleId);
         setOcStep('map', 'done');
         setOcOverall(100, '全部完成');
         showToast('一键数据清洗全部完成！');
     } catch (e) {
         // 标记当前进行中的步骤为失败
-        ['clean', 'map'].forEach(n => {
+        ['clean', 'extract', 'map'].forEach(n => {
             const step = $('#ocStep-' + n);
             if (step && step.getAttribute('data-state') === 'running') setOcStep(n, 'error');
         });
@@ -2623,7 +2638,15 @@ async function searchData() {
 // ==================== 标准字段表头管理 ====================
 
 const MAX_STD_COLS = 20;
-let standardTitlesCache = []; // 缓存标准字段列表用于搜索
+let standardTitlesCache = []; // 历史遗留缓存，保留以避免他处引用报错
+
+let standardPageState = {
+    page: 1,
+    size: 10,
+    total: 0,
+    pages: 1,
+    keyword: '',
+};
 
 function buildStandardColFields(values, mustFlags) {
     let html = '';
@@ -2668,17 +2691,31 @@ function clearStandardForm() {
 }
 
 function loadStandardTitleList() {
-    loadStandardTitlesTable();
+    queryStandardTitles(1);
 }
 
-async function loadStandardTitlesTable() {
+// 分页查询标准字段表头
+async function queryStandardTitles(page) {
+    if (page) standardPageState.page = page;
+    standardPageState.keyword = document.getElementById('standardSearchInput').value.trim();
+    const { page: curPage, size, keyword } = standardPageState;
     try {
-        const titles = await api('/cleaning/standard-titles');
-        standardTitlesCache = titles || [];
-        renderStandardTable(standardTitlesCache);
+        const qs = `page=${curPage}&size=${size}` + (keyword ? '&keyword=' + encodeURIComponent(keyword) : '');
+        const data = await api('/cleaning/standard-titles/page?' + qs);
+        standardPageState.total = data.total || 0;
+        standardPageState.pages = data.pages || 1;
+        renderStandardTable(data.records || []);
+        updateStandardPagination();
     } catch (e) {
         showToast('加载标准字段表头失败: ' + e.message, 'error');
     }
+}
+
+// 重置搜索条件
+function resetStandardSearch() {
+    document.getElementById('standardSearchInput').value = '';
+    standardPageState.keyword = '';
+    queryStandardTitles(1);
 }
 
 function renderStandardTable(titles) {
@@ -2691,8 +2728,9 @@ function renderStandardTable(titles) {
         return;
     }
     
-    if (recordCount) recordCount.textContent = `共 ${titles.length} 条记录`;
+    if (recordCount) recordCount.textContent = `共 ${standardPageState.total} 条记录`;
     
+    const start = (standardPageState.page - 1) * standardPageState.size;
     tbody.innerHTML = titles.map((st, index) => {
         const cols = [];
         let colCount = 0;
@@ -2715,7 +2753,7 @@ function renderStandardTable(titles) {
         const colsMore = cols.length > 3 ? ` +${cols.length - 3}列` : '';
         
         return `<tr data-id="${st.id}">
-            <td style="text-align:center;color:var(--text-secondary)">${index + 1}</td>
+            <td style="text-align:center;color:var(--text-secondary)">${start + index + 1}</td>
             <td>${st.id}</td>
             <td><span class="badge badge-info">${st.categoryCode || '-'}</span></td>
             <td>
@@ -2738,17 +2776,28 @@ function renderStandardTable(titles) {
     }).join('');
 }
 
-function filterStandardList() {
-    const keyword = document.getElementById('standardSearchInput').value.toLowerCase().trim();
-    if (!keyword) {
-        renderStandardTable(standardTitlesCache);
-        return;
+function updateStandardPagination() {
+    const { page, size, total, pages } = standardPageState;
+    $('#standardPageInfo').textContent = `共 ${total} 条`;
+    $('#standardCurPage').textContent = page;
+    $('#standardTotalPages').textContent = pages;
+
+    let html = '';
+    html += `<button class="btn btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="queryStandardTitles(1)">首页</button>`;
+    html += `<button class="btn btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="queryStandardTitles(${page - 1})">上一页</button>`;
+    const maxBtns = 5;
+    let startPage = Math.max(1, page - Math.floor(maxBtns / 2));
+    let endPage = Math.min(pages, startPage + maxBtns - 1);
+    if (endPage - startPage < maxBtns - 1) {
+        startPage = Math.max(1, endPage - maxBtns + 1);
     }
-    const filtered = standardTitlesCache.filter(st => 
-        (st.categoryCode && st.categoryCode.toLowerCase().includes(keyword)) ||
-        (st.id && st.id.toString().includes(keyword))
-    );
-    renderStandardTable(filtered);
+    for (let i = startPage; i <= endPage; i++) {
+        html += `<button class="btn btn-sm ${i === page ? 'btn-primary' : ''}" onclick="queryStandardTitles(${i})">${i}</button>`;
+    }
+    html += `<button class="btn btn-sm" ${page >= pages ? 'disabled' : ''} onclick="queryStandardTitles(${page + 1})">下一页</button>`;
+    html += `<button class="btn btn-sm" ${page >= pages ? 'disabled' : ''} onclick="queryStandardTitles(${pages})">末页</button>`;
+    html += ` <span style="font-size:12px;margin-left:8px">每页 ${size} 条</span>`;
+    $('#standardPageBtns').innerHTML = html;
 }
 
 // ========== 查看弹窗 ==========
@@ -2890,7 +2939,7 @@ async function saveStandardTitleFromModal() {
             showToast('标准字段表头创建成功');
         }
         closeStandardEditModal();
-        loadStandardTitlesTable();
+        queryStandardTitles(1);
         // 刷新其他页面的下拉框（保持结果页当前数据文件过滤与已选标准表头）
         invalidateStandardTitlesCache();
         loadStandardTitles('mapStandardTitleId');
@@ -2908,7 +2957,7 @@ async function deleteStandardTitleById(id) {
     try {
         await api(`/cleaning/standard-title/${id}`, { method: 'DELETE' });
         showToast('标准字段表头已删除');
-        loadStandardTitlesTable();
+        queryStandardTitles(1);
         // 刷新下拉框（保持结果页当前数据文件过滤与已选标准表头）
         invalidateStandardTitlesCache();
         loadStandardTitles('mapStandardTitleId');

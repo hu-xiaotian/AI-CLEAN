@@ -100,7 +100,7 @@
         <!-- ===== 一键数据清洗 ===== -->
         <section id="page-oneclick" class="page">
             <h2>一键数据清洗</h2>
-            <p class="desc">依次自动执行：智能分类 → 属性补全（自动映射并填充，补充数据表头默认取第一项）</p>
+            <p class="desc">依次自动执行：智能分类 → 属性提取（全描述解析） → 属性补全（自动映射并填充，补充数据表头默认取第一项）</p>
             <div class="card">
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="ocTitleId" class="form-input"></select></div>
@@ -124,8 +124,15 @@
                             <div class="oc-step-status" data-state="waiting">等待中</div>
                         </div>
                     </div>
-                    <div class="oc-step" id="ocStep-map">
+                    <div class="oc-step" id="ocStep-extract">
                         <span class="oc-step-icon">2</span>
+                        <div class="oc-step-body">
+                            <div class="oc-step-name">属性提取（全描述解析）</div>
+                            <div class="oc-step-status" data-state="waiting">等待中</div>
+                        </div>
+                    </div>
+                    <div class="oc-step" id="ocStep-map">
+                        <span class="oc-step-icon">3</span>
                         <div class="oc-step-body">
                             <div class="oc-step-name">属性补全（自动映射并填充）</div>
                             <div class="oc-step-status" data-state="waiting">等待中</div>
@@ -379,8 +386,10 @@
                 <div class="standard-toolbar">
                     <div class="toolbar-left">
                         <div class="search-box">
-                            <input type="text" id="standardSearchInput" class="form-input" placeholder="搜索分类编码…" oninput="filterStandardList()">
+                            <input type="text" id="standardSearchInput" class="form-input" placeholder="搜索分类编码…" onkeydown="if(event.key==='Enter')queryStandardTitles(1)">
                         </div>
+                        <button class="btn btn-primary" onclick="queryStandardTitles(1)">查询</button>
+                        <button class="btn btn-default" onclick="resetStandardSearch()">重置</button>
                     </div>
                     <div class="toolbar-right">
                         <span class="record-count" id="standardRecordCount">共 0 条</span>
@@ -404,6 +413,10 @@
                         </thead>
                         <tbody id="standardTbody"><tr><td colspan="6" class="empty-hint">暂无数据</td></tr></tbody>
                     </table>
+                </div>
+                <div id="standardPagination" class="pagination" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
+                    <div class="pagination-info"><span id="standardPageInfo">共 0 条</span>，第 <strong id="standardCurPage">1</strong>/<strong id="standardTotalPages">1</strong> 页</div>
+                    <div class="pagination-btns" id="standardPageBtns"></div>
                 </div>
             </div>
         </section>

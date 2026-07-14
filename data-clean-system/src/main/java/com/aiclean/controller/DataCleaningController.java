@@ -4,6 +4,7 @@ import com.aiclean.common.R;
 import com.aiclean.entity.*;
 import com.aiclean.model.SearchCondition;
 import com.aiclean.service.DataCleaningService;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
@@ -266,6 +267,14 @@ public class DataCleaningController {
     @Operation(summary = "获取标准字段表头列表")
     public R<List<StandardTitleEntity>> getAllStandardTitles() {
         return R.success(dataCleaningService.getAllStandardTitles());
+    }
+
+    @GetMapping("/standard-titles/page")
+    @Operation(summary = "分页查询标准字段表头", description = "支持按分类编码关键字搜索，用于标准列表页面分页展示")
+    public R<IPage<StandardTitleEntity>> pageStandardTitles(@RequestParam(defaultValue = "1") long page,
+                                                            @RequestParam(defaultValue = "10") long size,
+                                                            @RequestParam(required = false) String keyword) {
+        return R.success(dataCleaningService.pageStandardTitles(page, size, keyword));
     }
 
     @GetMapping("/standard-titles/by-title")
