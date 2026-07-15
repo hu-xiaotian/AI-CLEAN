@@ -165,10 +165,22 @@
             <h2>解析规则</h2>
             <p class="desc">配置分隔符与键值对规则</p>
             <div class="card">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-                    <h3 style="margin:0">规则列表</h3>
-                    <button class="btn btn-primary" onclick="openRuleEditModal()">新建规则</button>
+                <div class="standard-toolbar">
+                    <div class="toolbar-left">
+                        <div class="search-box">
+                            <input type="text" id="ruleSearchInput" class="form-input" placeholder="搜索规则名称 / 描述…" onkeydown="if(event.key==='Enter')queryRules()">
+                        </div>
+                        <button class="btn btn-primary" onclick="queryRules()">查询</button>
+                        <button class="btn btn-default" onclick="resetRuleSearch()">重置</button>
+                    </div>
+                    <div class="toolbar-right">
+                        <span class="record-count" id="ruleRecordCount">共 0 条</span>
+                        <button class="btn btn-primary" onclick="openRuleEditModal()">新建规则</button>
+                    </div>
                 </div>
+            </div>
+            <div class="card">
+                <h3>规则列表</h3>
                 <table class="data-table" id="ruleTable">
                     <thead><tr><th>ID</th><th>名称</th><th>描述</th><th>键值分隔符</th><th>项分隔符</th><th>操作</th></tr></thead>
                     <tbody id="ruleTbody"><tr><td colspan="6" class="empty-hint">暂无规则</td></tr></tbody>
@@ -435,8 +447,10 @@
                 <div class="standard-toolbar">
                     <div class="toolbar-left">
                         <div class="search-box">
-                            <input type="text" id="userSearchInput" class="form-input" placeholder="搜索用户名 / 姓名…" oninput="onUserSearchInput()">
+                            <input type="text" id="userSearchInput" class="form-input" placeholder="搜索用户名 / 姓名…" onkeydown="if(event.key==='Enter')queryUsers(1)">
                         </div>
+                        <button class="btn btn-primary" onclick="queryUsers(1)">查询</button>
+                        <button class="btn btn-default" onclick="resetUserSearch()">重置</button>
                     </div>
                     <div class="toolbar-right">
                         <span class="record-count" id="userRecordCount">共 0 条</span>

@@ -169,7 +169,7 @@ function switchPage(name) {
 
     const loaders = {
         'import': () => { loadTitles(); },                          // 刷新导入文件列表
-        'rule': () => { loadRules(); },                               // 刷新解析规则列表
+        'rule': () => { loadRules(true); },                            // 刷新解析规则列表
         'extract': () => { loadTitles(); loadRules(); loadExtraTitles(); loadTitlesForSelect('extractTitleId'); loadRulesForSelect('extractRuleId'); },  // 刷新提取相关数据
         'clean': () => { loadTitles(); loadRules(); loadCleanStats(); loadTitlesForSelect('cleanTitleId'); loadRulesForSelect('cleanRuleId'); },     // 刷新清洗相关数据
         'mapping': () => { 
@@ -829,30 +829,59 @@ async function loadViewData(titleId, page) {
 
 // ==================== 解析规则 ====================
 
-async function loadRules() {
-    try {
-        const rules = await api('/cleaning/parse-rules/active');
-        const tbody = $('#ruleTbody');
-        if (!rules || rules.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">暂无规则，请创建</td></tr>';
+let _rulesCache = null;
+async function loadRules(force = false) {
+    if (!_rulesCache || force) {
+        try {
+            _rulesCache = await api('/cleaning/parse-rules/active') || [];
+        } catch (e) {
+            showToast('加载规则失败: ' + e.message, 'error');
             return;
         }
-        tbody.innerHTML = rules.map(r => `
-            <tr>
-                <td>${r.id}</td>
-                <td>${r.ruleName || '-'}</td>
-                <td>${r.description || '-'}</td>
-                <td><code>${r.keyValueSeparator || ' '}</code></td>
-                <td><code>${r.itemSeparator || ';'}</code></td>
-                <td>
-                    <button class="btn btn-sm btn-primary" onclick="openRuleEditModal(${r.id})">编辑</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteRule(${r.id})">删除</button>
-                </td>
-            </tr>
-        `).join('');
-    } catch (e) {
-        showToast('加载规则失败: ' + e.message, 'error');
     }
+    const kw = (document.getElementById('ruleSearchInput')?.value || '').trim().toLowerCase();
+    let rules = _rulesCache;
+    if (kw) {
+        rules = rules.filter(r =>
+            (r.ruleName || '').toLowerCase().includes(kw) ||
+            (r.description || '').toLowerCase().includes(kw)
+        );
+    }
+    renderRuleTable(rules);
+}
+
+function renderRuleTable(rules) {
+    const tbody = $('#ruleTbody');
+    const count = $('#ruleRecordCount');
+    if (!rules || rules.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">暂无规则，请创建</td></tr>';
+        if (count) count.textContent = '共 0 条';
+        return;
+    }
+    if (count) count.textContent = `共 ${rules.length} 条`;
+    tbody.innerHTML = rules.map(r => `
+        <tr>
+            <td>${r.id}</td>
+            <td>${r.ruleName || '-'}</td>
+            <td>${r.description || '-'}</td>
+            <td><code>${r.keyValueSeparator || ' '}</code></td>
+            <td><code>${r.itemSeparator || ';'}</code></td>
+            <td>
+                <button class="btn btn-sm btn-primary" onclick="openRuleEditModal(${r.id})">编辑</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteRule(${r.id})">删除</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function queryRules() {
+    loadRules();
+}
+
+function resetRuleSearch() {
+    const inp = document.getElementById('ruleSearchInput');
+    if (inp) inp.value = '';
+    loadRules();
 }
 
 async function saveRule() {
@@ -879,7 +908,7 @@ async function saveRule() {
         showToast('规则保存成功');
         clearRuleForm();
         closeModal();
-        loadRules();
+        loadRules(true);
     } catch (e) {
         showToast('保存失败: ' + e.message, 'error');
     } finally {
@@ -932,7 +961,7 @@ async function deleteRule(id) {
     try {
         await api(`/cleaning/parse-rule/${id}`, { method: 'DELETE' });
         showToast('规则已删除');
-        loadRules();
+        loadRules(true);
     } catch (e) {
         showToast('删除失败: ' + e.message, 'error');
     } finally {
@@ -3275,7 +3304,6 @@ let userPageState = {
 };
 
 let userCache = {};
-let userSearchTimer = null;
 let editingUserId = null;
 
 function esc(str) {
@@ -3285,11 +3313,15 @@ function esc(str) {
     }[c]));
 }
 
-function onUserSearchInput() {
-    const kw = $('#userSearchInput').value.trim();
-    userPageState.keyword = kw;
-    if (userSearchTimer) clearTimeout(userSearchTimer);
-    userSearchTimer = setTimeout(() => loadUsers(1), 300);
+function queryUsers(page) {
+    userPageState.keyword = document.getElementById('userSearchInput').value.trim();
+    loadUsers(page || 1);
+}
+
+function resetUserSearch() {
+    document.getElementById('userSearchInput').value = '';
+    userPageState.keyword = '';
+    loadUsers(1);
 }
 
 async function loadUsers(page) {
