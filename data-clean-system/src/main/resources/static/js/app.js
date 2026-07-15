@@ -83,7 +83,16 @@ async function api(url, options = {}) {
         redirectToLogin();
         throw new Error('登录已过期，请重新登录');
     }
-    const data = await res.json();
+    const text = await res.text();
+    if (!text || !text.trim()) {
+        throw new Error('服务器未返回数据（可能请求超时或连接中断），请稍后重试');
+    }
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch (e) {
+        throw new Error('响应解析失败：' + e.message);
+    }
     if (data.code === 401) {
         redirectToLogin();
         throw new Error(data.msg || '登录已过期，请重新登录');
@@ -92,6 +101,25 @@ async function api(url, options = {}) {
         throw new Error(data.msg || '请求失败');
     }
     return data.data;
+}
+
+// 安全解析响应 JSON：避免空响应体导致 "Unexpected end of JSON input" 这类无法解读的未捕获异常
+async function safeJson(res, label) {
+    const prefix = label ? (label + '：') : '';
+    if (!res.ok) {
+        let body = '';
+        try { body = (await res.text()) || ''; } catch (e) {}
+        throw new Error(prefix + 'HTTP ' + res.status + (body ? ' ' + body : ''));
+    }
+    const text = await res.text();
+    if (!text || !text.trim()) {
+        throw new Error(prefix + '服务器未返回数据（可能请求超时或连接中断），请稍后到对应页面查看结果或重试');
+    }
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        throw new Error(prefix + '响应解析失败：' + e.message);
+    }
 }
 
 function showToast(msg, type = 'success') {
@@ -263,7 +291,7 @@ function ocDoCleaning(titleId, ruleId) {
 
         // 启动清洗任务
         fetch(API + `/cleaning/start?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' })
-            .then(res => res.json())
+            .then(res => safeJson(res, '启动清洗'))
             .then(data => { if (data.code !== 200) throw new Error(data.msg); })
             .catch(e => finish(false, '清洗启动失败: ' + e.message));
 
@@ -336,7 +364,7 @@ async function ocDoMapFill(titleId) {
     const mapParams = new URLSearchParams({ tempDataTitleId: titleId });
     if (extraTitleId) mapParams.append('extraDataTitleId', extraTitleId);
     const mapRes = await fetch(API + `/cleaning/auto-map-fields?${mapParams}`, { method: 'POST' });
-    const mapData = await mapRes.json();
+    const mapData = await safeJson(mapRes, '自动映射');
     if (mapData.code !== 200) throw new Error(mapData.msg);
 
     // 复用“清洗实时进展”卡片展示属性补全进度
@@ -366,7 +394,7 @@ async function ocDoMapFill(titleId) {
     const fillParams = new URLSearchParams({ tempDataTitleId: titleId });
     if (extraTitleId) fillParams.append('extraDataTitleId', extraTitleId);
     const fillRes = await fetch(API + `/cleaning/fill-result/fill-all?${fillParams}`, { method: 'POST' });
-    const fillData = await fillRes.json();
+    const fillData = await safeJson(fillRes, '填充结果');
     if (stompClient) { try { stompClient.disconnect(); } catch (e) {} }
     if (fillData.code !== 200) throw new Error(fillData.msg);
 
@@ -378,7 +406,7 @@ async function ocDoMapFill(titleId) {
 // 步骤二：属性提取（全描述解析，独立步骤，不再由智能分类自动触发）
 async function ocDoExtract(titleId, ruleId) {
     const res = await fetch(API + `/cleaning/extract-extra?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' });
-    const data = await res.json();
+    const data = await safeJson(res, '属性提取');
     if (data.code !== 200) throw new Error(data.msg || '属性提取失败');
     return data.data;
 }
@@ -1232,7 +1260,7 @@ async function startCleaning() {
         // WebSocket 连接成功后，调用清洗 API
         $('#cleanStatus').innerHTML = '<p style="font-size:13px;color:var(--accent)">清洗任务已启动，正在处理…</p>';
         fetch(API + `/cleaning/start?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' })
-            .then(res => res.json())
+            .then(res => safeJson(res, '启动清洗'))
             .then(data => {
                 if (data.code !== 200) throw new Error(data.msg);
             })
@@ -1406,7 +1434,7 @@ async function autoMapFields() {
             const fillParams = new URLSearchParams({ tempDataTitleId: titleId });
             if (extraTitleId) fillParams.append('extraDataTitleId', extraTitleId);
             fetch(API + `/cleaning/fill-result/fill-all?${fillParams}`, { method: 'POST' })
-                .then(fillRes => fillRes.json())
+                .then(fillRes => safeJson(fillRes, '填充结果'))
                 .then(fillData => {
                     if (fillData.code !== 200) throw new Error(fillData.msg);
                     fillGlobalMode = false;
@@ -1433,7 +1461,7 @@ async function autoMapFields() {
             const fillParams = new URLSearchParams({ tempDataTitleId: titleId });
             if (extraTitleId) fillParams.append('extraDataTitleId', extraTitleId);
             fetch(API + `/cleaning/fill-result/fill-all?${fillParams}`, { method: 'POST' })
-                .then(fillRes => fillRes.json())
+                .then(fillRes => safeJson(fillRes, '填充结果'))
                 .then(fillData => {
                     if (fillData.code !== 200) throw new Error(fillData.msg);
                     showToast('所有标准表头结果数据填充完成！');
@@ -1501,7 +1529,7 @@ function startFillWithSocket(standardTitleId, titleId, extraTitleId) {
         $('#fillLiveStatus').innerHTML = '<p style="font-size:13px;color:var(--accent)">填充任务已启动，正在处理…</p>';
         const params = new URLSearchParams({ standardTitleId, tempDataTitleId: titleId, extraDataTitleId: extraTitleId });
         fetch(API + `/cleaning/fill-result/start?${params}`, { method: 'POST' })
-            .then(res => res.json())
+            .then(res => safeJson(res, '启动填充'))
             .then(data => {
                 if (data.code !== 200) throw new Error(data.msg);
             })

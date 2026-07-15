@@ -874,18 +874,30 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(tempDataTitleId);
         TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(tempDataTitleId);
 
+        // 预加载清洗数据与补充数据，避免逐行 N+1 查询
+        Map<Long, CleanedDataEntity> cleanedByTempId = new HashMap<>();
+        for (CleanedDataEntity cd : cleanedDataMapper.selectAllByTempDataTitleId(tempDataTitleId)) {
+            cleanedByTempId.put(cd.getTempDataId(), cd);
+        }
+        Map<Long, ExtraDataEntity> extraByTempId = extraDataTitleId != null ? new HashMap<>() : null;
+        if (extraByTempId != null) {
+            for (ExtraDataEntity ed : extraDataMapper.selectByExtraDataTitleId(extraDataTitleId)) {
+                extraByTempId.put(ed.getTempDataId(), ed);
+            }
+        }
+
         // 缓存：categoryCode -> StandardTitleEntity，避免重复DB查询
         Map<String, StandardTitleEntity> standardTitleCache = new HashMap<>();
 
         List<ResultDataEntity> resultList = new ArrayList<>();
         for (TempDataEntity tempData : tempDataList) {
-            CleanedDataEntity cleanedData = cleanedDataMapper.selectByTempDataId(tempData.getId());
+            CleanedDataEntity cleanedData = cleanedByTempId.get(tempData.getId());
             // 跳过没有匹配到分类编码的数据
             if (cleanedData == null || StrUtil.isBlank(cleanedData.getCategoryCode())) {
                 log.debug("tempDataId: {} 没有分类编码，跳过填充", tempData.getId());
                 continue;
             }
-            ExtraDataEntity extraData = extraDataMapper.selectByTempDataId(tempData.getId(), extraDataTitleId);
+            ExtraDataEntity extraData = extraByTempId != null ? extraByTempId.get(tempData.getId()) : null;
 
             // 根据清洗数据的分类编码，确定该条数据对应的标准字段表头
             StandardTitleEntity recordStandardTitle = resolveStandardTitle(
@@ -1032,6 +1044,19 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(tempDataTitleId);
                 TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(tempDataTitleId);
 
+                // 预加载清洗数据与补充数据，避免主循环内逐行 N+1 查询
+                // （大数据量下 N+1 会让请求远超连接超时，导致响应被截断、前端解析到空 body）
+                Map<Long, CleanedDataEntity> cleanedByTempId = new HashMap<>();
+                for (CleanedDataEntity cd : cleanedDataMapper.selectAllByTempDataTitleId(tempDataTitleId)) {
+                    cleanedByTempId.put(cd.getTempDataId(), cd);
+                }
+                Map<Long, ExtraDataEntity> extraByTempId = extraDataTitleId != null ? new HashMap<>() : null;
+                if (extraByTempId != null) {
+                    for (ExtraDataEntity ed : extraDataMapper.selectByExtraDataTitleId(extraDataTitleId)) {
+                        extraByTempId.put(ed.getTempDataId(), ed);
+                    }
+                }
+
                 // 保存并填充：先清除该标准表头+数据文件下已有的填充结果，实现覆盖而非跳过
                 int deletedCount = resultDataMapper.deleteByStandardAndTitle(standardTitleId, tempDataTitleId);
                 log.info("清除已有填充结果 {} 条，准备重新填充", deletedCount);
@@ -1043,7 +1068,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 // 避免把未清洗/其它分类的 temp_data 行计入总数，导致“进度总数”虚高、与“数据总数”对不上
                 int fillableTotal = 0;
                 for (TempDataEntity td : tempDataList) {
-                    CleanedDataEntity cd = cleanedDataMapper.selectByTempDataId(td.getId());
+                    CleanedDataEntity cd = cleanedByTempId.get(td.getId());
                     if (cd == null || !StrUtil.isNotBlank(cd.getCategoryCode())) continue;
                     StandardTitleEntity st = resolveStandardTitle(cd, standardTitleCache, defaultStandardTitle);
                     if (st != null && st.getId().equals(standardTitleId)) fillableTotal++;
@@ -1070,7 +1095,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 for (int i = 0; i < tempDataList.size(); i++) {
                     TempDataEntity tempData = tempDataList.get(i);
                     try {
-                        CleanedDataEntity cleanedData = cleanedDataMapper.selectByTempDataId(tempData.getId());
+                        CleanedDataEntity cleanedData = cleanedByTempId.get(tempData.getId());
                         // 跳过没有匹配到分类编码的数据
                         if (cleanedData == null || StrUtil.isBlank(cleanedData.getCategoryCode())) {
                             skippedCount++;
@@ -1078,7 +1103,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                             log.debug("tempDataId: {} 没有分类编码，跳过填充", tempData.getId());
                             continue;
                         }
-                        ExtraDataEntity extraData = extraDataMapper.selectByTempDataId(tempData.getId(), extraDataTitleId);
+                        ExtraDataEntity extraData = extraByTempId != null ? extraByTempId.get(tempData.getId()) : null;
 
                         // 根据清洗数据的分类编码，确定该条数据对应的标准字段表头
                         StandardTitleEntity recordStandardTitle = resolveStandardTitle(
