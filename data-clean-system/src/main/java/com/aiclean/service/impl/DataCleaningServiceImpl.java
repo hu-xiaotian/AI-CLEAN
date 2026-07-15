@@ -3,12 +3,14 @@ package com.aiclean.service.impl;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import com.aiclean.entity.*;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.aiclean.entity.enums.DataStatus;
 import com.aiclean.mapper.*;
+import com.aiclean.ai.AiClientService;
 import com.aiclean.match.*;
 import com.aiclean.model.ParseRule;
 import com.aiclean.model.SearchCondition;
@@ -30,6 +32,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -56,11 +59,23 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Autowired private CategoryMatcher categoryMatcher;
     @Autowired private TransactionTemplate transactionTemplate;
     @Autowired private SimpMessagingTemplate messagingTemplate;
+    @Autowired private AiClientService aiClientService;
 
     @Value("${app.file.upload-path}") private String uploadPath;
     @Value("${app.data-cleaning.batch-size}") private int batchSize;
     @Value("${app.data-cleaning.quality-score.threshold-review}") private double thresholdReview;
     @Value("${app.data-cleaning.quality-score.threshold-export}") private double thresholdExport;
+
+    /** AI 提取系统提示词（可配置，见 application.yml -> app.ai.system-prompt） */
+    @Value("${app.ai.system-prompt:你是一个专业的数据属性提取助手。你的任务是根据用户给定的一组目标字段，从一段物料/商品的描述文本中提取对应的值。你必须只返回一个 JSON 对象：键为目标字段名（严格使用用户提供的字段名），值为提取到的内容字符串；未出现的字段填空字符串\"\"。不要输出任何解释或 Markdown 代码块，只输出纯 JSON。}")
+    private String aiSystemPrompt;
+
+    /** AI 提取用户提示词模板（支持占位符 {fields} 与 {fullDesc}，见 application.yml -> app.ai.user-prompt-template） */
+    @Value("${app.ai.user-prompt-template:目标字段列表：\n{fields}\n\n待拆分的属性描述文本：\n{fullDesc}\n\n请按上述目标字段从描述文本中提取值，只返回 JSON 键值对。}")
+    private String aiUserPromptTemplate;
+
+    /** AI 提取进度缓存（titleId -> 进度信息），供 WebSocket 与轮询兜底使用 */
+    private final Map<Long, Map<String, Object>> aiExtractProgressMap = new ConcurrentHashMap<>();
 
     // ==================== Excel导入 ====================
 
@@ -314,6 +329,295 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         log.info("删除补充数据表头: ID={}", extraTitleId);
 
         log.info("全描述提取结果删除完成，extraTitleId: {}", extraTitleId);
+    }
+
+    // ==================== AI 智能提取 ====================
+
+    @Override
+    @Async
+    public String startAiExtract(Long titleId) {
+        log.info("开始 AI 属性提取，表头ID: {}", titleId);
+        doStartAiExtract(titleId);
+        return "ai_extract_task_" + titleId;
+    }
+
+    @Override
+    public Map<String, Object> getAiExtractProgress(Long titleId) {
+        Map<String, Object> progress = aiExtractProgressMap.get(titleId);
+        if (progress == null) {
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("type", "idle");
+            empty.put("titleId", titleId);
+            empty.put("current", 0);
+            empty.put("total", 0);
+            empty.put("successCount", 0);
+            empty.put("errorCount", 0);
+            empty.put("progressPercent", 0);
+            return empty;
+        }
+        return progress;
+    }
+
+    /**
+     * AI 属性提取核心逻辑（异步执行）：
+     * 1. 逐行读取原始数据，按"指定分类列"或已清洗的分类编码确定该行的分类编码；
+     * 2. 用分类编码查 standard_title 表得到标准字段（参数1）；
+     * 3. 取"指定属性拆分列"（参数2）作为待拆分的描述文本；
+     * 4. 调用大模型将描述文本按标准字段拆分，要求只返回 JSON 键值对；
+     * 5. 解析 JSON，汇总所有键生成 extra_data_title 列，并写入 extra_data 行。
+     */
+    public void doStartAiExtract(Long titleId) {
+        TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
+        if (titleEntity == null) {
+            sendAiExtractProgress(titleId, "error", 0, 0, 0, 0, "表头不存在: " + titleId);
+            return;
+        }
+        if (!aiClientService.isEnabled()) {
+            sendAiExtractProgress(titleId, "error", 0, 0, 0, 0,
+                    "AI 提取功能未启用，请在 application.yml 中配置 app.ai（base-url / api-key / model）");
+            return;
+        }
+
+        // 列索引：分类列 & 属性拆分列（全描述列）
+        int categoryColIndex = findColIndex(titleEntity, titleEntity.getCategoryCol());
+        int fullDescIndex = findColIndex(titleEntity, titleEntity.getFullDescCol());
+
+        List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(titleId);
+        final int total = tempDataList.size();
+        if (total == 0) {
+            sendAiExtractProgress(titleId, "error", 0, 0, 0, 0, "该文件没有可提取的数据");
+            return;
+        }
+
+        // 预加载：分类（编码/名称 -> 实体）、已清洗数据（按原始数据ID）、标准表头（按分类编码缓存）
+        List<CategoryEntity> allCategories = categoryMapper.selectList(null);
+        Map<String, CategoryEntity> catByCode = new HashMap<>();
+        Map<String, CategoryEntity> catByName = new HashMap<>();
+        for (CategoryEntity c : allCategories) {
+            if (c.getCategoryCode() != null) catByCode.put(c.getCategoryCode(), c);
+            if (c.getCategoryName() != null) catByName.put(c.getCategoryName(), c);
+        }
+        Map<Long, CleanedDataEntity> cleanedByTempId = new HashMap<>();
+        for (CleanedDataEntity cd : cleanedDataMapper.selectAllByTempDataTitleId(titleId)) {
+            cleanedByTempId.put(cd.getTempDataId(), cd);
+        }
+        Map<String, StandardTitleEntity> stdCache = new HashMap<>();
+
+        sendAiExtractProgress(titleId, "start", 0, total, 0, 0, null);
+
+        // AI 调用（在事务外执行，避免长事务占用连接）
+        List<Map<String, String>> allParsed = new ArrayList<>();
+        Set<String> allKeys = new LinkedHashSet<>();
+        int success = 0;
+        int error = 0;
+
+        for (int i = 0; i < tempDataList.size(); i++) {
+            TempDataEntity tempData = tempDataList.get(i);
+            Map<String, String> parsed = new LinkedHashMap<>();
+            try {
+                // 参数1：该行的标准字段（来自 standard_title）
+                String categoryCode = resolveCategoryCode(tempData, categoryColIndex, cleanedByTempId, catByCode, catByName);
+                if (categoryCode == null) {
+                    log.debug("tempDataId {} 无法确定分类编码，跳过", tempData.getId());
+                } else {
+                    StandardTitleEntity stdTitle = stdCache.computeIfAbsent(
+                            categoryCode, code -> standardTitleMapper.selectByCategoryCode(code));
+                    if (stdTitle == null) {
+                        log.debug("分类编码 {} 未找到标准字段表头，跳过", categoryCode);
+                    } else {
+                        List<String> fields = new ArrayList<>();
+                        for (int c = 1; c <= 20; c++) {
+                            String t = stdTitle.getColTitle(c);
+                            if (StrUtil.isNotBlank(t)) fields.add(t);
+                        }
+                        // 参数2：属性拆分列文本
+                        String fullDesc = fullDescIndex > 0 ? tempData.getColData(fullDescIndex) : "";
+                        if (!fields.isEmpty() && StrUtil.isNotBlank(fullDesc)) {
+                            String aiText = aiClientService.chat(buildAiSystemPrompt(), buildAiUserPrompt(fields, fullDesc));
+                            parsed = parseAiJson(aiText, fields);
+                            success++;
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                error++;
+                log.error("AI 提取失败，tempDataId: {}", tempData.getId(), e);
+            }
+            allParsed.add(parsed);
+            allKeys.addAll(parsed.keySet());
+            sendAiExtractProgress(titleId, "progress", i + 1, total, success, error, null);
+        }
+
+        // 汇总列（最多 20 个）
+        List<String> keyList = new ArrayList<>(allKeys);
+        if (keyList.size() > 20) keyList = keyList.subList(0, 20);
+
+        if (keyList.isEmpty()) {
+            sendAiExtractProgress(titleId, "complete", total, total, success, error,
+                    "未提取到任何属性，请确认：文件已设置分类列或已执行智能分类，且对应分类编码在标准字段表头中存在，且属性拆分列有内容");
+            log.warn("AI 提取未产生任何属性，文件 {}", titleId);
+            return;
+        }
+
+        // 入库（独立事务）
+        final List<String> columnKeys = keyList;
+        transactionTemplate.executeWithoutResult(status -> {
+            ExtraDataTitleEntity extraTitle = new ExtraDataTitleEntity();
+            extraTitle.setTempDataTitleId(titleId);
+            extraTitle.setParseRuleId(null);
+            for (int i = 0; i < columnKeys.size(); i++) {
+                extraTitle.setColTitle(i + 1, columnKeys.get(i));
+            }
+            extraDataTitleMapper.insert(extraTitle);
+
+            List<ExtraDataEntity> extraDataList = new ArrayList<>();
+            for (int i = 0; i < tempDataList.size() && i < allParsed.size(); i++) {
+                TempDataEntity td = tempDataList.get(i);
+                Map<String, String> parsed = allParsed.get(i);
+                ExtraDataEntity ed = new ExtraDataEntity();
+                ed.setExtraDataTitleId(extraTitle.getId());
+                ed.setTempDataId(td.getId());
+                for (int j = 0; j < columnKeys.size(); j++) {
+                    ed.setColData(j + 1, parsed.getOrDefault(columnKeys.get(j), ""));
+                }
+                extraDataList.add(ed);
+                if (extraDataList.size() >= batchSize) {
+                    extraDataMapper.insertBatch(extraDataList);
+                    extraDataList.clear();
+                }
+            }
+            if (!extraDataList.isEmpty()) extraDataMapper.insertBatch(extraDataList);
+        });
+
+        sendAiExtractProgress(titleId, "complete", total, total, success, error,
+                "AI 属性提取完成，共提取 " + keyList.size() + " 个属性");
+        log.info("AI 属性提取完成，文件 {}，属性数 {}，数据量 {}", titleId, keyList.size(), tempDataList.size());
+    }
+
+    /**
+     * 确定某行数据的分类编码：
+     * 优先使用已清洗数据中的分类编码；否则尝试用"指定分类列"的值匹配分类编码或分类名称。
+     */
+    private String resolveCategoryCode(TempDataEntity tempData, int categoryColIndex,
+                                       Map<Long, CleanedDataEntity> cleanedByTempId,
+                                       Map<String, CategoryEntity> catByCode,
+                                       Map<String, CategoryEntity> catByName) {
+        CleanedDataEntity cd = cleanedByTempId.get(tempData.getId());
+        if (cd != null && StrUtil.isNotBlank(cd.getCategoryCode())) {
+            return cd.getCategoryCode();
+        }
+        if (categoryColIndex > 0) {
+            String val = tempData.getColData(categoryColIndex);
+            if (StrUtil.isNotBlank(val)) {
+                if (catByCode.containsKey(val)) return val;
+                CategoryEntity byName = catByName.get(val);
+                if (byName != null) return byName.getCategoryCode();
+                String trimmed = val.trim();
+                if (catByCode.containsKey(trimmed)) return trimmed;
+                for (Map.Entry<String, CategoryEntity> e : catByName.entrySet()) {
+                    if (e.getKey() != null && e.getKey().trim().equals(trimmed)) {
+                        return e.getValue().getCategoryCode();
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private int findColIndex(TempDataTitleEntity title, String colName) {
+        if (title == null || StrUtil.isBlank(colName)) return -1;
+        for (int i = 1; i <= 10; i++) {
+            if (colName.equals(title.getColTitle(i))) return i;
+        }
+        return -1;
+    }
+
+    private String buildAiSystemPrompt() {
+        return aiSystemPrompt;
+    }
+
+    private String buildAiUserPrompt(List<String> fields, String fullDesc) {
+        return aiUserPromptTemplate
+                .replace("{fields}", String.join("、", fields))
+                .replace("{fullDesc}", fullDesc);
+    }
+
+    /**
+     * 解析 AI 返回的 JSON 文本，并将其键映射到标准字段名。
+     * 兼容模型可能返回的 Markdown 代码块包裹、前后多余文字等情况。
+     */
+    private Map<String, String> parseAiJson(String aiText, List<String> fields) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (StrUtil.isBlank(aiText)) return result;
+        String text = aiText.trim();
+
+        // 去掉可能的 ```json ... ``` 代码块包裹
+        if (text.startsWith("```")) {
+            int firstNL = text.indexOf('\n');
+            if (firstNL >= 0) text = text.substring(firstNL + 1);
+            int lastFence = text.lastIndexOf("```");
+            if (lastFence >= 0) text = text.substring(0, lastFence);
+            text = text.trim();
+        }
+        // 截取第一个 { 到最后一个 } 之间的内容
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            text = text.substring(start, end + 1);
+        }
+
+        try {
+            JSONObject obj = JSON.parseObject(text);
+            Map<String, String> fieldNorm = new HashMap<>();
+            for (String f : fields) fieldNorm.put(normalize(f), f);
+
+            for (String key : obj.keySet()) {
+                String val = obj.getString(key);
+                if (val == null) val = "";
+                String stdField = fieldNorm.get(normalize(key));
+                if (stdField == null) {
+                    // 模糊匹配：包含关系
+                    String nk = normalize(key);
+                    for (String f : fields) {
+                        String nf = normalize(f);
+                        if (nf.equals(nk) || nf.contains(nk) || nk.contains(nf)) {
+                            stdField = f;
+                            break;
+                        }
+                    }
+                }
+                if (stdField != null) {
+                    result.put(stdField, val);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("AI 返回内容解析为 JSON 失败，原文: {}", aiText);
+        }
+        return result;
+    }
+
+    private String normalize(String s) {
+        return s == null ? "" : s.trim().toLowerCase().replaceAll("\\s+", "");
+    }
+
+    private void sendAiExtractProgress(Long titleId, String type, int current, int total,
+                                       int success, int error, String message) {
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", type);
+        msg.put("titleId", titleId);
+        msg.put("current", current);
+        msg.put("total", total);
+        msg.put("successCount", success);
+        msg.put("errorCount", error);
+        msg.put("progressPercent", total > 0 ? (int) ((double) current / total * 100) : 0);
+        msg.put("timestamp", System.currentTimeMillis());
+        if (message != null) msg.put("message", message);
+        aiExtractProgressMap.put(titleId, msg);
+        try {
+            messagingTemplate.convertAndSend("/topic/ai-extract/" + titleId, JSON.toJSONString(msg));
+        } catch (Exception e) {
+            log.warn("WebSocket 推送 AI 提取进度失败: {}", e.getMessage());
+        }
     }
 
     // ==================== 分类匹配与清洗 ====================

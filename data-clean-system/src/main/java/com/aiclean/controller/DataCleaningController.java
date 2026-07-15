@@ -82,6 +82,18 @@ public class DataCleaningController {
         }
     }
 
+    @PostMapping("/extract-extra-ai")
+    @Operation(summary = "AI 提取属性", description = "按每行分类编码查找标准字段表头(参数1)，结合属性拆分列(参数2)，由 AI 拆分为 JSON 键值对并入库")
+    public R<String> extractExtraDataByAi(@RequestParam Long titleId) {
+        return R.success(dataCleaningService.startAiExtract(titleId));
+    }
+
+    @GetMapping("/ai-extract-progress/{titleId}")
+    @Operation(summary = "获取 AI 提取进度", description = "WebSocket 不可用时作为轮询兜底")
+    public R<Map<String, Object>> getAiExtractProgress(@PathVariable Long titleId) {
+        return R.success(dataCleaningService.getAiExtractProgress(titleId));
+    }
+
     // ==================== 数据清洗 ====================
 
     @PostMapping("/start")

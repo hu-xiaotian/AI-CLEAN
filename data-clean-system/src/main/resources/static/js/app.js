@@ -198,7 +198,7 @@ function switchPage(name) {
     const loaders = {
         'import': () => { loadTitles(); },                          // 刷新导入文件列表
         'rule': () => { loadRules(true); },                            // 刷新解析规则列表
-        'extract': () => { loadTitles(); loadRules(); loadExtraTitles(); loadTitlesForSelect('extractTitleId'); loadRulesForSelect('extractRuleId'); },  // 刷新提取相关数据
+        'extract': () => { loadTitles(); loadRules(); loadExtraTitles(); loadTitlesForSelect('extractTitleId'); loadRulesForSelect('extractRuleId'); loadTitlesForSelect('aiExtractTitleId'); },  // 刷新提取相关数据
         'clean': () => { loadTitles(); loadRules(); loadCleanStats(); loadTitlesForSelect('cleanTitleId'); loadRulesForSelect('cleanRuleId'); },     // 刷新清洗相关数据
         'mapping': () => { 
             loadTitlesForSelect('mapTitleId'); 
@@ -403,12 +403,82 @@ async function ocDoMapFill(titleId) {
     $('#ocCleanFill').textContent = '100%';
 }
 
-// 步骤二：属性提取（全描述解析，独立步骤，不再由智能分类自动触发）
-async function ocDoExtract(titleId, ruleId) {
-    const res = await fetch(API + `/cleaning/extract-extra?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' });
-    const data = await safeJson(res, '属性提取');
-    if (data.code !== 200) throw new Error(data.msg || '属性提取失败');
-    return data.data;
+// 步骤二：属性提取（按所选方式：rule=规则解析提取，ai=AI 智能提取）
+async function ocDoExtract(titleId, ruleId, extractMode) {
+    if (extractMode === 'ai') {
+        await ocDoExtractAi(titleId);
+    } else {
+        const res = await fetch(API + `/cleaning/extract-extra?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' });
+        const data = await safeJson(res, '属性提取');
+        if (data.code !== 200) throw new Error(data.msg || '属性提取失败');
+    }
+    return true;
+}
+
+// 步骤二（AI 模式）：启动 AI 智能提取并等待完成，复用清洗实时进展卡片展示进度
+function ocDoExtractAi(titleId) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let started = false;
+        let pollTimer = null;
+        let stompClient = null;
+        let timeout = null;
+        const finish = (ok, msg) => {
+            if (settled) return;
+            settled = true;
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            if (stompClient) { try { stompClient.disconnect(); } catch (e) {} }
+            if (timeout) { clearTimeout(timeout); timeout = null; }
+            if (ok) resolve(); else reject(new Error(msg || 'AI 提取失败'));
+        };
+
+        // 复用清洗实时进展卡片展示 AI 提取进度
+        $('#ocCleanStatsCard').style.display = 'block';
+        $('#ocCleanStatsTitle').textContent = 'AI 属性提取实时进度';
+        // 先以初始值（全 0）渲染，确保「成功/失败」计数从本步骤开始正确显示（避免沿用上一步智能分类的计数）
+        ocRenderCleanStatsCard({ progressPercent: 0, current: 0, total: 0, successCount: 0, errorCount: 0 });
+
+        // 启动 AI 提取任务
+        fetch(API + `/cleaning/extract-extra-ai?titleId=${titleId}`, { method: 'POST' })
+            .then(res => safeJson(res, '启动AI提取'))
+            .then(data => { if (data.code !== 200) throw new Error(data.msg); })
+            .catch(e => finish(false, 'AI 提取启动失败: ' + e.message));
+
+        const onMsg = (msg) => {
+            if (!msg) return;
+            if (msg.type === 'start' || msg.type === 'progress') started = true;
+            ocRenderCleanStatsCard(msg);
+            if (msg.type === 'complete') finish(true);
+            else if (msg.type === 'error') finish(false, 'AI 提取异常终止：' + (msg.message || ''));
+        };
+
+        // 实时进度（WebSocket）
+        try {
+            const socket = new SockJS('/ws-cleaning');
+            stompClient = Stomp.over(socket);
+            stompClient.debug = null;
+            stompClient.connect({}, () => {
+                stompClient.subscribe('/topic/ai-extract/' + titleId, message => {
+                    try { onMsg(JSON.parse(message.body)); } catch (e) {}
+                });
+            }, () => { /* WebSocket 失败，依赖轮询兜底 */ });
+        } catch (e) { /* 忽略，走轮询 */ }
+
+        // 轮询兜底
+        pollTimer = setInterval(async () => {
+            try {
+                const p = await api(`/cleaning/ai-extract-progress/${titleId}`);
+                onMsg(p);
+                if (p.type === 'complete') finish(true);
+                else if (p.type === 'error') finish(false, 'AI 提取异常终止：' + (p.message || ''));
+            } catch (e) { /* 忽略轮询错误 */ }
+        }, 2000);
+
+        // 超时兜底
+        timeout = setTimeout(() => {
+            if (!settled) finish(false, 'AI 提取超时（30分钟），请到“属性提取”页查看状态');
+        }, 30 * 60 * 1000);
+    });
 }
 
 // 一键清洗主流程
@@ -417,6 +487,8 @@ async function runOneClickClean() {
     const titleId = $('#ocTitleId').value;
     const ruleId = $('#ocRuleId').value;
     if (!titleId || !ruleId) { showToast('请选择数据文件和解析规则', 'warning'); return; }
+    // 属性提取方式：rule=规则解析提取，ai=AI 智能提取
+    const extractMode = (document.querySelector('input[name="ocExtractMode"]:checked') || {}).value || 'rule';
 
     ocRunning = true;
     $('#ocStartBtn').disabled = true;
@@ -429,10 +501,10 @@ async function runOneClickClean() {
         setOcStep('clean', 'done');
         setOcOverall(35, '已完成：智能分类');
 
-        // 步骤二：属性提取（全描述解析）
+        // 步骤二：属性提取（按所选方式：规则解析 / AI 智能提取）
         setOcStep('extract', 'running');
-        setOcOverall(40, '正在执行：属性提取');
-        await ocDoExtract(titleId, ruleId);
+        setOcOverall(40, '正在执行：属性提取' + (extractMode === 'ai' ? '（AI）' : '（规则解析）'));
+        await ocDoExtract(titleId, ruleId, extractMode);
         setOcStep('extract', 'done');
         setOcOverall(60, '已完成：属性提取');
 
@@ -1098,6 +1170,7 @@ async function loadStandardTitles(selId, titleId) {
 async function loadTitlesForExtract() {
     await loadTitlesForSelect('extractTitleId');
     await loadRulesForSelect('extractRuleId');
+    await loadTitlesForSelect('aiExtractTitleId');
 }
 
 async function loadExtraTitles() {
@@ -1211,6 +1284,112 @@ async function extractExtraData() {
         showToast('提取失败: ' + e.message, 'error');
     } finally {
         hideLoading();
+    }
+}
+
+// ==================== AI 智能提取 ====================
+
+let aiExtractStomp = null;
+let aiExtractSub = null;
+let aiExtractPollTimer = null;
+
+async function startAiExtract() {
+    const titleId = $('#aiExtractTitleId').value;
+    if (!titleId) { showToast('请先选择数据文件', 'warning'); return; }
+
+    // 重置进度 UI
+    $('#aiExtractProgressCard').style.display = 'block';
+    $('#aiExtractFill').style.width = '0%';
+    $('#aiExtractFill').textContent = '0%';
+    $('#aiExtractCurrent').textContent = '0';
+    $('#aiExtractTotal').textContent = '0';
+    $('#aiExtractSuccess').textContent = '0';
+    $('#aiExtractError').textContent = '0';
+    $('#aiExtractStatus').textContent = '正在连接 AI 提取服务…';
+
+    disconnectAiExtractWs();
+
+    connectAiExtractWs(titleId, function connected() {
+        $('#aiExtractStatus').textContent = 'AI 提取任务已启动，正在处理…';
+        fetch(API + `/cleaning/extract-extra-ai?titleId=${titleId}`, { method: 'POST' })
+            .then(res => safeJson(res, 'AI 提取'))
+            .then(data => { if (data.code !== 200) throw new Error(data.msg); })
+            .catch(e => {
+                $('#aiExtractStatus').textContent = 'AI 提取启动失败: ' + e.message;
+                showToast('AI 提取启动失败: ' + e.message, 'error');
+            });
+    });
+}
+
+function connectAiExtractWs(titleId, onConnected) {
+    const socket = new SockJS('/ws-cleaning');
+    aiExtractStomp = Stomp.over(socket);
+    aiExtractStomp.debug = null;
+    aiExtractStomp.connect({}, function (frame) {
+        console.log('AI 提取 WebSocket 已连接:', frame);
+        aiExtractSub = aiExtractStomp.subscribe('/topic/ai-extract/' + titleId, function (message) {
+            handleAiExtractMessage(JSON.parse(message.body));
+        });
+        startAiExtractPoll(titleId);
+        if (onConnected) onConnected();
+    }, function (error) {
+        console.error('AI 提取 WebSocket 连接失败:', error);
+        $('#aiExtractStatus').textContent = '实时连接失败，使用轮询模式';
+        startAiExtractPoll(titleId);
+        if (onConnected) onConnected();
+    });
+}
+
+function startAiExtractPoll(titleId) {
+    if (aiExtractPollTimer) clearInterval(aiExtractPollTimer);
+    aiExtractPollTimer = setInterval(async () => {
+        try {
+            const p = await api(`/cleaning/ai-extract-progress/${titleId}`);
+            handleAiExtractMessage(p);
+            if (p.type === 'complete' || p.type === 'error') {
+                clearInterval(aiExtractPollTimer);
+                aiExtractPollTimer = null;
+            }
+        } catch (e) { /* 忽略轮询错误 */ }
+    }, 2000);
+}
+
+function disconnectAiExtractWs() {
+    if (aiExtractSub) { try { aiExtractSub.unsubscribe(); } catch (e) {} aiExtractSub = null; }
+    if (aiExtractStomp) { try { aiExtractStomp.disconnect(); } catch (e) {} aiExtractStomp = null; }
+    if (aiExtractPollTimer) { clearInterval(aiExtractPollTimer); aiExtractPollTimer = null; }
+}
+
+function handleAiExtractMessage(msg) {
+    if (!msg) return;
+    const type = msg.type;
+    const current = msg.current || 0;
+    const total = msg.total || 0;
+    const percent = msg.progressPercent || 0;
+    const success = msg.successCount || 0;
+    const error = msg.errorCount || 0;
+
+    $('#aiExtractFill').style.width = percent + '%';
+    $('#aiExtractFill').textContent = percent + '%';
+    $('#aiExtractCurrent').textContent = current;
+    $('#aiExtractTotal').textContent = total;
+    $('#aiExtractSuccess').textContent = success;
+    $('#aiExtractError').textContent = error;
+
+    if (type === 'start') {
+        $('#aiExtractStatus').textContent = 'AI 提取开始，共 ' + total + ' 条数据';
+    } else if (type === 'progress') {
+        $('#aiExtractStatus').textContent = 'AI 提取中… ' + current + '/' + total + ' (成功 ' + success + ', 失败 ' + error + ')';
+    } else if (type === 'complete') {
+        $('#aiExtractStatus').textContent = (msg.message || 'AI 提取完成') + '，共处理 ' + total + ' 条 (成功 ' + success + ', 失败 ' + error + ')';
+        showToast('AI 属性提取完成');
+        loadExtraTitles();
+        loadExtraTitlesForSelect('mapExtraTitleId');
+        setTimeout(disconnectAiExtractWs, 2000);
+    } else if (type === 'error') {
+        $('#aiExtractStatus').textContent = 'AI 提取异常终止：' + (msg.message || '');
+        showToast('AI 提取异常终止', 'error');
+        setTimeout(disconnectAiExtractWs, 2000);
     }
 }
 

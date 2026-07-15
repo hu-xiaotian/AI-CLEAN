@@ -106,13 +106,21 @@
         <!-- ===== 一键数据清洗 ===== -->
         <section id="page-oneclick" class="page">
             <h2>一键数据清洗</h2>
-            <p class="desc">依次自动执行：智能分类 → 属性提取（全描述解析） → 属性补全（自动映射并填充，补充数据表头默认取第一项）</p>
+            <p class="desc">依次自动执行：智能分类 → 属性提取（可选 规则解析 / AI 智能提取） → 属性补全（自动映射并填充，补充数据表头默认取第一项）</p>
             <div class="card">
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="ocTitleId" class="form-input"></select></div>
                     <div class="form-group"><label>解析规则</label><select id="ocRuleId" class="form-input"></select></div>
+                    <div class="form-group">
+                        <label>属性提取方式</label>
+                        <div style="display:flex;gap:18px;align-items:center;margin-top:6px">
+                            <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="ocExtractMode" value="rule" checked> 规则解析提取</label>
+                            <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="ocExtractMode" value="ai"> AI 智能提取</label>
+                        </div>
+                    </div>
                     <div class="form-group"><button class="btn btn-primary" id="ocStartBtn" onclick="runOneClickClean()">开始一键清洗</button></div>
                 </div>
+<!--                <p class="mt-2" style="font-size:12px;color:var(&#45;&#45;text-secondary)">提示：选择「AI 智能提取」需先在 application.yml 配置并启用 app.ai（base-url / api-key / model），且每行数据需能确定分类编码（已执行智能分类或设置分类列）并在标准字段表头中有对应字段。</p>-->
             </div>
 
             <div class="card">
@@ -190,9 +198,12 @@
 
         <!-- ===== 全描述提取 ===== -->
         <section id="page-extract" class="page">
-            <h2>全描述属性提取</h2>
-            <p class="desc">从全描述字段中解析属性键值对</p>
+            <h2>属性提取</h2>
+            <p class="desc">从全描述字段中解析属性键值对（支持规则解析与 AI 智能提取）</p>
+
+            <!-- 规则解析提取 -->
             <div class="card">
+                <h3>规则解析提取</h3>
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="extractTitleId" class="form-input"></select></div>
                     <div class="form-group"><label>解析规则</label><select id="extractRuleId" class="form-input"></select></div>
@@ -200,6 +211,28 @@
                 </div>
                 <div id="extractResult" class="mt-3" style="display:none"></div>
             </div>
+
+            <!-- AI 智能提取 -->
+            <div class="card">
+                <h3>AI 智能提取</h3>
+<!--                <p class="desc">根据每行数据的分类编码查找对应标准字段表头作为<b>参数1（目标字段）</b>，结合文件导入时指定的<b>属性拆分列</b>作为<b>参数2（待拆分文本）</b>，由 AI 将描述文本按标准字段拆分并返回 JSON 键值对，解析后入库。</p>-->
+                <div class="form-grid">
+                    <div class="form-group"><label>数据文件</label><select id="aiExtractTitleId" class="form-input"></select></div>
+                    <div class="form-group"><button class="btn btn-primary" id="aiExtractBtn" onclick="startAiExtract()">AI 提取</button></div>
+                </div>
+                <div id="aiExtractProgressCard" class="mt-3" style="display:none">
+                    <div class="progress-bar has-text mt-2">
+                        <div class="progress-fill" id="aiExtractFill" style="width:0%;background:var(--accent)">0%</div>
+                    </div>
+                    <div class="clean-stats-inline mt-2" style="display:flex;gap:24px;flex-wrap:wrap">
+                        <span>已处理: <strong id="aiExtractCurrent">0</strong> / <strong id="aiExtractTotal">0</strong></span>
+                        <span style="color:var(--success)">成功: <strong id="aiExtractSuccess">0</strong></span>
+                        <span style="color:var(--danger)">失败: <strong id="aiExtractError">0</strong></span>
+                    </div>
+                    <p id="aiExtractStatus" class="mt-1" style="font-size:13px;color:var(--text-secondary)"></p>
+                </div>
+            </div>
+
             <div class="card">
                 <h3>提取结果</h3>
                 <table class="data-table" id="extraTable">

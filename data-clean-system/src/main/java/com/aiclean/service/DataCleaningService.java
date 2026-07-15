@@ -29,6 +29,10 @@ public interface DataCleaningService {
     ExtraDataTitleEntity extractExtraData(Long titleId, Long parseRuleId);
     void deleteExtraTitle(Long extraTitleId);
 
+    // ===== AI 智能提取 =====
+    String startAiExtract(Long titleId);
+    Map<String, Object> getAiExtractProgress(Long titleId);
+
     // ===== 分类匹配 =====
     CleanedDataEntity matchAndClean(Long tempDataId, Long extraDataTitleId, Long parseRuleId);
 
