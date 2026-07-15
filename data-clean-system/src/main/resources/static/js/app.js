@@ -2517,17 +2517,63 @@ async function renderResultData(results) {
                     <option value="modified" ${r.status==='modified'?'selected':''}>已修改</option>
                 </select>
             </td>
-            ${standardCols.map((c, i) => `<td class="editable-cell" ondblclick="editResultCell(${r.id}, ${i+1}, '${(r[c.key]||'').replace(/'/g,"\\'")}')">${r[c.key] || ''}</td>`).join('')}
+            ${standardCols.map((c, i) => {
+                const val = cellArg(r[c.key] || '');
+                const title = cellArg(c.title || '');
+                return `<td class="editable-cell" ondblclick="editResultCell(${r.id}, ${i+1}, '${title}', '${val}')">${r[c.key] || ''}</td>`;
+            }).join('')}
             <td><button class="btn btn-sm btn-primary" onclick="reviewResult(${r.id})">审核</button></td>
         </tr>
     `).join('');
 }
 
-function editResultCell(id, colIndex, currentValue) {
-    const newValue = prompt('修改数据:', currentValue);
-    if (newValue === null) return;
-    updateResultData(id, colIndex, newValue);
+let _cellEditId = null;
+let _cellEditCol = null;
+
+// 将值安全转义后嵌入 ondblclick 的 JS 字符串字面量与 HTML 属性中
+function cellArg(v) {
+    let s = String(v == null ? '' : v)
+        .replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n').replace(/\r/g, '').replace(/\t/g, '\\t');
+    s = s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+         .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return s;
 }
+
+function editResultCell(id, colIndex, colTitle, currentValue) {
+    _cellEditId = id;
+    _cellEditCol = colIndex;
+    $('#cellEditColName').textContent = colTitle || ('列' + colIndex);
+    const input = $('#cellEditInput');
+    input.value = currentValue || '';
+    $('#cellEditModal').classList.add('show');
+    $('#cellEditOverlay').classList.add('show');
+    setTimeout(() => { input.focus(); input.select(); }, 50);
+}
+
+function closeCellEditModal() {
+    $('#cellEditModal').classList.remove('show');
+    $('#cellEditOverlay').classList.remove('show');
+}
+
+async function saveCellEdit() {
+    const value = $('#cellEditInput').value;
+    closeCellEditModal();
+    updateResultData(_cellEditId, _cellEditCol, value);
+}
+
+document.addEventListener('keydown', (e) => {
+    const modal = $('#cellEditModal');
+    if (!modal || !modal.classList.contains('show')) return;
+    const input = $('#cellEditInput');
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        closeCellEditModal();
+    } else if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        saveCellEdit();
+    }
+});
 
 async function updateResultData(id, colIndex, value) {
     showLoading('正在更新数据…');

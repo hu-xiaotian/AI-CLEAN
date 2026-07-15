@@ -766,6 +766,58 @@ select.form-input { cursor: pointer; appearance: none; background-image: url("da
 .editable-cell { cursor: pointer; min-width: 80px; }
 .editable-cell:hover { background: var(--accent-subtle); border-radius: 2px; }
 
+/* -------- Cell Edit Modal -------- */
+.cell-edit-modal { max-width: 480px; animation: modalPop .18s ease-out; }
+@keyframes modalPop {
+    from { opacity: 0; transform: translate(-50%, -46%) scale(.96); }
+    to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+.cell-edit-form { display: flex; flex-direction: column; gap: 14px; }
+
+.cell-edit-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+.cell-edit-label .col-name {
+    color: var(--accent);
+    font-weight: 600;
+    margin-left: 2px;
+}
+
+.cell-edit-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-family: var(--font);
+    background: var(--surface);
+    color: var(--text);
+    resize: vertical;
+    min-height: 96px;
+    line-height: 1.55;
+    transition: border-color .15s, box-shadow .15s;
+}
+.cell-edit-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
+    outline: none;
+}
+
+.cell-edit-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+}
+.cell-edit-hint {
+    margin-right: auto;
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
 /* -------- Confidence -------- */
 .confidence-bar { height: 4px; background: var(--border-light); border-radius: 2px; min-width: 60px; }
 .confidence-fill { height: 100%; border-radius: 2px; }

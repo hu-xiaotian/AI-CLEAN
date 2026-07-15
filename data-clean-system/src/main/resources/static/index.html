@@ -609,6 +609,26 @@
     </div>
 </div>
 
+<!-- Cell Edit Modal (结果数据双击编辑) -->
+<div class="modal-overlay" id="cellEditOverlay" onclick="closeCellEditModal()"></div>
+<div class="modal cell-edit-modal" id="cellEditModal">
+    <div class="modal-header">
+        <h3>编辑单元格</h3>
+        <button class="btn-close" onclick="closeCellEditModal()">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+        <div class="cell-edit-form">
+            <div class="cell-edit-label">正在编辑字段：<span class="col-name" id="cellEditColName">-</span></div>
+            <textarea class="cell-edit-input" id="cellEditInput" placeholder="请输入内容…" rows="4"></textarea>
+            <div class="cell-edit-actions">
+                <span class="cell-edit-hint">Enter 保存 · Esc 取消</span>
+                <button class="btn btn-default" onclick="closeCellEditModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveCellEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Loading Overlay -->
 <div class="loading-overlay" id="loadingOverlay">
     <div class="loading-spinner">
