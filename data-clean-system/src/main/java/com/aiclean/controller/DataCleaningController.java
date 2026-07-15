@@ -98,8 +98,10 @@ public class DataCleaningController {
 
     @PostMapping("/start")
     @Operation(summary = "启动批量数据清洗")
-    public R<String> startCleaning(@RequestParam Long titleId, @RequestParam Long parseRuleId) {
-        return R.success(dataCleaningService.startCleaning(titleId, parseRuleId));
+    public R<String> startCleaning(@RequestParam Long titleId,
+                                   @RequestParam(required = false) Long parseRuleId,
+                                   @RequestParam(required = false) Boolean useAi) {
+        return R.success(dataCleaningService.startCleaning(titleId, parseRuleId, useAi));
     }
 
     @GetMapping("/progress/{titleId}")
@@ -125,8 +127,30 @@ public class DataCleaningController {
     @Operation(summary = "单条数据分类匹配与清洗")
     public R<CleanedDataEntity> matchAndClean(@RequestParam Long tempDataId,
                                                @RequestParam(required = false) Long extraDataTitleId,
-                                               @RequestParam(required = false) Long parseRuleId) {
-        return R.success(dataCleaningService.matchAndClean(tempDataId, extraDataTitleId, parseRuleId));
+                                               @RequestParam(required = false) Long parseRuleId,
+                                               @RequestParam(required = false) Boolean useAi) {
+        return R.success(dataCleaningService.matchAndClean(tempDataId, extraDataTitleId, parseRuleId, useAi));
+    }
+
+    @PostMapping("/ai-classify-check")
+    @Operation(summary = "AI 辅助分类检测", description = "将已清洗数据的分类结果与 main_data_category 标准库比对，给出准确性评分；useAi=true 且已配置 AI 时调用大模型，否则用规则校验。不执行 AI 部分可由 useAi=false 控制。")
+    public R<Map<String, Object>> aiClassifyCheck(@RequestParam Long titleId,
+                                                   @RequestParam(required = false, defaultValue = "false") Boolean useAi) {
+        return R.success(dataCleaningService.aiClassifyCheck(titleId, useAi));
+    }
+
+    @PostMapping("/apply-classify-fix")
+    @Operation(summary = "应用分类修正", description = "将指定清洗数据的分类替换为推荐的标准分类编码（targetCode）并保存，替换后按标准库规则重新评分。")
+    public R<Map<String, Object>> applyClassifyFix(@RequestParam Long id,
+                                                    @RequestParam String targetCode) {
+        return R.success(dataCleaningService.applyClassifyFix(id, targetCode));
+    }
+
+    @PostMapping("/apply-classify-fix-batch")
+    @Operation(summary = "批量应用分类修正", description = "对一组 {id, code} 逐条将清洗数据的分类替换为推荐的标准分类编码并保存。请求体为 JSON 数组，例如 [{\"id\":1,\"code\":\"100105\"}]。")
+    public R<Map<String, Object>> applyClassifyFixBatch(@RequestParam Long titleId,
+                                                         @RequestBody(required = false) List<Map<String, Object>> items) {
+        return R.success(dataCleaningService.applyClassifyFixBatch(titleId, items));
     }
 
     // ==================== 字段映射 ====================

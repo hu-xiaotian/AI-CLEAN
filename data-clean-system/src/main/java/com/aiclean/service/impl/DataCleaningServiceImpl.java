@@ -14,7 +14,9 @@ import com.aiclean.ai.AiClientService;
 import com.aiclean.match.*;
 import com.aiclean.model.ParseRule;
 import com.aiclean.model.SearchCondition;
+import com.aiclean.service.CategoryStandardLibrary;
 import com.aiclean.service.DataCleaningService;
+import com.aiclean.dto.ClassifyCheckDetail;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -60,6 +62,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Autowired private TransactionTemplate transactionTemplate;
     @Autowired private SimpMessagingTemplate messagingTemplate;
     @Autowired private AiClientService aiClientService;
+    @Autowired private CategoryStandardLibrary stdLib;
 
     @Value("${app.file.upload-path}") private String uploadPath;
     @Value("${app.data-cleaning.batch-size}") private int batchSize;
@@ -73,6 +76,26 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     /** AI 提取用户提示词模板（支持占位符 {fields} 与 {fullDesc}，见 application.yml -> app.ai.user-prompt-template） */
     @Value("${app.ai.user-prompt-template:目标字段列表：\n{fields}\n\n待拆分的属性描述文本：\n{fullDesc}\n\n请按上述目标字段从描述文本中提取值，只返回 JSON 键值对。}")
     private String aiUserPromptTemplate;
+
+    /** AI 辅助分类评分系统提示词 */
+    @Value("${app.ai.classification-system-prompt:你是一名严谨的工业品物料数据质量审核专家，只输出要求的 JSON，不要输出其他内容。}")
+    private String aiClassificationSystemPrompt;
+
+    /** AI 辅助分类评分用户提示词模板（占位符见 application.yml -> app.ai.classification-score-prompt） */
+    @Value("${app.ai.classification-score-prompt:请根据物料信息与标准分类库评估分类结果合理性并给出0~100评分。物料代码：{materialCode}，物料名称：{materialName}，规格：{specification}，牌号：{grade}，技术标准：{technicalStandard}；系统分类编码：{categoryCode}，分类名称：{categoryName}，路径：{categoryFullPath}；标准分类名称：{stdCategoryName}，路径：{stdCategoryFullPath}，说明：{stdDescription}，单位：{stdUnit}。只返回JSON：{\"score\":<0-100整数>,\"reason\":\"<简短说明>\"}。}")
+    private String aiClassificationScorePrompt;
+
+    /** AI 辅助分类检测系统提示词（多候选，基于 main_data_category 全表比对） */
+    @Value("${app.ai.classification-detect-system-prompt:你是一名严谨的工业品物料数据质量审核专家，只输出要求的 JSON，不要输出其他内容。}")
+    private String aiClassificationDetectSystemPrompt;
+
+    /** AI 辅助分类检测用户提示词模板（占位符见 application.yml -> app.ai.classification-detect-prompt） */
+    @Value("${app.ai.classification-detect-prompt:}")
+    private String aiClassificationDetectPrompt;
+
+    /** 标准库候选召回数量（top-K） */
+    @Value("${app.data-cleaning.standard-library.candidate-top-k:10}")
+    private int candidateTopK;
 
     /** AI 提取进度缓存（titleId -> 进度信息），供 WebSocket 与轮询兜底使用 */
     private final Map<Long, Map<String, Object>> aiExtractProgressMap = new ConcurrentHashMap<>();
@@ -624,7 +647,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
     @Override
     @Transactional
-    public CleanedDataEntity matchAndClean(Long tempDataId, Long extraDataTitleId, Long parseRuleId) {
+    public CleanedDataEntity matchAndClean(Long tempDataId, Long extraDataTitleId, Long parseRuleId, Boolean useAi) {
         TempDataEntity tempData = tempDataMapper.selectById(tempDataId);
         if (tempData == null) throw new RuntimeException("原始数据不存在: " + tempDataId);
 
@@ -657,12 +680,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         cleanedData.setTempDataId(tempData.getId());
         cleanedData.setMatchSource(matchResult.getSource());
         cleanedData.setMatchConfidence(matchResult.getConfidence());
-        if (matchedCategory != null) {
-            cleanedData.setCategoryId(matchedCategory.getId());
-            cleanedData.setCategoryCode(matchedCategory.getCategoryCode());
-            cleanedData.setCategoryLevel(matchedCategory.getLevel());
-            cleanedData.setCategoryFullPath(matchedCategory.getFullPath());
-        }
+        fillCategoryInfo(cleanedData, matchedCategory);
 
         // 提取核心字段
         cleanedData.setMaterialCode(getColByTitle(titleEntity, "物料代码", tempData, 3));
@@ -672,9 +690,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         cleanedData.setGrade(extraAttrs.getOrDefault("牌号", ""));
         cleanedData.setUnit(extraAttrs.getOrDefault("计量单位", getColByTitle(titleEntity, "计量单位", tempData, 6)));
 
-        // 质量评分
+        // 质量评分（启用 AI 辅助评分且 AI 可用时，用 AI 评分替代原有规则评分）
         cleanedData.setCompletenessScore(cleanedData.calculateCompleteness());
-        double qualityScore = calculateQuality(cleanedData);
+        double qualityScore = computeQualityScore(cleanedData, matchedCategory, useAi);
         cleanedData.setQualityScore(qualityScore);
         cleanedData.setAccuracyScore(qualityScore * 0.8);
 
@@ -710,9 +728,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
     @Override
     @Async
-    public String startCleaning(Long titleId, Long parseRuleId) {
-        log.info("开始数据清洗，表头ID: {}, 规则ID: {}", titleId, parseRuleId);
-        doStartCleaning(titleId, parseRuleId);
+    public String startCleaning(Long titleId, Long parseRuleId, Boolean useAi) {
+        log.info("开始数据清洗，表头ID: {}, 规则ID: {}, useAi: {}", titleId, parseRuleId, useAi);
+        doStartCleaning(titleId, parseRuleId, useAi);
         return "cleaning_task_" + titleId;
     }
 
@@ -720,7 +738,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
      * 实际的清洗执行逻辑，由 startCleaning 异步调用
      * 使用 TransactionTemplate 确保在异步线程中事务正确生效
      */
-    public void doStartCleaning(Long titleId, Long parseRuleId) {
+    public void doStartCleaning(Long titleId, Long parseRuleId, Boolean useAi) {
         transactionTemplate.executeWithoutResult(status -> {
             try {
                 log.info("异步清洗任务开始执行，表头ID: {}, 规则ID: {}", titleId, parseRuleId);
@@ -752,7 +770,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 for (int i = 0; i < tempDataList.size(); i++) {
                     try {
                         CleanedDataEntity cleaned = matchAndCleanInternal(tempDataList.get(i), null, parseRule,
-                                titleEntity, allCategories, synonyms);
+                                titleEntity, allCategories, synonyms, useAi);
                         successCount++;
                         consecutiveErrors = 0;
 
@@ -830,9 +848,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
      * 内部清洗方法，接受预加载的缓存数据，避免循环内重复DB查询
      */
     private CleanedDataEntity matchAndCleanInternal(TempDataEntity tempData, Long extraDataTitleId,
-                                                     ParseRule parseRule, TempDataTitleEntity titleEntity,
-                                                      List<CategoryEntity> allCategories,
-                                                      List<CategorySynonymEntity> synonyms) {
+                                                    ParseRule parseRule, TempDataTitleEntity titleEntity,
+                                                     List<CategoryEntity> allCategories,
+                                                     List<CategorySynonymEntity> synonyms, Boolean useAi) {
         // 获取extra_data
         ExtraDataEntity extraData = null;
         if (extraDataTitleId != null) {
@@ -859,12 +877,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         cleanedData.setTempDataId(tempData.getId());
         cleanedData.setMatchSource(matchResult.getSource());
         cleanedData.setMatchConfidence(matchResult.getConfidence());
-        if (matchedCategory != null) {
-            cleanedData.setCategoryId(matchedCategory.getId());
-            cleanedData.setCategoryCode(matchedCategory.getCategoryCode());
-            cleanedData.setCategoryLevel(matchedCategory.getLevel());
-            cleanedData.setCategoryFullPath(matchedCategory.getFullPath());
-        }
+        fillCategoryInfo(cleanedData, matchedCategory);
 
         // 提取核心字段
         cleanedData.setMaterialCode(getColByTitle(titleEntity, "物料代码", tempData, 3));
@@ -874,9 +887,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         cleanedData.setGrade(extraAttrs.getOrDefault("牌号", ""));
         cleanedData.setUnit(extraAttrs.getOrDefault("计量单位", getColByTitle(titleEntity, "计量单位", tempData, 6)));
 
-        // 质量评分
+        // 质量评分（启用 AI 辅助评分且 AI 可用时，用 AI 评分替代原有规则评分）
         cleanedData.setCompletenessScore(cleanedData.calculateCompleteness());
-        double qualityScore = calculateQuality(cleanedData);
+        double qualityScore = computeQualityScore(cleanedData, matchedCategory, useAi);
         cleanedData.setQualityScore(qualityScore);
         cleanedData.setAccuracyScore(qualityScore * 0.8);
 
@@ -944,7 +957,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         ExtraDataTitleEntity extraTitle = extraDataTitleMapper.selectByTempDataTitleId(
                 tempDataMapper.selectById(oldData.getTempDataId()).getTempDataTitleId());
         return matchAndClean(oldData.getTempDataId(),
-                extraTitle != null ? extraTitle.getId() : null, null);
+                extraTitle != null ? extraTitle.getId() : null, null, null);
     }
 
     // ==================== 字段映射 ====================
@@ -1945,6 +1958,338 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         return Math.max(0, Math.min(score, 100));
     }
 
+    /** 将匹配到的分类信息（含分类名称）填充到清洗数据 */
+    private void fillCategoryInfo(CleanedDataEntity cleanedData, CategoryEntity matchedCategory) {
+        if (matchedCategory != null) {
+            cleanedData.setCategoryId(matchedCategory.getId());
+            cleanedData.setCategoryCode(matchedCategory.getCategoryCode());
+            cleanedData.setCategoryLevel(matchedCategory.getLevel());
+            cleanedData.setCategoryFullPath(matchedCategory.getFullPath());
+            cleanedData.setCategoryName(matchedCategory.getCategoryName());
+        }
+    }
+
+    /**
+     * 计算质量评分（即“与标准库对比的准确性评分”）：
+     *  - 启用 AI 且 AI 可用时，调用大模型把系统分类与 main_data_category 标准库（召回的候选子集）对比，给出评分；
+     *  - 否则用规则校验（确定性地把系统分类与标准库比对）。
+     */
+    private double computeQualityScore(CleanedDataEntity cleanedData, CategoryEntity matchedCategory, Boolean useAi) {
+        if (Boolean.TRUE.equals(useAi) && aiClientService.isEnabled()) {
+            List<CategoryStandardLibrary.Candidate> candidates = stdLib.retrieveCandidates(cleanedData, candidateTopK);
+            return aiScoreClassification(cleanedData, matchedCategory, candidates);
+        }
+        return stdLib.ruleBasedAccuracy(cleanedData, matchedCategory);
+    }
+
+    /**
+     * 调用大模型对分类结果进行 AI 质量评分：将分类结果与 main_data_category 标准库（召回候选）对比，给出 0~100 评分。
+     */
+    private double aiScoreClassification(CleanedDataEntity cleanedData, CategoryEntity matchedCategory,
+                                          List<CategoryStandardLibrary.Candidate> candidates) {
+        return aiDetect(cleanedData, matchedCategory, candidates).score;
+    }
+
+    /**
+     * 调用大模型做分类检测：给定物料信息、系统分类与标准库候选子集，返回评分/一致性/最合理标准编码/说明。
+     * 异常时回退到规则校验结果。
+     */
+    private AiDetectResult aiDetect(CleanedDataEntity cleanedData, CategoryEntity matchedCategory,
+                                    List<CategoryStandardLibrary.Candidate> candidates) {
+        AiDetectResult result = new AiDetectResult();
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (CategoryStandardLibrary.Candidate c : candidates) {
+                CategoryEntity cat = c.getCategory();
+                sb.append("- 编码:").append(StrUtil.nullToEmpty(cat.getCategoryCode()))
+                        .append("，名称:").append(StrUtil.nullToEmpty(cat.getCategoryName()))
+                        .append("，路径:").append(StrUtil.nullToEmpty(cat.getFullPath()))
+                        .append("，单位:").append(StrUtil.nullToEmpty(cat.getUnit()))
+                        .append("，说明:").append(truncate(cat.getDescription(), 200))
+                        .append("\n");
+            }
+            String prompt = aiClassificationDetectPrompt
+                    .replace("{materialCode}", StrUtil.nullToEmpty(cleanedData.getMaterialCode()))
+                    .replace("{materialName}", StrUtil.nullToEmpty(cleanedData.getMaterialName()))
+                    .replace("{specification}", StrUtil.nullToEmpty(cleanedData.getSpecification()))
+                    .replace("{grade}", StrUtil.nullToEmpty(cleanedData.getGrade()))
+                    .replace("{technicalStandard}", StrUtil.nullToEmpty(cleanedData.getTechnicalStandard()))
+                    .replace("{unit}", StrUtil.nullToEmpty(cleanedData.getUnit()))
+                    .replace("{categoryCode}", StrUtil.nullToEmpty(cleanedData.getCategoryCode()))
+                    .replace("{categoryName}", StrUtil.nullToEmpty(cleanedData.getCategoryName()))
+                    .replace("{categoryFullPath}", StrUtil.nullToEmpty(cleanedData.getCategoryFullPath()))
+                    .replace("{candidates}", sb.toString());
+            // 反向校验提示：系统编码是否真实存在于标准库，直接告诉模型，避免其盲目“确认”
+            boolean sysInLib = StrUtil.isNotBlank(cleanedData.getCategoryCode())
+                    && stdLib.getByCode(cleanedData.getCategoryCode()) != null;
+            String sysNote = sysInLib
+                    ? "\n\n[反向校验提示] 系统分类编码 " + cleanedData.getCategoryCode() + " 存在于标准库中，但仍须依据物料内容独立判断其是否正确，不得仅因存在就认定 matched=true。"
+                    : "\n\n[反向校验提示] 系统分类编码 " + cleanedData.getCategoryCode() + " 不在标准库中（标准库无此编码），因此系统分类必定有误，请从候选中选出正确编码作为 bestMatchCode。";
+            String aiText = aiClientService.chat(aiClassificationDetectSystemPrompt, prompt + sysNote);
+            return parseAiDetect(aiText);
+        } catch (Exception e) {
+            log.warn("AI 分类检测失败，回退规则校验，tempDataId: {}", cleanedData.getTempDataId(), e);
+            CategoryStandardLibrary.RuleCheck rc = stdLib.ruleCheck(cleanedData, matchedCategory);
+            result.score = rc.getScore();
+            result.matched = rc.isConsistent();
+            result.bestMatchCode = rc.getBestMatchCode();
+            result.bestMatchName = rc.getBestMatchName();
+            result.reason = "AI 失败，" + rc.getReason();
+            return result;
+        }
+    }
+
+    /** 解析 AI 检测返回：{score, matched, bestMatchCode, reason} */
+    private AiDetectResult parseAiDetect(String aiText) {
+        AiDetectResult r = new AiDetectResult();
+        if (StrUtil.isBlank(aiText)) throw new RuntimeException("AI 返回为空");
+        String text = aiText.trim();
+        if (text.startsWith("```")) {
+            int nl = text.indexOf('\n');
+            if (nl >= 0) text = text.substring(nl + 1);
+            int fence = text.lastIndexOf("```");
+            if (fence >= 0) text = text.substring(0, fence);
+            text = text.trim();
+        }
+        int s = text.indexOf('{');
+        int e = text.lastIndexOf('}');
+        if (s < 0 || e <= s) throw new RuntimeException("AI 返回无 JSON");
+        JSONObject obj = JSON.parseObject(text.substring(s, e + 1));
+        Object scoreObj = obj.get("score");
+        if (scoreObj != null) r.score = Math.max(0, Math.min(Double.parseDouble(scoreObj.toString()), 100));
+        Object matchedObj = obj.get("matched");
+        if (matchedObj != null) r.matched = Boolean.parseBoolean(matchedObj.toString());
+        Object bestObj = obj.get("bestMatchCode");
+        if (bestObj != null) r.bestMatchCode = bestObj.toString().trim();
+        Object reasonObj = obj.get("reason");
+        if (reasonObj != null) r.reason = reasonObj.toString();
+        if (StrUtil.isNotBlank(r.bestMatchCode)) {
+            CategoryEntity best = stdLib.getByCode(r.bestMatchCode);
+            if (best != null) r.bestMatchName = best.getCategoryName();
+        }
+        return r;
+    }
+
+    private String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max);
+    }
+
+    /** 解析 AI 返回的评分：兼容 JSON {"score":N} 或纯数字；解析失败抛出异常由调用方回退 */
+    private double parseScoreFromAi(String aiText) {
+        if (StrUtil.isBlank(aiText)) throw new RuntimeException("AI 返回为空");
+        String text = aiText.trim();
+        if (text.startsWith("```")) {
+            int nl = text.indexOf('\n');
+            if (nl >= 0) text = text.substring(nl + 1);
+            int fence = text.lastIndexOf("```");
+            if (fence >= 0) text = text.substring(0, fence);
+            text = text.trim();
+        }
+        int s = text.indexOf('{');
+        int e = text.lastIndexOf('}');
+        if (s >= 0 && e > s) {
+            JSONObject obj = JSON.parseObject(text.substring(s, e + 1));
+            Object scoreObj = obj.get("score");
+            if (scoreObj != null) return Double.parseDouble(scoreObj.toString());
+        }
+        // 纯数字兜底
+        return Double.parseDouble(text.replaceAll("[^0-9.]", ""));
+    }
+
+    /**
+     * AI 辅助分类检测（基于 main_data_category 标准库比对）。
+     * 对文件下已清洗的数据重新评分：AI 模式调用大模型比对标准库候选，否则用规则校验；
+     * 更新 quality_score / accuracy_score / status，并返回汇总与逐条明细。
+     */
+    @Override
+    public Map<String, Object> aiClassifyCheck(Long titleId, Boolean useAi) {
+        stdLib.ensureLoaded();
+        List<CleanedDataEntity> list = cleanedDataMapper.selectAllByTempDataTitleId(titleId);
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (list == null || list.isEmpty()) {
+            result.put("message", "该文件暂无清洗数据，请先执行数据清洗");
+            result.put("total", 0);
+            return result;
+        }
+        boolean aiOn = Boolean.TRUE.equals(useAi) && aiClientService.isEnabled();
+        int total = list.size();
+        double sum = 0;
+        int matchedCount = 0;
+        int mismatchCount = 0;
+        List<ClassifyCheckDetail> details = new ArrayList<>();
+        for (CleanedDataEntity cd : list) {
+            ClassifyCheckDetail d = detectSingle(cd, aiOn);
+            cleanedDataMapper.updateById(cd);
+            sum += (d.getScore() != null ? d.getScore() : 0);
+            if (Boolean.TRUE.equals(d.getMatched())) matchedCount++;
+            else mismatchCount++;
+            details.add(d);
+        }
+        result.put("total", total);
+        result.put("avgScore", total > 0 ? Math.round(sum / total * 10) / 10.0 : 0);
+        result.put("matchedCount", matchedCount);
+        result.put("mismatchCount", mismatchCount);
+        result.put("useAi", aiOn);
+        result.put("details", details);
+        return result;
+    }
+
+    /** 单条检测：评分 + 一致性判定 + 更新 cleanedData 的评分与状态 */
+    private ClassifyCheckDetail detectSingle(CleanedDataEntity cd, boolean aiOn) {
+        CategoryEntity matched = StrUtil.isNotBlank(cd.getCategoryCode())
+                ? stdLib.getByCode(cd.getCategoryCode()) : null;
+        List<CategoryStandardLibrary.Candidate> candidates = stdLib.retrieveCandidates(cd, candidateTopK);
+
+        double score;
+        boolean matchedFlag;
+        String bestMatchCode;
+        String bestMatchName;
+        String reason;
+
+        if (aiOn) {
+            AiDetectResult r = aiDetect(cd, matched, candidates);
+            score = r.score;
+            bestMatchCode = r.bestMatchCode;
+            bestMatchName = r.bestMatchName;
+            reason = r.reason;
+            // 确定性判定：用 AI 给出的最合理标准编码与系统编码比对，而非盲信 AI 的 matched 布尔值
+            CategoryEntity sysCat = stdLib.getByCode(cd.getCategoryCode());
+            CategoryEntity bestCat = StrUtil.isNotBlank(bestMatchCode) ? stdLib.getByCode(bestMatchCode) : null;
+            if (sysCat == null) {
+                matchedFlag = false; // 系统无有效分类，必为不一致
+            } else if (bestCat == null) {
+                matchedFlag = Boolean.TRUE.equals(r.matched); // AI 未给出可识别编码，退而信任其判断
+            } else {
+                matchedFlag = sysCat.getId().equals(bestCat.getId());
+            }
+            // 反向校验兜底：系统编码不在标准库 -> 必为不一致，并从候选中给出建议编码
+            if (sysCat == null && StrUtil.isBlank(bestMatchCode) && !candidates.isEmpty()) {
+                bestMatchCode = candidates.get(0).getCategory().getCategoryCode();
+                bestMatchName = candidates.get(0).getCategory().getCategoryName();
+            }
+        } else {
+            CategoryStandardLibrary.RuleCheck rc = stdLib.ruleCheck(cd, matched);
+            score = rc.getScore();
+            matchedFlag = rc.isConsistent();
+            bestMatchCode = rc.getBestMatchCode();
+            bestMatchName = rc.getBestMatchName();
+            reason = rc.getReason();
+        }
+
+        cd.setQualityScore(score);
+        cd.setAccuracyScore(score * 0.8);
+        if (score < thresholdReview) cd.setStatus(DataStatus.NEEDS_REVIEW);
+        else if (score >= thresholdExport) cd.setStatus(DataStatus.EXPORT_READY);
+        else cd.setStatus(DataStatus.APPROVED);
+
+        // 若建议编码与系统编码相同，并非“更好的建议”，不展示，避免“判不一致却建议同一编码”的歧义
+        if (StrUtil.isNotBlank(bestMatchCode) && StrUtil.isNotBlank(cd.getCategoryCode())) {
+            CategoryEntity sug = stdLib.getByCode(bestMatchCode);
+            CategoryEntity sys = stdLib.getByCode(cd.getCategoryCode());
+            if (sug != null && sys != null && sug.getId().equals(sys.getId())) {
+                bestMatchCode = null;
+                bestMatchName = null;
+            }
+        }
+
+        ClassifyCheckDetail d = new ClassifyCheckDetail();
+        d.setId(cd.getId());
+        d.setMaterialCode(cd.getMaterialCode());
+        d.setMaterialName(cd.getMaterialName());
+        d.setCategoryCode(cd.getCategoryCode());
+        d.setCategoryName(cd.getCategoryName());
+        d.setScore(score);
+        d.setMatched(matchedFlag);
+        d.setBestMatchCode(matchedFlag ? null : bestMatchCode);
+        d.setBestMatchName(matchedFlag ? null : bestMatchName);
+        d.setReason(reason);
+        d.setCandidateCount(candidates.size());
+        return d;
+    }
+
+    /**
+     * 应用分类修正：将指定清洗数据的分类字段替换为推荐的标准分类（按编码从标准库查找），
+     * 替换后按标准库规则重新评分并保存。
+     */
+    @Override
+    public Map<String, Object> applyClassifyFix(Long id, String targetCode) {
+        return doApplyFix(id, targetCode);
+    }
+
+    @Override
+    public Map<String, Object> applyClassifyFixBatch(Long titleId, List<Map<String, Object>> items) {
+        stdLib.ensureLoaded();
+        int applied = 0, skipped = 0, failed = 0;
+        List<Map<String, Object>> results = new ArrayList<>();
+        if (items != null) {
+            for (Map<String, Object> it : items) {
+                Object idObj = it.get("id");
+                Object codeObj = it.get("code");
+                if (idObj == null || codeObj == null) { skipped++; continue; }
+                Long id = Long.valueOf(idObj.toString());
+                String code = codeObj.toString();
+                try {
+                    results.add(doApplyFix(id, code));
+                    applied++;
+                } catch (Exception e) {
+                    failed++;
+                    Map<String, Object> err = new LinkedHashMap<>();
+                    err.put("id", id);
+                    err.put("code", code);
+                    err.put("error", e.getMessage());
+                    results.add(err);
+                }
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("titleId", titleId);
+        out.put("applied", applied);
+        out.put("skipped", skipped);
+        out.put("failed", failed);
+        out.put("items", results);
+        return out;
+    }
+
+    /** 将指定清洗数据的分类替换为推荐的标准分类（按编码从标准库查找），替换后重新评分并保存 */
+    private Map<String, Object> doApplyFix(Long id, String targetCode) {
+        CleanedDataEntity cd = cleanedDataMapper.selectById(id);
+        if (cd == null) throw new RuntimeException("清洗数据不存在: " + id);
+        CategoryEntity target = stdLib.getByCode(targetCode);
+        if (target == null) throw new RuntimeException("标准库中不存在编码: " + targetCode);
+        // 用推荐的标准分类替换错误分类
+        cd.setCategoryId(target.getId());
+        cd.setCategoryCode(target.getCategoryCode());
+        cd.setCategoryName(target.getCategoryName());
+        cd.setCategoryLevel(target.getLevel());
+        cd.setCategoryFullPath(target.getFullPath());
+        // 替换后按标准库规则重新评分（编码已与标准一致，评分应较高）
+        double score = stdLib.ruleBasedAccuracy(cd, target);
+        cd.setQualityScore(score);
+        cd.setAccuracyScore(score * 0.8);
+        if (score < thresholdReview) cd.setStatus(DataStatus.NEEDS_REVIEW);
+        else if (score >= thresholdExport) cd.setStatus(DataStatus.EXPORT_READY);
+        else cd.setStatus(DataStatus.APPROVED);
+        cleanedDataMapper.updateById(cd);
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("id", id);
+        r.put("categoryCode", cd.getCategoryCode());
+        r.put("categoryName", cd.getCategoryName());
+        r.put("categoryFullPath", cd.getCategoryFullPath());
+        r.put("score", score);
+        r.put("status", cd.getStatus());
+        return r;
+    }
+
+    /** AI 检测结果 */
+    private static class AiDetectResult {
+        double score = 0;
+        Boolean matched;
+        String bestMatchCode;
+        String bestMatchName;
+        String reason;
+    }
+
     private void createReviewTask(CleanedDataEntity cleanedData, String reason) {
         ReviewTaskEntity task = new ReviewTaskEntity();
         task.setTaskType(com.aiclean.entity.enums.ReviewTaskType.DATA_VALIDATION);
@@ -1988,6 +2333,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 dataMap.put("materialCode", cleanedData.getMaterialCode());
                 dataMap.put("materialName", cleanedData.getMaterialName());
                 dataMap.put("specification", cleanedData.getSpecification());
+                dataMap.put("categoryName", cleanedData.getCategoryName());
                 dataMap.put("qualityScore", cleanedData.getQualityScore());
                 dataMap.put("status", cleanedData.getStatus() != null ? cleanedData.getStatus().name() : "");
                 dataMap.put("categoryCode", cleanedData.getCategoryCode());

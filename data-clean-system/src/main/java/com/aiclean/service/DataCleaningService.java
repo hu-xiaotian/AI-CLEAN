@@ -34,10 +34,19 @@ public interface DataCleaningService {
     Map<String, Object> getAiExtractProgress(Long titleId);
 
     // ===== 分类匹配 =====
-    CleanedDataEntity matchAndClean(Long tempDataId, Long extraDataTitleId, Long parseRuleId);
+    CleanedDataEntity matchAndClean(Long tempDataId, Long extraDataTitleId, Long parseRuleId, Boolean useAi);
+
+    // ===== AI 辅助分类检测（基于 main_data_category 标准库比对）=====
+    Map<String, Object> aiClassifyCheck(Long titleId, Boolean useAi);
+
+    // ===== 应用分类修正：将清洗数据的分类替换为推荐的标准编码并保存 =====
+    Map<String, Object> applyClassifyFix(Long id, String targetCode);
+
+    // ===== 批量应用分类修正：对一组 {id, code} 逐条替换并保存 =====
+    Map<String, Object> applyClassifyFixBatch(Long titleId, List<Map<String, Object>> items);
 
     // ===== 数据清洗 =====
-    String startCleaning(Long titleId, Long parseRuleId);
+    String startCleaning(Long titleId, Long parseRuleId, Boolean useAi);
     Map<String, Object> getCleaningProgress(Long titleId);
     void stopCleaning(Long titleId);
     CleanedDataEntity recleanData(Long cleanedDataId);

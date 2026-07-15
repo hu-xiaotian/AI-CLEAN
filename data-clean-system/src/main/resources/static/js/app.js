@@ -290,7 +290,7 @@ function ocDoCleaning(titleId, ruleId) {
         };
 
         // 启动清洗任务
-        fetch(API + `/cleaning/start?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' })
+        fetch(API + `/cleaning/start?titleId=${titleId}&useAi=${useAi}`, { method: 'POST' })
             .then(res => safeJson(res, '启动清洗'))
             .then(data => { if (data.code !== 200) throw new Error(data.msg); })
             .catch(e => finish(false, '清洗启动失败: ' + e.message));
@@ -1416,8 +1416,8 @@ async function loadCleanStats() {
 
 async function startCleaning() {
     const titleId = $('#cleanTitleId').value;
-    const ruleId = $('#cleanRuleId').value;
-    if (!titleId || !ruleId) { showToast('请选择数据文件和解析规则', 'warning'); return; }
+    if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
+    const useAi = $('#cleanUseAi') && $('#cleanUseAi').checked;
 
     // 断开之前的连接
     disconnectWebSocket();
@@ -1438,7 +1438,7 @@ async function startCleaning() {
     connectWebSocket(titleId, function connected() {
         // WebSocket 连接成功后，调用清洗 API
         $('#cleanStatus').innerHTML = '<p style="font-size:13px;color:var(--accent)">清洗任务已启动，正在处理…</p>';
-        fetch(API + `/cleaning/start?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' })
+        fetch(API + `/cleaning/start?titleId=${titleId}&useAi=${useAi}`, { method: 'POST' })
             .then(res => safeJson(res, '启动清洗'))
             .then(data => {
                 if (data.code !== 200) throw new Error(data.msg);
@@ -1448,6 +1448,167 @@ async function startCleaning() {
                 showToast('清洗启动失败: ' + e.message, 'error');
             });
     });
+}
+
+// AI 辅助分类检测：将已清洗数据的分类结果与 main_data_category 标准库比对，给出评分
+async function aiClassifyCheck() {
+    const titleId = $('#cleanTitleId').value;
+    if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
+    const useAi = $('#cleanUseAi') && $('#cleanUseAi').checked;
+    const btn = document.getElementById('aiCheckBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '检测中…'; }
+
+    fetch(API + `/cleaning/ai-classify-check?titleId=${titleId}&useAi=${useAi}`, { method: 'POST' })
+        .then(res => safeJson(res, 'AI 分类检测'))
+        .then(data => {
+            if (data.code !== 200) throw new Error(data.msg || '检测失败');
+            renderAiCheck(data.data || {});
+            showToast('检测完成', 'success');
+        })
+        .catch(e => {
+            showToast('检测失败: ' + e.message, 'error');
+            $('#aiCheckCard').style.display = 'block';
+            $('#aiCheckSummary').textContent = '检测失败: ' + e.message;
+        })
+        .finally(() => {
+            if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+        });
+}
+
+let lastAiCheckData = null;
+
+function renderAiCheck(d) {
+    lastAiCheckData = d;
+    $('#aiCheckCard').style.display = 'block';
+    const total = d.total || 0;
+    const avg = d.avgScore != null ? Number(d.avgScore).toFixed(1) : '-';
+    const matched = d.matchedCount || 0;
+    const mismatch = d.mismatchCount || 0;
+    const mode = d.useAi ? 'AI 大模型比对' : '规则校验（未启用 AI）';
+    if (d.message) {
+        $('#aiCheckSummary').textContent = d.message;
+        $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">暂无数据</td></tr>';
+        return;
+    }
+    $('#aiCheckSummary').innerHTML =
+        `共 <strong>${total}</strong> 条 ｜ 平均评分 <strong>${avg}</strong> ｜ 一致 <strong style="color:var(--success)">${matched}</strong> ｜ 不一致 <strong style="color:var(--danger)">${mismatch}</strong> ｜ 模式：${mode}`;
+
+    const details = d.details || [];
+    if (!details.length) {
+        $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">暂无明细</td></tr>';
+        return;
+    }
+    let html = '';
+    for (const r of details) {
+        const score = r.score != null ? Number(r.score).toFixed(1) : '-';
+        const scoreClass = r.score != null ? (r.score >= 80 ? 'badge-success' : r.score >= 60 ? 'badge-warning' : 'badge-danger') : '';
+        const matchedBadge = r.matched
+            ? '<span class="badge badge-success">一致</span>'
+            : '<span class="badge badge-danger">不一致</span>';
+        const sysCat = [r.categoryCode, r.categoryName].filter(Boolean).join(' / ');
+        const suggest = (r.matched || !r.bestMatchCode) ? '-' : `<strong>${r.bestMatchCode}</strong>${r.bestMatchName ? '（' + r.bestMatchName + '）' : ''}`;
+        // 仅“不一致且有推荐编码”的行显示「应用」按钮
+        const actionTd = (r.matched || !r.bestMatchCode)
+            ? ''
+            : `<button class="btn btn-sm btn-primary" onclick="applyClassifyFix(${r.id}, '${r.bestMatchCode}')">应用</button>`;
+        html += `<tr data-detail-id="${r.id}">
+            <td>${r.materialCode || '-'}</td>
+            <td>${r.materialName || '-'}</td>
+            <td>${sysCat || '-'}</td>
+            <td><span class="badge ${scoreClass}">${score}</span></td>
+            <td>${matchedBadge}</td>
+            <td>${suggest}</td>
+            <td style="font-size:12px">${r.reason || '-'}</td>
+            <td>${actionTd}</td>
+        </tr>`;
+    }
+    $('#aiCheckTbody').innerHTML = html;
+    // 存在“不一致且有推荐编码”的行时显示批量应用按钮
+    const hasFixable = details.some(r => !r.matched && r.bestMatchCode);
+    const bb = document.getElementById('batchApplyBtn');
+    if (bb) bb.style.display = hasFixable ? 'inline-block' : 'none';
+}
+
+// 应用推荐编码：替换错误分类并保存，成功后局部刷新该行与汇总
+function applyClassifyFix(id, code) {
+    if (!window.confirm(`确认将分类替换为推荐编码 ${code}？`)) return;
+    fetch(API + `/cleaning/apply-classify-fix?id=${id}&targetCode=${encodeURIComponent(code)}`, { method: 'POST' })
+        .then(res => safeJson(res, '应用分类修正'))
+        .then(data => {
+            if (data.code !== 200) throw new Error(data.msg || '应用失败');
+            showToast('已应用推荐编码 ' + code, 'success');
+            const d = data.data || {};
+            // 更新本地明细并重新渲染（保持汇总计数正确）
+            const det = (lastAiCheckData && lastAiCheckData.details || []).find(x => x.id === id);
+            if (det) {
+                det.matched = true;
+                det.score = d.score;
+                det.categoryCode = d.categoryCode;
+                det.categoryName = d.categoryName;
+                det.bestMatchCode = null;
+                det.bestMatchName = null;
+                det.reason = '已应用推荐编码 ' + code;
+            }
+            recomputeAiCheckSummary(lastAiCheckData);
+            renderAiCheck(lastAiCheckData);
+        })
+        .catch(e => showToast('应用失败: ' + e.message, 'error'));
+}
+
+// 批量应用全部建议：将当前检测结果中所有“不一致且有推荐编码”的行一次性替换并保存
+function batchApplyClassifyFix() {
+    if (!lastAiCheckData || !lastAiCheckData.details) return;
+    const items = lastAiCheckData.details
+        .filter(r => !r.matched && r.bestMatchCode)
+        .map(r => ({ id: r.id, code: r.bestMatchCode }));
+    if (!items.length) { showToast('没有可应用的建议', 'warning'); return; }
+    const titleId = $('#cleanTitleId').value;
+    if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
+    if (!window.confirm(`确认批量应用 ${items.length} 条推荐编码？`)) return;
+    fetch(API + `/cleaning/apply-classify-fix-batch?titleId=${encodeURIComponent(titleId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(items)
+    })
+        .then(res => safeJson(res, '批量应用分类修正'))
+        .then(data => {
+            if (data.code !== 200) throw new Error(data.msg || '批量应用失败');
+            const d = data.data || {};
+            showToast(`已应用 ${d.applied} 条，跳过 ${d.skipped} 条，失败 ${d.failed} 条`, d.failed > 0 ? 'warning' : 'success');
+            // 用返回结果更新本地明细并重新渲染
+            const map = {};
+            (d.items || []).forEach(it => { if (it.id != null) map[it.id] = it; });
+            (lastAiCheckData.details || []).forEach(r => {
+                const it = map[r.id];
+                if (it && !it.error) {
+                    r.matched = true;
+                    r.score = it.score;
+                    r.categoryCode = it.categoryCode;
+                    r.categoryName = it.categoryName;
+                    r.bestMatchCode = null;
+                    r.bestMatchName = null;
+                    r.reason = '已应用推荐编码 ' + (it.categoryCode || '');
+                }
+            });
+            recomputeAiCheckSummary(lastAiCheckData);
+            renderAiCheck(lastAiCheckData);
+        })
+        .catch(e => showToast('批量应用失败: ' + e.message, 'error'));
+}
+
+// 依据 details 重新计算汇总（总数/平均分/一致数/不一致数）
+function recomputeAiCheckSummary(d) {
+    if (!d) return;
+    const details = d.details || [];
+    let sum = 0, matched = 0, mismatch = 0;
+    for (const r of details) {
+        sum += (r.score != null ? r.score : 0);
+        if (r.matched) matched++; else mismatch++;
+    }
+    d.total = details.length;
+    d.avgScore = details.length ? Math.round(sum / details.length * 10) / 10.0 : 0;
+    d.matchedCount = matched;
+    d.mismatchCount = mismatch;
 }
 
 function connectWebSocket(titleId, onConnected) {
@@ -1541,7 +1702,7 @@ function appendCleanRow(index, data) {
         '<td>' + index + '</td>' +
         '<td>' + (data.materialCode || '-') + '</td>' +
         '<td title="' + (data.materialName || '') + '">' + (data.materialName ? (data.materialName.length > 20 ? data.materialName.substring(0, 20) + '...' : data.materialName) : '-') + '</td>' +
-        '<td>' + (data.specification || '-') + '</td>' +
+        '<td>' + (data.categoryName || '-') + '</td>' +
         '<td>' + (data.categoryCode || '-') + '</td>' +
         '<td><span class="badge ' + scoreClass + '">' + score + '</span></td>' +
         '<td>' + statusBadge(statusText) + '</td>';

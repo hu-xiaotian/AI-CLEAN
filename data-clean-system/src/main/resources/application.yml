@@ -6,15 +6,15 @@ spring:
   # 数据源配置
   datasource:
     # 开发环境使用MySQL (生产环境使用达梦)
-#    driver-class-name: com.mysql.cj.jdbc.Driver
-#    url: jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
-#    username: root
-#    password: Mysql123456.
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+    username: root
+    password: Mysql123456.
     # 达梦数据库配置示例:
-    driver-class-name: dm.jdbc.driver.DmDriver
-    url: jdbc:dm://121.229.145.117:5236?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
-    username: SYSDBA
-    password: Dameng123456
+#    driver-class-name: dm.jdbc.driver.DmDriver
+#    url: jdbc:dm://121.229.145.117:5236?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
+#    username: SYSDBA
+#    password: Dameng123456
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
@@ -142,7 +142,11 @@ app:
     quality-score:
       threshold-review: 60
       threshold-export: 80
-    
+    # 标准库配置（main_data_category 全表比对）
+    standard-library:
+      # AI 检测时从全表召回的候选数量（top-K）
+      candidate-top-k: 10
+
   # 审核工作流配置
   review-workflow:
     # 默认审核人
@@ -208,7 +212,73 @@ app:
       {fullDesc}
 
       请按上述目标字段从描述文本中提取值，只返回 JSON 键值对。
-    
+    # ===== AI 辅助分类评分（智能分类页“启用 AI 辅助评分”时使用，替代原有规则质量评分）=====
+    # 系统提示词（角色设定，简短即可，详细评分要求写在用户模板里）
+    classification-system-prompt: 你是一名严谨的工业品物料数据质量审核专家，只输出要求的 JSON，不要输出其他内容。
+    # 用户提示词模板：支持占位符 {materialCode}{materialName}{specification}{grade}{technicalStandard}{categoryCode}{categoryName}{categoryFullPath}{stdCategoryName}{stdCategoryFullPath}{stdDescription}{stdUnit}
+    classification-score-prompt: |
+      请根据以下信息，评估该物料的“分类结果”是否正确合理，并给出 0~100 的质量评分（整数）。
+
+      【待审核物料】
+      物料代码：{materialCode}
+      物料名称：{materialName}
+      规格：{specification}
+      牌号：{grade}
+      技术标准：{technicalStandard}
+
+      【系统分类结果】
+      分类编码：{categoryCode}
+      分类名称：{categoryName}
+      分类完整路径：{categoryFullPath}
+
+      【标准分类库参考（main_data_category）】
+      标准分类名称：{stdCategoryName}
+      标准分类路径：{stdCategoryFullPath}
+      标准分类说明：{stdDescription}
+      计量单位：{stdUnit}
+
+      评分要点：
+      1. 分类编码/名称是否与标准分类库一致（不一致明显扣分）；
+      2. 物料名称、规格、牌号是否确实属于该分类（明显错分严重扣分）；
+      3. 分类路径层级是否完整合理。
+
+      只返回一个 JSON 对象：{"score": <0-100 的整数>, "reason": "<简短中文说明>"}
+
+    # ===== AI 辅助分类检测（基于 main_data_category 全表候选比对）=====
+    # 系统提示词
+    classification-detect-system-prompt: 你是一名严谨的工业品物料数据质量审核专家。你必须依据“物料自身的名称、规格、牌号、技术标准”独立判断其正确分类，不得仅凭“系统分类编码是否出现在候选列表中”就认定正确。只输出要求的 JSON，不要输出其他内容。
+    # 用户提示词模板：占位符 {materialCode}{materialName}{specification}{grade}{technicalStandard}{unit}{categoryCode}{categoryName}{categoryFullPath}{candidates}
+    classification-detect-prompt: |
+      请审核下面这条物料的系统分类是否正确。你必须依据物料自身的名称、规格、牌号、技术标准，独立判断它“真正应该属于”标准分类库中的哪一个分类，再与系统给出的分类对比。
+
+      【待审核物料】
+      物料代码：{materialCode}
+      物料名称：{materialName}
+      规格：{specification}
+      牌号：{grade}
+      技术标准：{technicalStandard}
+      计量单位：{unit}
+
+      【系统分类结果】
+      分类编码：{categoryCode}
+      分类名称：{categoryName}
+      分类完整路径：{categoryFullPath}
+
+      【标准分类库候选（main_data_category 全表召回，可能不完整）】
+      {candidates}
+
+      审核规则（务必遵守）：
+      1. 先根据物料名称/规格/牌号/技术标准，判断它最合理的标准分类编码（即 bestMatchCode）。
+      2. 若系统分类编码 {categoryCode} 不在上面的候选列表中，则系统分类【必定有误】，matched 必须为 false。
+      3. 若系统分类编码 {categoryCode} 在候选列表中，仍需判断物料内容是否真的属于该分类；若明显错分，matched 为 false 并给出正确的 bestMatchCode。
+      4. bestMatchCode 必须填写你判定出的“最合理标准编码”（即使系统正确，也应填系统编码本身，不要留空）；若候选中确实没有合适项，可填你认为最接近的编码。
+      5. 不同物料要独立判断，禁止对多条不同物料返回相同的 bestMatchCode。
+
+      评分：系统分类正确给 85~100；轻微偏差给 60~84；明显错分给 0~59。
+
+      只返回一个 JSON 对象：
+      {"score": <0-100 整数>, "matched": <true/false>, "bestMatchCode": "<最合理标准编码>", "reason": "<简短中文说明，含判断依据>"}
+
   # 文件处理配置
   file-processing:
     # Excel解析配置
