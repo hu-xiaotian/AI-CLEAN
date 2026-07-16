@@ -275,7 +275,7 @@ function resetOcUI() {
 }
 
 // 步骤一：智能分类（数据清洗）
-function ocDoCleaning(titleId, ruleId) {
+function ocDoCleaning(titleId, ruleId, useAi) {
     return new Promise((resolve, reject) => {
         let settled = false;
         let started = false; // 是否已观测到任务开始（避免复用历史 completed 状态误判）
@@ -495,9 +495,10 @@ async function runOneClickClean() {
     resetOcUI();
     try {
         // 步骤一：智能分类
+        const useAi = $('#ocUseAi') && $('#ocUseAi').checked;
         setOcStep('clean', 'running');
         setOcOverall(5, '正在执行：智能分类');
-        await ocDoCleaning(titleId, ruleId);
+        await ocDoCleaning(titleId, ruleId, useAi);
         setOcStep('clean', 'done');
         setOcOverall(35, '已完成：智能分类');
 

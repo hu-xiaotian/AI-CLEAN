@@ -36,6 +36,13 @@ public interface FieldMappingAuditMapper extends BaseMapper<FieldMappingAuditEnt
     List<FieldMappingAuditEntity> selectByStandardAndTitle(@Param("standardTitleId") Long standardTitleId, @Param("titleId") Long titleId);
 
     /**
+     * 获取某数据文件下「存在字段映射」的去重标准字段表头ID集合。
+     * 用于 fill-all 时只遍历与本文件相关的标准表头，而非系统全部标准表头。
+     */
+    @Select("SELECT DISTINCT standard_title_id FROM field_mapping_audit WHERE temp_data_title_id = #{titleId}")
+    List<Long> selectDistinctStandardTitleIds(@Param("titleId") Long titleId);
+
+    /**
      * 根据标准字段表头ID + 原始数据表头ID物理删除字段映射
      */
     @org.apache.ibatis.annotations.Delete("DELETE FROM field_mapping_audit WHERE standard_title_id = #{standardTitleId} AND temp_data_title_id = #{titleId}")

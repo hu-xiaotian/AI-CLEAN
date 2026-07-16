@@ -5,6 +5,7 @@ import com.aiclean.model.SearchCondition;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
@@ -25,6 +26,7 @@ public interface ResultDataMapper extends BaseMapper<ResultDataEntity> {
     @Select("SELECT * FROM result_data WHERE temp_data_id = #{tempDataId} ORDER BY id DESC LIMIT 1")
     ResultDataEntity selectByTempDataId(@Param("tempDataId") Long tempDataId);
 
+    @Options(useGeneratedKeys = true, keyProperty = "id")
     @Insert("<script>" +
             "INSERT INTO result_data (standard_title_id, temp_data_id, cleaned_data_id, " +
             "col1,col2,col3,col4,col5,col6,col7,col8,col9,col10," +

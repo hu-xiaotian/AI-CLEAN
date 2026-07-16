@@ -1186,6 +1186,16 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
         // 获取该标准表头下的字段映射关系
         List<FieldMappingAuditEntity> mappings = fieldMappingAuditMapper.selectByStandardAndTitle(standardTitleId, tempDataTitleId);
+        // targetField -> mapping 索引，避免逐行逐列线性遍历
+        Map<String, FieldMappingAuditEntity> mappingByTarget = new HashMap<>();
+        for (FieldMappingAuditEntity m : mappings) {
+            if (m.getTargetField() != null && !mappingByTarget.containsKey(m.getTargetField())) {
+                mappingByTarget.put(m.getTargetField(), m);
+            }
+            if (m.getSuggestedTargetField() != null && !mappingByTarget.containsKey(m.getSuggestedTargetField())) {
+                mappingByTarget.put(m.getSuggestedTargetField(), m);
+            }
+        }
 
         // 获取原始数据和补充数据
         List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(tempDataTitleId);
@@ -1202,11 +1212,14 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 extraByTempId.put(ed.getTempDataId(), ed);
             }
         }
+        // 补充表头列定义（整个文件恒定），只查一次，消除 findMappedValue 内的 N+1 查询
+        ExtraDataTitleEntity extraTitle = extraDataTitleId != null ? extraDataTitleMapper.selectById(extraDataTitleId) : null;
 
         // 缓存：categoryCode -> StandardTitleEntity，避免重复DB查询
         Map<String, StandardTitleEntity> standardTitleCache = new HashMap<>();
 
         List<ResultDataEntity> resultList = new ArrayList<>();
+        List<ResultDataEntity> batch = new ArrayList<>();
         for (TempDataEntity tempData : tempDataList) {
             CleanedDataEntity cleanedData = cleanedByTempId.get(tempData.getId());
             // 跳过没有匹配到分类编码的数据
@@ -1235,19 +1248,23 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 String standardColTitle = recordStandardTitle.getColTitle(colIdx);
                 if (StrUtil.isBlank(standardColTitle)) continue;
 
-                String value = findMappedValue(mappings, standardColTitle,
-                        titleEntity, tempData, extraData);
+                String value = findMappedValue(mappingByTarget, standardColTitle,
+                        titleEntity, tempData, extraData, extraTitle);
                 if (StrUtil.isNotBlank(value)) {
                     result.setColData(colIdx, value);
                 }
             }
 
-            resultDataMapper.insert(result);
+            // 按 batchSize 批量插入，减少 DB 往返
+            batch.add(result);
             resultList.add(result);
-
-            if (resultList.size() >= batchSize) {
-                log.info("已填充 {} 条结果数据", resultList.size());
+            if (batch.size() >= batchSize) {
+                resultDataMapper.insertBatch(batch);
+                batch.clear();
             }
+        }
+        if (!batch.isEmpty()) {
+            resultDataMapper.insertBatch(batch);
         }
 
         log.info("结果数据填充完成，共 {} 条", resultList.size());
@@ -1318,36 +1335,58 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         // 未显式传入补充表头时，尝试按数据文件反查
         extraDataTitleId = resolveExtraDataTitleId(tempDataTitleId, extraDataTitleId);
 
-        List<StandardTitleEntity> allStandards = standardTitleMapper.selectList(null);
-        if (allStandards == null || allStandards.isEmpty()) {
-            return "没有可用的标准字段表头";
+        // 一次性加载本文件所需的全部基础数据，在所有标准表头间共享，避免每个标准表头重复全量查询
+        FillContext ctx = buildFillContext(tempDataTitleId, extraDataTitleId);
+        if (ctx.tempDataList == null || ctx.tempDataList.isEmpty()) {
+            return "没有可填充的原始数据";
         }
 
-        for (StandardTitleEntity st : allStandards) {
-            // 检查该标准表头是否有映射数据
-            List<FieldMappingAuditEntity> mappings = fieldMappingAuditMapper.selectByStandardAndTitle(st.getId(), tempDataTitleId);
-            if (mappings != null && !mappings.isEmpty()) {
-                log.info("触发填充标准表头: {}", st.getId());
+        // 仅遍历「本文件存在字段映射」的标准表头，而非系统全部标准表头
+        List<Long> relatedStandardIds = fieldMappingAuditMapper.selectDistinctStandardTitleIds(tempDataTitleId);
+        if (relatedStandardIds == null || relatedStandardIds.isEmpty()) {
+            log.info("数据文件 {} 无字段映射，无需填充", tempDataTitleId);
+        } else {
+            for (Long standardTitleId : relatedStandardIds) {
+                StandardTitleEntity st = standardTitleMapper.selectById(standardTitleId);
+                if (st == null) continue;
+                log.info("触发填充标准表头: {}", standardTitleId);
                 // 批量填充模式：不允许兜底，否则“找不到标准表头”的数据会被复制进每个表头，造成结果条数膨胀
-                doStartFill(st.getId(), tempDataTitleId, extraDataTitleId, false);
-            } else {
-                log.info("标准表头 {} 无映射数据，跳过填充", st.getId());
+                doStartFill(standardTitleId, ctx, false);
             }
         }
 
         // 批量填充结束后，将“分类编码找不到对应标准表头”的数据统一填充为一条空值结果记录
         // （standardTitleId=null），只填充一次，避免被复制进各标准表头导致膨胀，同时满足“可填充空值”。
-        fillNoTitleResults(tempDataTitleId, extraDataTitleId);
+        fillNoTitleResults(tempDataTitleId, extraDataTitleId, ctx);
 
         return "fill_all_completed";
     }
 
     /**
-     * 实际的填充执行逻辑，由 startFill 异步调用
+     * 单表头填充（异步入口）：自行加载上下文后填充。
      */
     public void doStartFill(Long standardTitleId, Long tempDataTitleId, Long extraDataTitleId, boolean allowFallback) {
+        FillContext ctx = buildFillContext(tempDataTitleId, extraDataTitleId);
+        doStartFill(standardTitleId, ctx, allowFallback);
+    }
+
+    /**
+     * 实际的填充执行逻辑（核心）。
+     * 复用外部已加载的 FillContext，避免在每个标准表头重复全量查询；
+     * 结果数据按 batchSize 批量插入（useGeneratedKeys 回填主键用于进度回传）。
+     */
+    public void doStartFill(Long standardTitleId, FillContext ctx, boolean allowFallback) {
         transactionTemplate.executeWithoutResult(status -> {
             try {
+                Long tempDataTitleId = ctx.tempDataTitleId;
+                Long extraDataTitleId = ctx.extraDataTitleId;
+                TempDataTitleEntity titleEntity = ctx.titleEntity;
+                ExtraDataTitleEntity extraTitle = ctx.extraTitle;
+                List<TempDataEntity> tempDataList = ctx.tempDataList;
+                Map<Long, CleanedDataEntity> cleanedByTempId = ctx.cleanedByTempId;
+                Map<Long, ExtraDataEntity> extraByTempId = ctx.extraByTempId;
+                Map<String, StandardTitleEntity> standardTitleCache = ctx.standardTitleCache;
+
                 log.info("异步填充任务开始执行，默认标准表头ID: {}", standardTitleId);
 
                 // 默认标准表头（作为兜底）
@@ -1357,29 +1396,21 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 // 记录该数据文件关联的标准字段表头（供结果数据下拉框快速查询）
                 recordTitleStandardTitle(tempDataTitleId, standardTitleId);
 
+                // targetField -> mapping 索引，避免逐行逐列线性遍历 mappings（原每次调用 O(mappings)）
                 List<FieldMappingAuditEntity> mappings = fieldMappingAuditMapper.selectByStandardAndTitle(standardTitleId, tempDataTitleId);
-                List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(tempDataTitleId);
-                TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(tempDataTitleId);
-
-                // 预加载清洗数据与补充数据，避免主循环内逐行 N+1 查询
-                // （大数据量下 N+1 会让请求远超连接超时，导致响应被截断、前端解析到空 body）
-                Map<Long, CleanedDataEntity> cleanedByTempId = new HashMap<>();
-                for (CleanedDataEntity cd : cleanedDataMapper.selectAllByTempDataTitleId(tempDataTitleId)) {
-                    cleanedByTempId.put(cd.getTempDataId(), cd);
-                }
-                Map<Long, ExtraDataEntity> extraByTempId = extraDataTitleId != null ? new HashMap<>() : null;
-                if (extraByTempId != null) {
-                    for (ExtraDataEntity ed : extraDataMapper.selectByExtraDataTitleId(extraDataTitleId)) {
-                        extraByTempId.put(ed.getTempDataId(), ed);
+                Map<String, FieldMappingAuditEntity> mappingByTarget = new HashMap<>();
+                for (FieldMappingAuditEntity m : mappings) {
+                    if (m.getTargetField() != null && !mappingByTarget.containsKey(m.getTargetField())) {
+                        mappingByTarget.put(m.getTargetField(), m);
+                    }
+                    if (m.getSuggestedTargetField() != null && !mappingByTarget.containsKey(m.getSuggestedTargetField())) {
+                        mappingByTarget.put(m.getSuggestedTargetField(), m);
                     }
                 }
 
-                // 保存并填充：先清除该标准表头+数据文件下已有的填充结果，实现覆盖而非跳过
+                // 清除该标准表头+数据文件下已有的填充结果，实现覆盖而非跳过
                 int deletedCount = resultDataMapper.deleteByStandardAndTitle(standardTitleId, tempDataTitleId);
                 log.info("清除已有填充结果 {} 条，准备重新填充", deletedCount);
-
-                // 缓存：categoryCode -> StandardTitleEntity
-                Map<String, StandardTitleEntity> standardTitleCache = new HashMap<>();
 
                 // 进度总数 = 本标准表头实际可填充的行数（有清洗数据、含分类编码、且归属本标准表头），
                 // 避免把未清洗/其它分类的 temp_data 行计入总数，导致“进度总数”虚高、与“数据总数”对不上
@@ -1397,6 +1428,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 int skippedNoCleaned = 0;   // 没有清洗数据
                 int skippedNotMatch = 0;    // 标准表头不匹配
                 int skippedExisting = 0;    // 已有填充结果
+                int sentCount = 0;           // 已发送进度的累计行数（成功+失败），保证每条进度 current 唯一
 
                 // 发送开始消息（WebSocket topic 仍然使用参数 standardTitleId 作为通道标识）
                 Map<String, Object> startMsg = new LinkedHashMap<>();
@@ -1408,6 +1440,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 startMsg.put("progressPercent", 0);
                 startMsg.put("timestamp", System.currentTimeMillis());
                 messagingTemplate.convertAndSend("/topic/fill/" + standardTitleId, JSON.toJSONString(startMsg));
+
+                List<ResultDataEntity> batch = new ArrayList<>();
 
                 for (int i = 0; i < tempDataList.size(); i++) {
                     TempDataEntity tempData = tempDataList.get(i);
@@ -1458,50 +1492,38 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                             String standardColTitle = recordStandardTitle.getColTitle(colIdx);
                             if (StrUtil.isBlank(standardColTitle)) continue;
 
-                            String value = findMappedValue(mappings, standardColTitle,
-                                    titleEntity, tempData, extraData);
+                            String value = findMappedValue(mappingByTarget, standardColTitle,
+                                    titleEntity, tempData, extraData, extraTitle);
                             if (StrUtil.isNotBlank(value)) {
                                 result.setColData(colIdx, value);
                                 filledCount++;
                             }
                         }
 
-                        resultDataMapper.insert(result);
+                        batch.add(result);
                         successCount++;
-
-                        // 每填充一条数据，通过 WebSocket 推送进度
-                        Map<String, Object> msg = new LinkedHashMap<>();
-                        msg.put("type", "progress");
-                        msg.put("current", i + 1);
-                        msg.put("total", totalCount);
-                        msg.put("successCount", successCount);
-                        msg.put("errorCount", errorCount);
-                        msg.put("progressPercent", (int) ((double) (i + 1) / totalCount * 100));
-                        msg.put("timestamp", System.currentTimeMillis());
-
-                        Map<String, Object> dataMap = new LinkedHashMap<>();
-                        dataMap.put("resultId", result.getId());
-                        dataMap.put("tempDataId", tempData.getId());
-                        dataMap.put("cleanedDataId", cleanedData != null ? cleanedData.getId() : null);
-                        dataMap.put("status", result.getStatus());
-                        dataMap.put("filledCount", filledCount);
-                        msg.put("data", dataMap);
-
-                        messagingTemplate.convertAndSend("/topic/fill/" + standardTitleId, JSON.toJSONString(msg));
+                        // 达到批量阈值时落库，并回传进度（useGeneratedKeys 已回填 resultId）
+                        if (batch.size() >= batchSize) {
+                            sentCount = flushFillBatch(standardTitleId, batch, sentCount,
+                                    totalCount, successCount, errorCount);
+                            batch.clear();
+                        }
                     } catch (Exception e) {
                         errorCount++;
+                        sentCount++;
                         log.error("填充结果数据失败，tempDataId: {}", tempData.getId(), e);
                         // 推送错误进度
-                        Map<String, Object> errMsg = new LinkedHashMap<>();
-                        errMsg.put("type", "progress");
-                        errMsg.put("current", i + 1);
-                        errMsg.put("total", totalCount);
-                        errMsg.put("successCount", successCount);
-                        errMsg.put("errorCount", errorCount);
-                        errMsg.put("progressPercent", (int) ((double) (i + 1) / totalCount * 100));
-                        errMsg.put("timestamp", System.currentTimeMillis());
+                        Map<String, Object> errMsg = buildFillProgressMsg("progress", sentCount, totalCount,
+                                successCount, errorCount, tempData.getId(), null, null, null, 0);
                         messagingTemplate.convertAndSend("/topic/fill/" + standardTitleId, JSON.toJSONString(errMsg));
                     }
+                }
+
+                // 落库剩余批次并回传进度
+                if (!batch.isEmpty()) {
+                    sentCount = flushFillBatch(standardTitleId, batch, sentCount,
+                            totalCount, successCount, errorCount);
+                    batch.clear();
                 }
 
                 // 发送完成消息
@@ -1537,21 +1559,134 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     }
 
     /**
+     * 将当前批次的结果数据批量落库，并为每条数据回传一条进度消息。
+     * 依赖 result_data 批量插入的 useGeneratedKeys 回填主键，进度中的 resultId 才有效。
+     *
+     * @return 更新后的已发送进度计数（每条数据 +1，保证 current 唯一）
+     */
+    private int flushFillBatch(Long standardTitleId, List<ResultDataEntity> batch,
+                               int sentCount, int totalCount, int successCount, int errorCount) {
+        if (batch.isEmpty()) return sentCount;
+        resultDataMapper.insertBatch(batch);
+        for (ResultDataEntity r : batch) {
+            sentCount++;
+            Map<String, Object> msg = buildFillProgressMsg("progress", sentCount, totalCount,
+                    successCount, errorCount, r.getTempDataId(), r.getCleanedDataId(),
+                    r.getId(), r.getStatus(), countFilled(r));
+            messagingTemplate.convertAndSend("/topic/fill/" + standardTitleId, JSON.toJSONString(msg));
+        }
+        return sentCount;
+    }
+
+    /**
+     * 构造一条填充进度消息（与历史消息结构保持一致）。
+     */
+    private Map<String, Object> buildFillProgressMsg(String type, int current, int total,
+                                                     int successCount, int errorCount,
+                                                     Long tempDataId, Long cleanedDataId,
+                                                     Long resultId, String status, int filledCount) {
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", type);
+        msg.put("current", current);
+        msg.put("total", total);
+        msg.put("successCount", successCount);
+        msg.put("errorCount", errorCount);
+        msg.put("progressPercent", total > 0 ? (int) ((double) current / total * 100) : 100);
+        msg.put("timestamp", System.currentTimeMillis());
+        Map<String, Object> dataMap = new LinkedHashMap<>();
+        dataMap.put("resultId", resultId);
+        dataMap.put("tempDataId", tempDataId);
+        dataMap.put("cleanedDataId", cleanedDataId);
+        dataMap.put("status", status);
+        dataMap.put("filledCount", filledCount);
+        msg.put("data", dataMap);
+        return msg;
+    }
+
+    /**
+     * 统计结果数据已填充的字段数（col1..col20 中非空的数量）。
+     */
+    private int countFilled(ResultDataEntity r) {
+        int n = 0;
+        for (int i = 1; i <= 20; i++) {
+            if (StrUtil.isNotBlank(r.getColData(i))) n++;
+        }
+        return n;
+    }
+
+    /**
+     * 一次性加载某个数据文件在「属性补全」阶段所需的全部基础数据，
+     * 供多个标准表头的 doStartFill / fillNoTitleResults 共享，避免每个标准表头重复全量查询
+     * （原实现每个标准表头都重查一遍 temp_data / cleaned_data / extra_data）。
+     */
+    private FillContext buildFillContext(Long tempDataTitleId, Long extraDataTitleId) {
+        FillContext ctx = new FillContext();
+        ctx.tempDataTitleId = tempDataTitleId;
+        ctx.extraDataTitleId = extraDataTitleId;
+        ctx.titleEntity = tempDataTitleMapper.selectById(tempDataTitleId);
+        ctx.tempDataList = tempDataMapper.selectByTitleId(tempDataTitleId);
+
+        // 预加载清洗数据（按 temp_data_id 索引），避免主循环内逐行查询
+        ctx.cleanedByTempId = new HashMap<>();
+        for (CleanedDataEntity cd : cleanedDataMapper.selectAllByTempDataTitleId(tempDataTitleId)) {
+            ctx.cleanedByTempId.put(cd.getTempDataId(), cd);
+        }
+
+        // 预加载补充表头列定义（整个文件恒定，只查一次，消除 findMappedValue 内的 N+1 查询）
+        // 以及补充数据行（按 temp_data_id 索引）
+        if (extraDataTitleId != null) {
+            ctx.extraTitle = extraDataTitleMapper.selectById(extraDataTitleId);
+            ctx.extraByTempId = new HashMap<>();
+            for (ExtraDataEntity ed : extraDataMapper.selectByExtraDataTitleId(extraDataTitleId)) {
+                ctx.extraByTempId.put(ed.getTempDataId(), ed);
+            }
+        }
+
+        // 预解析「分类编码 -> 标准表头」，在整个 fill-all 过程中只解析一次，
+        // 供 doStartFill / fillNoTitleResults 共享，避免每个标准表头重复解析
+        ctx.standardTitleCache = new HashMap<>();
+        for (CleanedDataEntity cd : ctx.cleanedByTempId.values()) {
+            if (cd != null && StrUtil.isNotBlank(cd.getCategoryCode())) {
+                ctx.standardTitleCache.computeIfAbsent(
+                        cd.getCategoryCode(), code -> standardTitleMapper.selectByCategoryCode(code));
+            }
+        }
+        return ctx;
+    }
+
+    /**
+     * 属性补全所需的预加载数据上下文。由 buildFillContext 一次性加载，
+     * 在多个标准表头的 doStartFill / fillNoTitleResults 之间共享，避免重复全量查询。
+     */
+    private static class FillContext {
+        Long tempDataTitleId;
+        Long extraDataTitleId;
+        TempDataTitleEntity titleEntity;
+        ExtraDataTitleEntity extraTitle;                   // 补充表头列定义（列名->列序号），整个文件恒定
+        List<TempDataEntity> tempDataList;
+        Map<Long, CleanedDataEntity> cleanedByTempId;
+        Map<Long, ExtraDataEntity> extraByTempId;         // 无补充表头时为 null
+        Map<String, StandardTitleEntity> standardTitleCache; // 分类编码 -> 标准表头
+    }
+
+    /**
      * 将“分类编码找不到对应标准表头”的数据，统一填充为一条空值结果记录（standardTitleId=null）。
      * 仅在批量填充（fillAllStandardTitles）结束后调用一次，避免这类数据被复制进每个标准表头造成膨胀，
      * 同时满足“找不到对应分类代码时可填充空值”的需求。
      */
-    private void fillNoTitleResults(Long tempDataTitleId, Long extraDataTitleId) {
+    private void fillNoTitleResults(Long tempDataTitleId, Long extraDataTitleId, FillContext ctx) {
         // 清除该文件下旧的填充失败记录，实现覆盖而非累加
         failedResultDataMapper.deleteByTitleId(tempDataTitleId);
 
-        List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(tempDataTitleId);
+        List<TempDataEntity> tempDataList = ctx.tempDataList;
         if (tempDataList == null || tempDataList.isEmpty()) return;
 
-        Map<String, StandardTitleEntity> cache = new HashMap<>();
+        // 复用 buildFillContext 已预加载的清洗数据 map 与标准表头缓存，避免逐行 selectByTempDataId 的 N+1 查询
+        Map<Long, CleanedDataEntity> cleanedByTempId = ctx.cleanedByTempId;
+        Map<String, StandardTitleEntity> cache = ctx.standardTitleCache;
         List<FailedResultDataEntity> failedList = new ArrayList<>();
         for (TempDataEntity td : tempDataList) {
-            CleanedDataEntity cd = cleanedDataMapper.selectByTempDataId(td.getId());
+            CleanedDataEntity cd = cleanedByTempId.get(td.getId());
             if (cd == null || StrUtil.isBlank(cd.getCategoryCode())) continue;
             // 能找到标准表头的数据已在各 doStartFill 中填充，这里只处理找不到的
             StandardTitleEntity st = resolveStandardTitle(cd, cache, null);
@@ -2382,25 +2517,21 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         return 0.3;
     }
 
-    private String findMappedValue(List<FieldMappingAuditEntity> mappings, String standardColTitle,
-                                    TempDataTitleEntity title, TempDataEntity tempData, ExtraDataEntity extraData) {
-        for (FieldMappingAuditEntity mapping : mappings) {
-            if (standardColTitle.equals(mapping.getTargetField())
-                    || (mapping.getSuggestedTargetField() != null
-                    && standardColTitle.equals(mapping.getSuggestedTargetField()))) {
-                String sourceField = mapping.getSourceField();
-                if ("temp_data".equals(mapping.getSourceType()) && title != null && tempData != null) {
-                    for (int i = 1; i <= 10; i++) {
-                        if (sourceField.equals(title.getColTitle(i))) return tempData.getColData(i);
-                    }
-                } else if ("extra_data".equals(mapping.getSourceType()) && extraData != null) {
-                    ExtraDataTitleEntity extraTitle = extraDataTitleMapper.selectByTempDataTitleId(
-                            tempData.getTempDataTitleId());
-                    if (extraTitle != null) {
-                        for (int i = 1; i <= 20; i++) {
-                            if (sourceField.equals(extraTitle.getColTitle(i))) return extraData.getColData(i);
-                        }
-                    }
+    private String findMappedValue(Map<String, FieldMappingAuditEntity> mappingByTarget, String standardColTitle,
+                                    TempDataTitleEntity title, TempDataEntity tempData, ExtraDataEntity extraData,
+                                    ExtraDataTitleEntity extraTitle) {
+        FieldMappingAuditEntity mapping = mappingByTarget.get(standardColTitle);
+        if (mapping == null) return null;
+        String sourceField = mapping.getSourceField();
+        if ("temp_data".equals(mapping.getSourceType()) && title != null && tempData != null) {
+            for (int i = 1; i <= 10; i++) {
+                if (sourceField.equals(title.getColTitle(i))) return tempData.getColData(i);
+            }
+        } else if ("extra_data".equals(mapping.getSourceType()) && extraData != null) {
+            // extraTitle 已在 buildFillContext / fillResultData 中预加载一次，整个文件恒定，无需逐行查询
+            if (extraTitle != null) {
+                for (int i = 1; i <= 20; i++) {
+                    if (sourceField.equals(extraTitle.getColTitle(i))) return extraData.getColData(i);
                 }
             }
         }

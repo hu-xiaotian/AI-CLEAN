@@ -118,6 +118,13 @@
                             <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="ocExtractMode" value="ai"> AI 智能提取</label>
                         </div>
                     </div>
+                    <div class="form-group">
+                        <label>AI 辅助评分</label>
+                        <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+                            <input type="checkbox" id="ocUseAi">
+                            <span style="font-size:13px">启用 AI</span>
+                        </div>
+                    </div>
                     <div class="form-group"><button class="btn btn-primary" id="ocStartBtn" onclick="runOneClickClean()">开始一键清洗</button></div>
                 </div>
 <!--                <p class="mt-2" style="font-size:12px;color:var(&#45;&#45;text-secondary)">提示：选择「AI 智能提取」需先在 application.yml 配置并启用 app.ai（base-url / api-key / model），且每行数据需能确定分类编码（已执行智能分类或设置分类列）并在标准字段表头中有对应字段。</p>-->
