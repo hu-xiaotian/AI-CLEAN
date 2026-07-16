@@ -313,6 +313,12 @@ public class DataCleaningController {
         return R.success(dataCleaningService.getTempDataPage(titleId, page, pageSize));
     }
 
+    @GetMapping("/temp-data/by-id/{id}")
+    @Operation(summary = "根据ID获取单条原始数据（含表头）", description = "用于结果数据页面查看某条结果对应的原始数据")
+    public R<Map<String, Object>> getTempDataById(@PathVariable Long id) {
+        return R.success(dataCleaningService.getTempDataById(id));
+    }
+
     @GetMapping("/extra-data/{extraDataTitleId}")
     @Operation(summary = "获取补充数据列表")
     public R<List<ExtraDataEntity>> getExtraDataList(@PathVariable Long extraDataTitleId) {

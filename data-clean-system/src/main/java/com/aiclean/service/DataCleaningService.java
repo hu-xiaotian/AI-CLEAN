@@ -73,6 +73,7 @@ public interface DataCleaningService {
     long countCleanedData(SearchCondition condition);
     List<TempDataEntity> getTempDataList(Long titleId);
     Map<String, Object> getTempDataPage(Long titleId, int page, int pageSize);
+    Map<String, Object> getTempDataById(Long id);
     List<ExtraDataEntity> getExtraDataList(Long extraDataTitleId);
     List<ExtraDataTitleEntity> getExtraDataTitles();
     CleanedDataEntity getCleanedDataByTempDataTitleId(Long tempDataTitleId);

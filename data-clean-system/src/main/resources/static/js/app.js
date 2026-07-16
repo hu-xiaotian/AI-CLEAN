@@ -929,6 +929,44 @@ async function loadViewData(titleId, page) {
     }
 }
 
+// 查看结果数据对应的单条原始数据
+async function viewSourceData(tempDataId) {
+    if (tempDataId === null || tempDataId === undefined || tempDataId === 'null') {
+        showToast('该记录没有关联的原始数据', 'warning');
+        return;
+    }
+    showModal('原始数据', '<p style="text-align:center;padding:40px;color:var(--text-secondary)">加载中...</p>');
+    try {
+        const res = await api(`/cleaning/temp-data/by-id/${tempDataId}`);
+        if (!res || !res.data) {
+            $('#modalBody').innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-secondary)">未找到对应的原始数据</p>';
+            return;
+        }
+        const title = res.title || {};
+        const row = res.data;
+
+        // 表头（列标题）
+        const headers = [];
+        for (let i = 1; i <= 10; i++) {
+            const ct = title['col' + i + 'Title'];
+            if (ct) headers.push(ct);
+        }
+
+        let html = `<div class="view-data-info"><span><strong>原始数据ID:</strong> ${row.id}</span><span><strong>行号:</strong> ${row.rowIndex || '-'}</span></div>`;
+        html += '<div class="table-scroll"><table class="data-table"><thead><tr><th>列</th><th>值</th></tr></thead><tbody>';
+        for (let i = 1; i <= 10; i++) {
+            const ct = title['col' + i + 'Title'] || ('列' + i);
+            const val = (row['col' + i] || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            html += `<tr><td>${ct}</td><td style="white-space:pre-wrap;word-break:break-all">${val}</td></tr>`;
+        }
+        html += '</tbody></table></div>';
+
+        $('#modalBody').innerHTML = html;
+    } catch (e) {
+        $('#modalBody').innerHTML = `<p style="text-align:center;padding:40px;color:var(--danger)">加载失败: ${e.message}</p>`;
+    }
+}
+
 // ==================== 解析规则 ====================
 
 let _rulesCache = null;
@@ -3081,7 +3119,12 @@ async function renderResultData(results) {
                 const title = cellArg(c.title || '');
                 return `<td class="editable-cell" ondblclick="editResultCell(${r.id}, ${i+1}, '${title}', '${val}')">${r[c.key] || ''}</td>`;
             }).join('')}
-            <td><button class="btn btn-sm btn-primary" onclick="reviewResult(${r.id})">审核</button></td>
+            <td>
+                <div class="action-btn-group">
+                    <button class="btn btn-sm btn-primary" onclick="reviewResult(${r.id})">审核</button>
+                    <button class="btn btn-sm btn-info" onclick="viewSourceData(${r.tempDataId ?? 'null'})">源数据</button>
+                </div>
+            </td>
         </tr>
     `).join('');
 }

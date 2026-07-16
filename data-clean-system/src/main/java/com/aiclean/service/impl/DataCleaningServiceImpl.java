@@ -1783,6 +1783,21 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     }
 
     @Override
+    public Map<String, Object> getTempDataById(Long id) {
+        Map<String, Object> result = new HashMap<>();
+        TempDataEntity data = tempDataMapper.selectById(id);
+        if (data == null) {
+            result.put("title", null);
+            result.put("data", null);
+            return result;
+        }
+        TempDataTitleEntity title = tempDataTitleMapper.selectById(data.getTempDataTitleId());
+        result.put("title", title);
+        result.put("data", data);
+        return result;
+    }
+
+    @Override
     public List<ExtraDataEntity> getExtraDataList(Long extraDataTitleId) {
         return extraDataMapper.selectByExtraDataTitleId(extraDataTitleId);
     }
