@@ -125,7 +125,7 @@ public interface CleanedDataMapper extends BaseMapper<CleanedDataEntity> {
     /**
      * 统计各分类的数据数量
      */
-    @Select("SELECT category_id, category_code, category_name, COUNT(*) as count FROM cleaned_data WHERE 1=1 GROUP BY category_id, category_code, category_name")
+    @Select("SELECT cd.category_id, cd.category_code, mdc.category_name, COUNT(*) as count FROM cleaned_data cd LEFT JOIN main_data_category mdc ON cd.category_id = mdc.id WHERE 1=1 GROUP BY cd.category_id, cd.category_code, mdc.category_name")
     List<CategoryDataCount> countByCategory();
     
     /**
@@ -189,5 +189,77 @@ public interface CleanedDataMapper extends BaseMapper<CleanedDataEntity> {
             "LEFT JOIN result_data rd ON cd.id = rd.cleaned_data_id " +
             "WHERE td.temp_data_title_id = #{titleId} AND rd.id IS NULL")
     Long countUnmappedByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 统计某数据文件下的清洗数据数量
+     */
+    @Select("SELECT COUNT(*) FROM cleaned_data WHERE temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")
+    Long countByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 统计已成功填充到结果数据的清洗记录数（按数据文件）
+     */
+    @Select("SELECT COUNT(*) FROM cleaned_data cd INNER JOIN result_data rd ON cd.id = rd.cleaned_data_id WHERE cd.temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")
+    Long countFilledByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 统计已成功填充到结果数据的清洗记录数（全部）
+     */
+    @Select("SELECT COUNT(*) FROM cleaned_data cd INNER JOIN result_data rd ON cd.id = rd.cleaned_data_id")
+    Long countFilled();
+
+    /**
+     * 统计分类不匹配（match_source = UNMATCHED）的清洗记录数（按数据文件）
+     */
+    @Select("SELECT COUNT(*) FROM cleaned_data WHERE match_source = 'UNMATCHED' AND temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")
+    Long countUnmatchedByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 统计分类不匹配（match_source = UNMATCHED）的清洗记录数（全部）
+     */
+    @Select("SELECT COUNT(*) FROM cleaned_data WHERE match_source = 'UNMATCHED'")
+    Long countUnmatched();
+
+    /**
+     * 统计某数据文件下各状态的数量
+     */
+    @Select("SELECT status, COUNT(*) as count FROM cleaned_data WHERE temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId}) GROUP BY status")
+    List<StatusCount> countByStatusByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 统计某数据文件下各分类的数量（Top 10）
+     */
+    @Select("SELECT cd.category_id, cd.category_code, mdc.category_name, COUNT(*) as count FROM cleaned_data cd LEFT JOIN main_data_category mdc ON cd.category_id = mdc.id WHERE cd.temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId}) GROUP BY cd.category_id, cd.category_code, mdc.category_name ORDER BY count DESC LIMIT 10")
+    List<CategoryDataCount> countByCategoryByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 统计各分类的数量（Top 10，全部）
+     */
+    @Select("SELECT cd.category_id, cd.category_code, mdc.category_name, COUNT(*) as count FROM cleaned_data cd LEFT JOIN main_data_category mdc ON cd.category_id = mdc.id GROUP BY cd.category_id, cd.category_code, mdc.category_name ORDER BY count DESC LIMIT 10")
+    List<CategoryDataCount> countByCategoryTop();
+
+    /**
+     * 统计某数据文件下平均质量评分
+     */
+    @Select("SELECT AVG(quality_score) FROM cleaned_data WHERE quality_score IS NOT NULL AND temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")
+    Double avgScoreByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 统计全部平均质量评分
+     */
+    @Select("SELECT AVG(quality_score) FROM cleaned_data WHERE quality_score IS NOT NULL")
+    Double avgScore();
+
+    /**
+     * 查询某数据文件下分类不匹配的清洗数据
+     */
+    @Select("SELECT * FROM cleaned_data WHERE match_source = 'UNMATCHED' AND temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId}) ORDER BY id")
+    List<CleanedDataEntity> selectUnmatchedByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 查询全部分类不匹配的清洗数据（限制数量，避免过大）
+     */
+    @Select("SELECT * FROM cleaned_data WHERE match_source = 'UNMATCHED' ORDER BY id LIMIT 500")
+    List<CleanedDataEntity> selectUnmatchedAll();
 
 }

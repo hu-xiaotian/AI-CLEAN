@@ -219,6 +219,7 @@ function switchPage(name) {
         'users': () => { loadUsers(1); },                            // 刷新用户列表
         'unmapped': () => { loadTitlesForUnmapped(); },
         'oneclick': () => { loadOneClickPage(); },
+        'dashboard': () => { loadDashboardPage(); },
     };
     if (loaders[name]) loaders[name]();
 }
@@ -4048,6 +4049,454 @@ async function resetUserPassword(id) {
 
 // ==================== 初始化 ====================
 
+// ==================== 数据统计看板 ====================
+
+let _dashStats = null;
+let _failList = [];
+let _unmatchList = [];
+
+const STATUS_LABELS = {
+    'draft': '草稿', 'needs_review': '待审核', 'reviewing': '审核中',
+    'approved': '审核通过', 'rejected': '审核驳回', 'modified': '已修改',
+    'export_ready': '可导出', 'processed': '已处理', 'completed': '已完成'
+};
+
+const CHART_COLORS = ['#2563eb', '#059669', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#ea580c', '#4f46e5'];
+
+// 看板页面加载
+function loadDashboardPage() {
+    loadDashboardTitles();
+    loadDashboard();
+}
+
+async function loadDashboardTitles() {
+    try {
+        const titles = await api('/import/titles');
+        const sel = $('#dashTitleId');
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">全部文件</option>' +
+            (titles || []).map(t => `<option value="${t.id}">${t.fileName || '数据#' + t.id} (${t.totalRows || 0}行)</option>`).join('');
+        if (cur) sel.value = cur;
+    } catch (e) {
+        console.error('加载文件列表失败:', e);
+    }
+}
+
+async function loadDashboard() {
+    try {
+        const titleId = $('#dashTitleId').value;
+        const url = '/cleaning/dashboard-statistics' + (titleId ? '?titleId=' + titleId : '');
+        const stats = await api(url);
+        _dashStats = stats;
+        renderDashboard(stats);
+    } catch (e) {
+        console.error('加载看板失败:', e);
+        showToast('看板数据加载失败: ' + e.message, 'error');
+    }
+}
+
+function formatNum(v) {
+    if (v === null || v === undefined) return '-';
+    return Number(v).toLocaleString('zh-CN');
+}
+
+function renderDashboard(s) {
+    const grid = $('#dashKpiGrid');
+    const cards = [
+        { label: '文件数', value: s.fileCount, color: 'var(--text)' },
+        { label: '清洗总条数', value: s.totalCleaned, color: 'var(--accent)' },
+        { label: '分类匹配', value: s.matchCount, color: 'var(--success)', click: "switchFailureTab('unmatch');openFailureModal()", sub: '点击查看不匹配' },
+        { label: '分类不匹配', value: s.unmatchCount, color: 'var(--warning)', click: "switchFailureTab('unmatch');openFailureModal()", sub: '点击查看' },
+        { label: '填充成功', value: s.successCount, color: 'var(--success)' },
+        { label: '填充失败', value: s.failureCount, color: 'var(--danger)', click: "switchFailureTab('fill');openFailureModal()", sub: '点击查看失败明细' }
+    ];
+    grid.innerHTML = cards.map(c => `
+        <div class="stat-card kpi-card ${c.click ? 'kpi-clickable' : ''}" ${c.click ? `onclick="${c.click}"` : ''}>
+            <div class="stat-value" style="color:${c.color}">${formatNum(c.value)}</div>
+            <div class="stat-label">${c.label}</div>
+            ${c.sub ? `<div class="kpi-sub">${c.sub}</div>` : ''}
+        </div>
+    `).join('');
+
+    renderDonut('chartFill', 'legendFill', s.fillDistribution, ['#059669', '#dc2626']);
+    renderDonut('chartMatch', 'legendMatch', s.matchDistribution, ['#2563eb', '#d97706']);
+    const statusData = (s.statusDistribution || []).map(d => ({ name: STATUS_LABELS[d.status] || d.status, value: d.count }));
+    renderDonut('chartStatus', 'legendStatus', statusData);
+    const catData = (s.categoryDistribution || []).map(d => ({ name: d.categoryName || d.categoryCode || '未知', value: d.count }));
+    renderDonut('chartCategory', 'legendCategory', catData);
+}
+
+// SVG 环形饼图
+function renderDonut(canvasId, legendId, data, colorOverride) {
+    const canvas = document.getElementById(canvasId);
+    const legend = document.getElementById(legendId);
+    if (!canvas) return;
+    const total = (data || []).reduce((sum, d) => sum + (Number(d.value) || 0), 0);
+    const size = 180, cx = size / 2, cy = size / 2, r = 70, inner = 42;
+    let svg = `<svg viewBox="0 0 ${size} ${size}" width="100%" height="180" style="max-width:200px;display:block;margin:0 auto">`;
+    if (total <= 0) {
+        svg += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--border)" stroke-width="22"/>`;
+        svg += `<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" fill="var(--text-secondary)">暂无数据</text>`;
+        svg += `</svg>`;
+    } else {
+        let start = -Math.PI / 2;
+        (data || []).forEach((d, i) => {
+            const val = Number(d.value) || 0;
+            if (val <= 0) return;
+            const angle = val / total * Math.PI * 2;
+            const end = start + angle;
+            const large = angle > Math.PI ? 1 : 0;
+            const x1 = cx + r * Math.cos(start), y1 = cy + r * Math.sin(start);
+            const x2 = cx + r * Math.cos(end), y2 = cy + r * Math.sin(end);
+            const xi1 = cx + inner * Math.cos(end), yi1 = cy + inner * Math.sin(end);
+            const xi2 = cx + inner * Math.cos(start), yi2 = cy + inner * Math.sin(start);
+            const color = (colorOverride && colorOverride[i]) || CHART_COLORS[i % CHART_COLORS.length];
+            svg += `<path d="M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L ${xi1.toFixed(2)} ${yi1.toFixed(2)} A ${inner} ${inner} 0 ${large} 0 ${xi2.toFixed(2)} ${yi2.toFixed(2)} Z" fill="${color}"/>`;
+            start = end;
+        });
+        svg += `<text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="20" font-weight="700" fill="var(--text)">${formatNum(total)}</text>`;
+        svg += `<text x="${cx}" y="${cy + 16}" text-anchor="middle" font-size="11" fill="var(--text-secondary)">总计</text>`;
+        svg += `</svg>`;
+    }
+    canvas.innerHTML = svg;
+    if (legend) {
+        legend.innerHTML = (data || []).map((d, i) => {
+            const color = (colorOverride && colorOverride[i]) || CHART_COLORS[i % CHART_COLORS.length];
+            const pct = total > 0 ? ((Number(d.value) || 0) / total * 100).toFixed(1) : 0;
+            return `<div class="legend-item"><span class="legend-dot" style="background:${color}"></span><span class="legend-name">${escapeHtml(d.name)}</span><span class="legend-val">${formatNum(d.value)} (${pct}%)</span></div>`;
+        }).join('');
+    }
+}
+
+// 失败明细
+async function openFailureModal() {
+    $('#failureOverlay').classList.add('show');
+    $('#failureModal').classList.add('show');
+    const titleId = $('#dashTitleId').value;
+    const qs = titleId ? '?titleId=' + titleId : '';
+    try {
+        const [fills, unmatches] = await Promise.all([
+            api('/cleaning/failed-results' + qs),
+            api('/cleaning/unmatched-classify' + qs)
+        ]);
+        renderFailTable(fills || []);
+        renderUnmatchTable(unmatches || []);
+    } catch (e) {
+        console.error('加载失败明细失败:', e);
+        showToast('加载失败明细失败: ' + e.message, 'error');
+    }
+}
+
+function closeFailureModal() {
+    $('#failureOverlay').classList.remove('show');
+    $('#failureModal').classList.remove('show');
+}
+
+function switchFailureTab(tab) {
+    document.querySelectorAll('#failureModal .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    $('#failureTabFill').style.display = tab === 'fill' ? 'block' : 'none';
+    $('#failureTabUnmatch').style.display = tab === 'unmatch' ? 'block' : 'none';
+}
+
+function renderFailTable(list) {
+    _failList = list || [];
+    $('#failCountFill').textContent = _failList.length;
+    const tb = $('#failTbody');
+    if (!_failList.length) {
+        tb.innerHTML = '<tr><td colspan="6" class="empty-hint">暂无填充失败记录</td></tr>';
+        return;
+    }
+    tb.innerHTML = _failList.map((f, idx) => `
+        <tr>
+            <td>${f.id}</td>
+            <td>${f.tempDataId || '-'}</td>
+            <td>${f.categoryCode || '-'}</td>
+            <td style="color:var(--danger);max-width:240px">${escapeHtml(f.reason)}</td>
+            <td style="max-width:300px;white-space:pre-wrap;font-size:12px">${escapeHtml(f.rawData) || '-'}</td>
+            <td><button class="btn btn-sm btn-info" onclick="askAiAboutFail(${idx})">问AI</button></td>
+        </tr>
+    `).join('');
+}
+
+function renderUnmatchTable(list) {
+    _unmatchList = list || [];
+    $('#failCountUnmatch').textContent = _unmatchList.length;
+    const tb = $('#unmatchTbody');
+    if (!_unmatchList.length) {
+        tb.innerHTML = '<tr><td colspan="6" class="empty-hint">暂无分类不匹配记录</td></tr>';
+        return;
+    }
+    tb.innerHTML = _unmatchList.map((c, idx) => `
+        <tr>
+            <td>${c.id}</td>
+            <td>${escapeHtml(c.materialCode) || '-'}</td>
+            <td>${escapeHtml(c.materialName) || '-'}</td>
+            <td>${c.categoryCode || '-'}</td>
+            <td>${c.matchSource || '-'}</td>
+            <td><button class="btn btn-sm btn-info" onclick="askAiAboutUnmatch(${idx})">问AI</button></td>
+        </tr>
+    `).join('');
+}
+
+function askAiAboutFail(idx) {
+    const f = _failList[idx];
+    if (!f) return;
+    const text = `【填充失败记录】\nID: ${f.id}\n原始数据ID: ${f.tempDataId || '-'}\n分类编码: ${f.categoryCode || '-'}\n失败原因: ${f.reason || '-'}\n原始数据: ${f.rawData || '-'}\n\n请分析该失败原因，并给出处理建议。`;
+    copyToChat(text);
+    showToast('已带入 AI 对话框', 'success');
+}
+
+function askAiAboutUnmatch(idx) {
+    const c = _unmatchList[idx];
+    if (!c) return;
+    const text = `【分类不匹配记录】\nID: ${c.id}\n物料代码: ${c.materialCode || '-'}\n物料名称: ${c.materialName || '-'}\n分类编码: ${c.categoryCode || '-'}\n匹配来源: ${c.matchSource || '-'}\n\n该物料未被匹配到标准分类，请分析可能原因并给出处理建议。`;
+    copyToChat(text);
+    showToast('已带入 AI 对话框', 'success');
+}
+
+function copyDashboardSummary() {
+    const s = _dashStats;
+    if (!s) { showToast('请先加载看板数据', 'warning'); return; }
+    const lines = [];
+    lines.push('【数据清洗看板摘要】');
+    if (s.scope === 'file') lines.push('数据文件：' + (s.fileName || '-'));
+    lines.push('文件数：' + s.fileCount);
+    lines.push('导入总行数：' + s.totalRows);
+    lines.push('清洗总条数：' + s.totalCleaned);
+    lines.push('分类匹配：' + s.matchCount + '，分类不匹配：' + s.unmatchCount);
+    lines.push('填充成功：' + s.successCount + '，填充失败：' + s.failureCount);
+    lines.push('平均质量分：' + s.avgScore);
+    copyToChat(lines.join('\n') + '\n\n请帮我分析以上数据，指出可能的问题与改进建议。');
+    showToast('已复制到 AI 对话框', 'success');
+}
+
+// ==================== AI 对话助手 ====================
+
+let chatHistory = [];
+let aiChatReady = false;
+
+async function initAiChat() {
+    try {
+        const r = await api('/ai/chat-enabled');
+        aiChatReady = !!(r && r.enabled);
+        const d = $('#aiChatDisabled');
+        if (!aiChatReady && d) {
+            d.style.display = 'block';
+            d.textContent = 'AI 对话未启用（请在 application.yml 配置 app.ai 的 base-url / api-key / model）';
+        }
+    } catch (e) {
+        console.warn('查询 AI 对话状态失败:', e.message);
+    }
+}
+
+function toggleAiChat() {
+    const p = $('#aiChatPanel');
+    if (p.classList.contains('open')) p.classList.remove('open');
+    else p.classList.add('open');
+}
+
+function appendChatMessage(role, content) {
+    const box = $('#aiChatMessages');
+    const div = document.createElement('div');
+    div.className = 'ai-msg ' + (role === 'user' ? 'ai-msg-user' : 'ai-msg-assistant');
+    div.textContent = content;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+}
+
+async function sendAiMessage() {
+    if (!aiChatReady) { showToast('AI 对话未启用', 'warning'); return; }
+    const input = $('#aiChatInput');
+    const text = input.value.trim();
+    if (!text) return;
+    appendChatMessage('user', text);
+    chatHistory.push({ role: 'user', content: text });
+    input.value = '';
+    const box = $('#aiChatMessages');
+    const thinking = document.createElement('div');
+    thinking.className = 'ai-msg ai-msg-assistant ai-thinking';
+    thinking.textContent = '正在思考…';
+    box.appendChild(thinking);
+    box.scrollTop = box.scrollHeight;
+
+    // 触发方式二：用户提问"某段文字属于哪一类" -> 复用 AI 辅助分类检测逻辑识别该文字，返回推荐分类/编码/理由
+    const classifyInput = extractClassifyText(text);
+    if (classifyInput && classifyInput.length >= 2) {
+        thinking.textContent = '正在对输入文字进行 AI 分类识别…';
+        try {
+            const data = await classifyTextWithTimeout(classifyInput);
+            if (box.contains(thinking)) box.removeChild(thinking);
+            const out = formatClassifyResult(data);
+            appendChatMessage('assistant', out);
+            chatHistory.push({ role: 'assistant', content: out });
+        } catch (e) {
+            if (box.contains(thinking)) box.removeChild(thinking);
+            appendChatMessage('assistant', '分类识别失败：' + e.message);
+        }
+        return;
+    }
+
+    // 触发方式一：分类相关问题 -> 触发「AI 辅助分类检测」逻辑分析数据文件，作为上下文
+    let systemPrompt = null;
+    if (/分类/.test(text)) {
+        thinking.textContent = '正在调用 AI 辅助分类检测分析数据…';
+        systemPrompt = await buildClassifyContextPrompt();
+    }
+
+    try {
+        const body = { messages: chatHistory };
+        if (systemPrompt) body.systemPrompt = systemPrompt;
+        const res = await api('/ai/chat', {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+        if (box.contains(thinking)) box.removeChild(thinking);
+        const reply = res.reply || '(无回复)';
+        appendChatMessage('assistant', reply);
+        chatHistory.push({ role: 'assistant', content: reply });
+    } catch (e) {
+        if (box.contains(thinking)) box.removeChild(thinking);
+        appendChatMessage('assistant', '调用失败：' + e.message);
+    }
+}
+
+// 当用户提问包含「分类」关键词时，调用「AI 辅助分类检测」接口（useAi=true 即触发 AI 识别），
+// 将检测结果汇总为系统提示词上下文，供 AI 参考回答。
+async function buildClassifyContextPrompt() {
+    // 未提供独立的"分析文件"下拉，复用清洗模块当前所选文件
+    const ct = $('#cleanTitleId');
+    const titleId = ct ? ct.value : '';
+    if (!titleId) {
+        return AI_CHAT_SYSTEM_PROMPT + '\n\n用户询问了分类相关问题，但未选择数据文件，无法调用 AI 辅助分类检测，请基于通用数据清洗与物料分类知识回答。';
+    }
+    try {
+        const data = await classifyByColumnWithTimeout(titleId);
+        if (!data || data.total === 0) {
+            const msg = data && data.message ? '（' + data.message + '）' : '';
+            return AI_CHAT_SYSTEM_PROMPT + '\n\n所选数据文件（ID=' + titleId + '）' + (msg || '暂无可用于分类识别的数据') + '，无法进行分类检测，请基于通用知识回答用户的分类问题。';
+        }
+        const details = data.details || [];
+        const mismatches = details.filter(d => !d.matched).slice(0, 20);
+        let ctx = '以下是数据文件（ID=' + titleId + '）经「AI 辅助分类检测」得到的参考信息，请据此回答用户关于分类的问题：\n';
+        ctx += '总条数：' + data.total + '，分类匹配：' + data.matchedCount + '，不匹配/存疑：' + data.mismatchCount +
+            '，平均评分：' + data.avgScore + '，是否启用 AI 识别：' + data.useAi + '。\n';
+        if (mismatches.length) {
+            ctx += '分类不匹配/存疑的记录（物料代码 / 系统分类 / 建议标准编码 / 评分 / 说明）：\n';
+            mismatches.forEach(d => {
+                ctx += '- [' + (d.materialCode || '-') + '] ' + (d.materialName || '-') +
+                    '：系统=' + (d.categoryCode || '-') + '/' + (d.categoryName || '-') +
+                    '，建议=' + (d.suggestedCode || '-') +
+                    '，评分=' + (d.score != null ? d.score : '-') +
+                    '，说明=' + (d.reason || '-') + '\n';
+            });
+        } else {
+            ctx += '未检出明显分类不匹配/存疑记录。\n';
+        }
+        return AI_CHAT_SYSTEM_PROMPT + '\n\n' + ctx;
+    } catch (e) {
+        console.warn('获取分类检测上下文失败:', e.message);
+        return AI_CHAT_SYSTEM_PROMPT + '\n\n（调用 AI 辅助分类检测失败：' + e.message + '）请基于通用知识回答用户的分类问题。';
+    }
+}
+
+// 与后端 AiChatController.DEFAULT_SYSTEM_PROMPT 保持一致
+const AI_CHAT_SYSTEM_PROMPT = '你是一名专业的数据清洗分析助手，帮助用户解读数据统计看板中的指标、失败原因与分类匹配情况，用简洁、可操作的中文给出分析与建议。';
+
+// 带超时的「AI 辅助分类检测」调用（useAi=true 触发 AI 识别）。
+// 该检测可能逐行调用大模型，耗时较长，故设置客户端超时，避免聊天长时间挂起。
+async function classifyCheckWithTimeout(titleId, timeoutMs = 180000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const headers = { 'Content-Type': 'application/json' };
+        const token = getToken();
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        const res = await fetch(API + `/cleaning/ai-classify-check?titleId=${titleId}&useAi=true`, {
+            method: 'POST',
+            headers,
+            signal: ctrl.signal,
+        });
+        if (res.status === 401) { redirectToLogin(); throw new Error('登录已过期，请重新登录'); }
+        const text = await res.text();
+        if (!text || !text.trim()) throw new Error('分类检测未返回数据，可能请求超时');
+        const data = JSON.parse(text);
+        if (data.code === 401) { redirectToLogin(); throw new Error(data.msg || '登录已过期'); }
+        if (data.code !== 200) throw new Error(data.msg || '分类检测失败');
+        return data.data;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// 从用户输入中识别"某段文字属于哪一类"的意图，返回待分类的文字（无法识别则返回 null）。
+// 支持：① "XXX属于/是/归到/归入哪类/哪个分类"；② "分类/归类/识别分类：XXX"。
+function extractClassifyText(text) {
+    const t = (text || '').trim();
+    if (!t) return null;
+    // 模式①：分类/归类/识别分类 + 冒号 后的内容（如"帮我分类：碳素铸钢件 规格Q235"）
+    let m = t.match(/(?:请|帮(?:我)?|帮忙)?\s*(?:分类|归类|识别分类|判断分类)\s*[：:]\s*(.+)$/s);
+    if (m) return m[1].trim();
+    // 模式②：包含"归类问句"特征（属于/归到/是哪类/什么分类…），提取问句前的主体文字
+    const askPattern = /(属于|归为|归到|归入|是哪|是什么|该归|应归|算).{0,4}(哪|什么|哪个).{0,4}(类|分类|类别|目)/;
+    if (!askPattern.test(t)) return null;
+    m = t.match(/^(.*?)\s*(?:属于|是|算|该归|应归|归为|归到|归入|归类)\s*(?:哪|什么|哪个).{0,4}(?:类|分类|类别)/s);
+    if (m) {
+        let subj = m[1].trim();
+        subj = subj.replace(/^(?:请|请问|帮(?:我)?|帮忙|识别|判断|归类|分类|一下|帮我|想问|我想问|这段(?:文字)?[:：]?|这句(?:话)?[:：]?|以下文字[:：]?|如下[:：]?)\s*/, '');
+        return subj;
+    }
+    return null;
+}
+
+// 将后端 classify-text 的返回格式化为聊天消息
+function formatClassifyResult(data) {
+    if (!data) return '未获得分类结果';
+    if (data.message) return data.message;
+    const name = data.recommendedName || '（未找到匹配分类）';
+    const code = data.recommendedCode || '—';
+    const reason = data.reason || '—';
+    let s = '【分类识别结果】\n';
+    s += '推荐分类：' + name + '（分类编码：' + code + '）\n';
+    if (data.score != null) s += '置信度评分：' + data.score + '\n';
+    s += '理由：' + reason + '\n';
+    s += '（识别方式：' + (data.useAi ? 'AI 识别' : '关键词匹配') + '）';
+    return s;
+}
+
+// 带超时的「文本分类识别」调用（复用 AI 辅助分类检测逻辑，useAi=true 触发 AI 识别）
+async function classifyTextWithTimeout(text, timeoutMs = 180000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const headers = { 'Content-Type': 'application/json' };
+        const token = getToken();
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        const url = API + '/cleaning/classify-text?text=' + encodeURIComponent(text) + '&useAi=true';
+        const res = await fetch(url, { method: 'POST', headers, signal: ctrl.signal });
+        if (res.status === 401) { redirectToLogin(); throw new Error('登录已过期，请重新登录'); }
+        const body = await res.text();
+        if (!body || !body.trim()) throw new Error('分类识别未返回数据，可能请求超时');
+        const data = JSON.parse(body);
+        if (data.code === 401) { redirectToLogin(); throw new Error(data.msg || '登录已过期'); }
+        if (data.code !== 200) throw new Error(data.msg || '分类识别失败');
+        return data.data;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function clearChat() {
+    chatHistory = [];
+    $('#aiChatMessages').innerHTML = '';
+}
+
+function copyToChat(text) {
+    const input = $('#aiChatInput');
+    input.value = (input.value ? input.value + '\n' : '') + text;
+    toggleAiChat();
+    input.focus();
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // 初始化下拉框
     const initSelects = async () => {
@@ -4059,4 +4508,5 @@ document.addEventListener('DOMContentLoaded', () => {
         await loadTitlesForSelect('resultTitleId');
     };
     initSelects().catch(console.error);
+    initAiChat().catch(console.error);
 });

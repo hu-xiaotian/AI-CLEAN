@@ -16,7 +16,9 @@ import com.aiclean.model.ParseRule;
 import com.aiclean.model.SearchCondition;
 import com.aiclean.service.CategoryStandardLibrary;
 import com.aiclean.service.DataCleaningService;
+import com.aiclean.dto.CategoryDataCount;
 import com.aiclean.dto.ClassifyCheckDetail;
+import com.aiclean.dto.StatusCount;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -1925,8 +1927,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
     @Override
     public List<FailedResultDataEntity> getFailedResults(Long titleId) {
-        if (titleId == null) return new ArrayList<>();
-        return failedResultDataMapper.selectByTitleId(titleId);
+        if (titleId != null) return failedResultDataMapper.selectByTitleId(titleId);
+        return failedResultDataMapper.selectAll();
     }
 
     // ==================== 未映射结果 ====================
@@ -1981,6 +1983,87 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         report.put("averageScore", count > 0 ? totalScore / count : 0);
         return report;
     }
+
+    @Override
+    public Map<String, Object> getDashboardStatistics(Long titleId) {
+        Map<String, Object> stats = new HashMap<>();
+        boolean scoped = titleId != null;
+
+        long fileCount = nullToZero(tempDataTitleMapper.selectCount(null));
+        stats.put("fileCount", fileCount);
+
+        long totalCleaned = scoped
+                ? nullToZero(cleanedDataMapper.countByTitleId(titleId))
+                : nullToZero(cleanedDataMapper.selectCount(null));
+        stats.put("totalCleaned", totalCleaned);
+
+        int totalRows = scoped
+                ? nullToZeroInt(tempDataTitleMapper.sumTotalRowsByTitleId(titleId))
+                : nullToZeroInt(tempDataTitleMapper.sumTotalRows());
+        stats.put("totalRows", totalRows);
+
+        long unmatch = scoped
+                ? nullToZero(cleanedDataMapper.countUnmatchedByTitleId(titleId))
+                : nullToZero(cleanedDataMapper.countUnmatched());
+        long match = totalCleaned - unmatch;
+        stats.put("matchCount", match < 0 ? 0 : match);
+        stats.put("unmatchCount", unmatch);
+
+        long success = scoped
+                ? nullToZero(cleanedDataMapper.countFilledByTitleId(titleId))
+                : nullToZero(cleanedDataMapper.countFilled());
+        long failure = scoped
+                ? nullToZero(failedResultDataMapper.countByTitleId(titleId))
+                : nullToZero(failedResultDataMapper.selectCount(null));
+        stats.put("successCount", success);
+        stats.put("failureCount", failure);
+
+        Double avg = scoped ? cleanedDataMapper.avgScoreByTitleId(titleId) : cleanedDataMapper.avgScore();
+        stats.put("avgScore", avg != null ? Math.round(avg * 10) / 10.0 : 0);
+
+        List<StatusCount> statusDist = scoped
+                ? cleanedDataMapper.countByStatusByTitleId(titleId)
+                : cleanedDataMapper.countByStatus();
+        stats.put("statusDistribution", statusDist != null ? statusDist : new ArrayList<>());
+
+        List<CategoryDataCount> catDist = scoped
+                ? cleanedDataMapper.countByCategoryByTitleId(titleId)
+                : cleanedDataMapper.countByCategoryTop();
+        stats.put("categoryDistribution", catDist != null ? catDist : new ArrayList<>());
+
+        List<Map<String, Object>> matchDist = new ArrayList<>();
+        Map<String, Object> m1 = new HashMap<>(); m1.put("name", "分类匹配"); m1.put("value", stats.get("matchCount"));
+        Map<String, Object> m2 = new HashMap<>(); m2.put("name", "分类不匹配"); m2.put("value", stats.get("unmatchCount"));
+        matchDist.add(m1); matchDist.add(m2);
+        stats.put("matchDistribution", matchDist);
+
+        List<Map<String, Object>> fillDist = new ArrayList<>();
+        Map<String, Object> f1 = new HashMap<>(); f1.put("name", "填充成功"); f1.put("value", success);
+        Map<String, Object> f2 = new HashMap<>(); f2.put("name", "填充失败"); f2.put("value", failure);
+        fillDist.add(f1); fillDist.add(f2);
+        stats.put("fillDistribution", fillDist);
+
+        if (scoped) {
+            TempDataTitleEntity title = tempDataTitleMapper.selectById(titleId);
+            if (title != null) stats.put("fileName", title.getFileName());
+            stats.put("scope", "file");
+            stats.put("fileId", titleId);
+        } else {
+            stats.put("scope", "all");
+        }
+        return stats;
+    }
+
+    @Override
+    public List<CleanedDataEntity> getUnmatchedClassify(Long titleId) {
+        if (titleId != null) {
+            return cleanedDataMapper.selectUnmatchedByTitleId(titleId);
+        }
+        return cleanedDataMapper.selectUnmatchedAll();
+    }
+
+    private long nullToZero(Number v) { return v != null ? v.longValue() : 0L; }
+    private int nullToZeroInt(Integer v) { return v != null ? v : 0; }
 
     // ==================== 私有辅助方法 ====================
 
@@ -2237,6 +2320,59 @@ public class DataCleaningServiceImpl implements DataCleaningService {
      * 对文件下已清洗的数据重新评分：AI 模式调用大模型比对标准库候选，否则用规则校验；
      * 更新 quality_score / accuracy_score / status，并返回汇总与逐条明细。
      */
+    /**
+     * 文本分类识别：复用「AI 辅助分类检测」的核心检测逻辑（detectSingle），
+     * 但把待识别内容替换为用户传入的任意文字（构造一个只有物料描述的临时清洗实体）。
+     * AI 模式下由大模型在候选标准分类中选出最合理编码；未启用 AI 时退化为关键词召回的 top 候选。
+     * 返回推荐的分类名称、分类编码与理由。
+     */
+    @Override
+    public Map<String, Object> classifyText(String text, Boolean useAi) {
+        if (StrUtil.isBlank(text)) {
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("message", "请输入待分类的物料描述文字");
+            return r;
+        }
+        stdLib.ensureLoaded();
+        boolean aiOn = Boolean.TRUE.equals(useAi) && aiClientService.isEnabled();
+
+        // 构造临时清洗实体：仅填入用户文字作为物料名称与规格，无系统分类编码
+        CleanedDataEntity cd = new CleanedDataEntity();
+        cd.setMaterialName(text);
+        cd.setSpecification(text);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("input", text);
+        result.put("useAi", aiOn);
+
+        if (aiOn) {
+            // 复用与 aiClassifyCheck 完全相同的单条检测逻辑（含 AI 识别与反向校验兜底）
+            ClassifyCheckDetail d = detectSingle(cd, true);
+            result.put("recommendedCode", d.getBestMatchCode());
+            result.put("recommendedName", d.getBestMatchName());
+            result.put("reason", d.getReason());
+            result.put("score", d.getScore());
+            result.put("candidateCount", d.getCandidateCount());
+        } else {
+            // 未启用 AI：无系统分类编码，退化为基于关键词召回的 top 候选作为推荐
+            List<CategoryStandardLibrary.Candidate> candidates = stdLib.retrieveCandidates(cd, candidateTopK);
+            if (candidates.isEmpty()) {
+                result.put("recommendedCode", null);
+                result.put("recommendedName", null);
+                result.put("reason", "标准库中未找到与输入相关的分类，请补充更明确的物料描述");
+                result.put("score", null);
+            } else {
+                CategoryStandardLibrary.Candidate top = candidates.get(0);
+                result.put("recommendedCode", top.getCategory().getCategoryCode());
+                result.put("recommendedName", top.getCategory().getCategoryName());
+                result.put("reason", "基于关键词匹配，从标准库召回 " + candidates.size() + " 个候选，推荐相关性最高的分类（相关性 " + top.getRelevance() + "）");
+                result.put("score", null);
+            }
+            result.put("candidateCount", candidates.size());
+        }
+        return result;
+    }
+
     @Override
     public Map<String, Object> aiClassifyCheck(Long titleId, Boolean useAi) {
         stdLib.ensureLoaded();

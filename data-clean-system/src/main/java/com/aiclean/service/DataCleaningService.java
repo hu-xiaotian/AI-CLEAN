@@ -38,6 +38,8 @@ public interface DataCleaningService {
 
     // ===== AI 辅助分类检测（基于 main_data_category 标准库比对）=====
     Map<String, Object> aiClassifyCheck(Long titleId, Boolean useAi);
+    /** 文本分类识别：复用 AI 辅助分类检测逻辑，对一段物料描述文字进行 AI 识别，返回推荐分类/编码/理由 */
+    Map<String, Object> classifyText(String text, Boolean useAi);
     /** 异步执行 AI 辅助分类检测，通过 WebSocket 主题 /topic/ai-classify-check/{titleId} 实时推送进度与明细 */
     String aiClassifyCheckAsync(Long titleId, Boolean useAi);
 
@@ -98,6 +100,12 @@ public interface DataCleaningService {
     // ===== 统计 =====
     Map<String, Object> getCleaningStatistics(Long titleId);
     Map<String, Object> getQualityReport(Long titleId);
+
+    // ===== 看板统计 =====
+    /** 看板量化指标统计：文件数、总条数、成功/失败、分类匹配/不匹配、状态与分类分布等 */
+    Map<String, Object> getDashboardStatistics(Long titleId);
+    /** 查询分类不匹配（match_source = UNMATCHED）的清洗数据，用于失败明细下钻 */
+    List<CleanedDataEntity> getUnmatchedClassify(Long titleId);
 
     // ===== 未映射结果 =====
     List<CleanedDataEntity> getUnmappedResults(Long titleId);

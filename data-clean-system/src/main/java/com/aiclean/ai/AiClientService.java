@@ -14,7 +14,10 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 通用 AI 客户端
@@ -91,6 +94,71 @@ public class AiClientService {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             // api-key 为空时（如本地免鉴权部署）不发送 Authorization 头
+            if (StrUtil.isNotBlank(apiKey)) {
+                headers.setBearerAuth(apiKey);
+            }
+            HttpEntity<String> entity = new HttpEntity<>(body.toJSONString(), headers);
+
+            org.springframework.http.ResponseEntity<String> response =
+                    restTemplate.postForEntity(url, entity, String.class);
+
+            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+                throw new RuntimeException("AI 服务返回异常状态码: " + response.getStatusCode());
+            }
+
+            JSONObject resp = JSON.parseObject(response.getBody());
+            JSONArray choices = resp.getJSONArray("choices");
+            if (choices == null || choices.isEmpty()) {
+                throw new RuntimeException("AI 服务未返回有效内容");
+            }
+            return choices.getJSONObject(0).getJSONObject("message").getString("content");
+        } catch (RuntimeException re) {
+            throw re;
+        } catch (Exception e) {
+            log.error("调用 AI 服务失败", e);
+            throw new RuntimeException("调用 AI 服务失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 多轮对话：支持传入完整对话历史（system 由 systemPrompt 指定，其余消息来自 messages）
+     *
+     * @param systemPrompt 系统提示词
+     * @param messages     对话历史，元素为包含 role/content 的 Map（role 取值 user/assistant）
+     * @return 模型返回的纯文本内容
+     */
+    public String chatWithHistory(String systemPrompt, List<Map<String, String>> messages) {
+        if (!isEnabled()) {
+            throw new RuntimeException("AI 提取功能未启用，请在 application.yml 中配置 app.ai（base-url / api-key / model）");
+        }
+        try {
+            String url = baseUrl.endsWith("/") ? baseUrl + "chat/completions" : baseUrl + "/chat/completions";
+
+            JSONObject sysMsg = new JSONObject();
+            sysMsg.put("role", "system");
+            sysMsg.put("content", systemPrompt);
+
+            List<JSONObject> msgList = new ArrayList<>();
+            msgList.add(sysMsg);
+            if (messages != null) {
+                for (Map<String, String> m : messages) {
+                    if (m == null) continue;
+                    JSONObject jm = new JSONObject();
+                    jm.put("role", m.get("role"));
+                    jm.put("content", m.get("content"));
+                    msgList.add(jm);
+                }
+            }
+
+            JSONObject body = new JSONObject();
+            body.put("model", model);
+            body.put("messages", msgList);
+            body.put("temperature", temperature);
+            body.put("max_tokens", maxTokens);
+            body.put("stream", false);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
             if (StrUtil.isNotBlank(apiKey)) {
                 headers.setBearerAuth(apiKey);
             }

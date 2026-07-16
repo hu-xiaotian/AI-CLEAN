@@ -58,5 +58,17 @@ public interface TempDataTitleMapper extends BaseMapper<TempDataTitleEntity> {
     @Select("SELECT * FROM temp_data_title WHERE created_at BETWEEN #{startTime} AND #{endTime} ORDER BY created_at DESC")
     List<TempDataTitleEntity> selectByTimeRange(@Param("startTime") String startTime, 
                                                 @Param("endTime") String endTime);
-    
+
+    /**
+     * 统计全部文件的总导入行数
+     */
+    @Select("SELECT COALESCE(SUM(total_rows), 0) FROM temp_data_title")
+    Integer sumTotalRows();
+
+    /**
+     * 统计指定文件的总导入行数
+     */
+    @Select("SELECT COALESCE(SUM(total_rows), 0) FROM temp_data_title WHERE id = #{titleId}")
+    Integer sumTotalRowsByTitleId(@Param("titleId") Long titleId);
+
 }

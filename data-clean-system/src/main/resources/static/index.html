@@ -21,6 +21,7 @@
             </div>
         </div>
         <nav class="nav-menu">
+            <a class="nav-item" data-page="dashboard" onclick="switchPage('dashboard')">数据统计看板</a>
             <a class="nav-item active" data-page="import" onclick="switchPage('import')">数据导入</a>
             <a class="nav-item" data-page="oneclick" onclick="switchPage('oneclick')">一键数据清洗</a>
 
@@ -593,6 +594,58 @@
 
 
 
+        <!-- ===== 数据统计看板 ===== -->
+        <section id="page-dashboard" class="page">
+            <h2>数据统计看板</h2>
+<!--            <p class="desc">数据清洗量化指标总览</p>-->
+
+            <div class="card">
+                <div class="dashboard-toolbar">
+                    <div class="form-group" style="margin:0;flex:1;min-width:220px">
+                        <label>数据文件</label>
+                        <select id="dashTitleId" class="form-input" onchange="loadDashboard()">
+                            <option value="">全部文件</option>
+                        </select>
+                    </div>
+<!--                    <button class="btn btn-primary" onclick="loadDashboard()">查询</button>-->
+<!--                    <button class="btn btn-default" onclick="copyDashboardSummary()">复制看板摘要到 AI</button>-->
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>核心指标</h3>
+                <div class="stats-grid" id="dashKpiGrid">
+                    <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">加载中…</div></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>可视化分析</h3>
+                <div class="charts-grid">
+                    <div class="chart-box">
+                        <div class="chart-title">清洗结果分布（成功/失败）</div>
+                        <div id="chartFill" class="chart-canvas"></div>
+                        <div id="legendFill" class="chart-legend"></div>
+                    </div>
+                    <div class="chart-box">
+                        <div class="chart-title">分类匹配分布</div>
+                        <div id="chartMatch" class="chart-canvas"></div>
+                        <div id="legendMatch" class="chart-legend"></div>
+                    </div>
+                    <div class="chart-box">
+                        <div class="chart-title">状态分布</div>
+                        <div id="chartStatus" class="chart-canvas"></div>
+                        <div id="legendStatus" class="chart-legend"></div>
+                    </div>
+                    <div class="chart-box">
+                        <div class="chart-title">分类 Top 分布</div>
+                        <div id="chartCategory" class="chart-canvas"></div>
+                        <div id="legendCategory" class="chart-legend"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
     </main>
 </div>
 
@@ -721,6 +774,101 @@
     <div class="loading-spinner">
         <div class="spinner"></div>
         <p class="loading-text" id="loadingText">处理中，请稍候…</p>
+    </div>
+</div>
+
+<!-- 失败明细 Modal -->
+<div class="modal-overlay" id="failureOverlay" onclick="closeFailureModal()"></div>
+<div class="modal modal-xl" id="failureModal">
+    <div class="modal-header">
+        <h3>失败明细</h3>
+        <button class="btn-close" onclick="closeFailureModal()">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+        <div class="tabs">
+            <button class="tab active" data-tab="fill" onclick="switchFailureTab('fill')">填充失败 (<span id="failCountFill">0</span>)</button>
+            <button class="tab" data-tab="unmatch" onclick="switchFailureTab('unmatch')">分类不匹配 (<span id="failCountUnmatch">0</span>)</button>
+        </div>
+        <div id="failureTabFill" class="failure-tab">
+            <div class="table-scroll" style="max-height:440px;overflow-y:auto">
+                <table class="data-table">
+                    <thead><tr>
+                        <th style="width:60px">ID</th>
+                        <th style="width:90px">原始数据ID</th>
+                        <th style="width:120px">分类编码</th>
+                        <th>失败原因</th>
+                        <th>原始数据</th>
+                        <th style="width:80px">操作</th>
+                    </tr></thead>
+                    <tbody id="failTbody"></tbody>
+                </table>
+            </div>
+        </div>
+        <div id="failureTabUnmatch" class="failure-tab" style="display:none">
+            <div class="table-scroll" style="max-height:440px;overflow-y:auto">
+                <table class="data-table">
+                    <thead><tr>
+                        <th style="width:60px">ID</th>
+                        <th style="width:120px">物料代码</th>
+                        <th>物料名称</th>
+                        <th style="width:120px">分类编码</th>
+                        <th style="width:120px">匹配来源</th>
+                        <th style="width:80px">操作</th>
+                    </tr></thead>
+                    <tbody id="unmatchTbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- AI 对话助手（悬浮面板） -->
+<div class="ai-chat-fab" id="aiChatFab" onclick="toggleAiChat()" title="AI 数据助手">
+    <svg viewBox="0 0 64 64" width="30" height="30" fill="none" aria-hidden="true">
+        <line x1="45" y1="14" x2="45" y2="21" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+        <path d="M45 10 c-1.6 -2.4 -5 -0.8 -3.2 1.6 c0.8 1.3 3.2 2.4 3.2 2.4 c0 0 2.4 -1.1 3.2 -2.4 c1.8 -2.4 -1.6 -4 -3.2 -1.6 z" fill="#ff8fab"/>
+        <path d="M13 18 L22 23 L13 28 Z" fill="#ff8fab"/>
+        <path d="M27 18 L18 23 L27 28 Z" fill="#ff8fab"/>
+        <circle cx="20" cy="23" r="2.6" fill="#ff6b9d"/>
+        <rect x="8" y="33" width="5" height="11" rx="2.5" fill="#fff"/>
+        <rect x="51" y="33" width="5" height="11" rx="2.5" fill="#fff"/>
+        <rect x="13" y="22" width="38" height="33" rx="14" fill="#fff"/>
+        <circle cx="25" cy="38" r="4.2" fill="#2563eb"/>
+        <circle cx="39" cy="38" r="4.2" fill="#2563eb"/>
+        <circle cx="26.3" cy="36.7" r="1.4" fill="#fff"/>
+        <circle cx="40.3" cy="36.7" r="1.4" fill="#fff"/>
+        <path d="M20.5 34 q4.5 -3 9 0" stroke="#2563eb" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+        <path d="M34.5 34 q4.5 -3 9 0" stroke="#2563eb" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+        <circle cx="19" cy="44" r="2.6" fill="#fca5a5" opacity="0.85"/>
+        <circle cx="45" cy="44" r="2.6" fill="#fca5a5" opacity="0.85"/>
+        <path d="M28 47 Q32 51 36 47" stroke="#2563eb" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+    </svg>
+</div>
+<div class="ai-chat-panel" id="aiChatPanel">
+    <div class="ai-chat-header">
+        <span class="ai-chat-title">
+            <svg viewBox="0 0 64 64" width="18" height="18" fill="none" style="vertical-align:-3px;margin-right:4px" aria-hidden="true">
+                <path d="M13 18 L22 23 L13 28 Z" fill="#ff8fab"/>
+                <path d="M27 18 L18 23 L27 28 Z" fill="#ff8fab"/>
+                <circle cx="20" cy="23" r="2.6" fill="#ff6b9d"/>
+                <rect x="13" y="22" width="38" height="33" rx="14" fill="#fff"/>
+                <circle cx="25" cy="38" r="4.2" fill="#2563eb"/>
+                <circle cx="39" cy="38" r="4.2" fill="#2563eb"/>
+                <circle cx="19" cy="44" r="2.6" fill="#fca5a5" opacity="0.85"/>
+                <circle cx="45" cy="44" r="2.6" fill="#fca5a5" opacity="0.85"/>
+                <path d="M28 47 Q32 51 36 47" stroke="#2563eb" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+            </svg>AI 数据助手
+        </span>
+        <div class="ai-chat-actions">
+            <button class="btn btn-sm btn-default" onclick="clearChat()">清空</button>
+            <button class="btn btn-sm btn-default" onclick="toggleAiChat()">&#x2715;</button>
+        </div>
+    </div>
+    <div class="ai-chat-messages" id="aiChatMessages"></div>
+    <div class="ai-chat-disabled" id="aiChatDisabled" style="display:none"></div>
+    <div class="ai-chat-input">
+        <textarea id="aiChatInput" placeholder="输入消息，或点击看板中的「问AI」把内容带过来…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAiMessage()}"></textarea>
+        <button class="btn btn-primary" onclick="sendAiMessage()">发送</button>
     </div>
 </div>
 

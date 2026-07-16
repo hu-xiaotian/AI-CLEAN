@@ -139,6 +139,13 @@ public class DataCleaningController {
         return R.success(dataCleaningService.aiClassifyCheck(titleId, useAi));
     }
 
+    @PostMapping("/classify-text")
+    @Operation(summary = "文本分类识别", description = "对一段物料描述文字复用 AI 辅助分类检测逻辑进行 AI 识别，返回推荐的分类名称、分类编码与理由。useAi 默认 true（未配置 AI 时退化为关键词匹配）。")
+    public R<Map<String, Object>> classifyText(@RequestParam String text,
+                                                @RequestParam(required = false, defaultValue = "true") Boolean useAi) {
+        return R.success(dataCleaningService.classifyText(text, useAi));
+    }
+
     @PostMapping("/ai-classify-check-async")
     @Operation(summary = "AI 辅助分类检测（异步，带进度）", description = "异步执行分类检测，通过 WebSocket 主题 /topic/ai-classify-check/{titleId} 实时推送进度（start/progress/complete/error）与每条明细，避免同步阻塞导致页面无响应。")
     public R<String> aiClassifyCheckAsync(@RequestParam Long titleId,
@@ -249,9 +256,21 @@ public class DataCleaningController {
     }
 
     @GetMapping("/failed-results")
-    @Operation(summary = "查询填充失败的结果数据", description = "查询因未匹配标准字段表头（standard_title_id 非空约束）而跳过并记录的数据")
-    public R<List<FailedResultDataEntity>> getFailedResults(@RequestParam Long titleId) {
+    @Operation(summary = "查询填充失败的结果数据", description = "查询因未匹配标准字段表头（standard_title_id 非空约束）而跳过并记录的数据；不传 titleId 时返回全部")
+    public R<List<FailedResultDataEntity>> getFailedResults(@RequestParam(required = false) Long titleId) {
         return R.success(dataCleaningService.getFailedResults(titleId));
+    }
+
+    @GetMapping("/dashboard-statistics")
+    @Operation(summary = "获取看板统计信息", description = "返回量化指标（文件数、总条数、成功/失败、分类匹配/不匹配）及饼图所需的分布数据；不传 titleId 时统计全部")
+    public R<Map<String, Object>> getDashboardStatistics(@RequestParam(required = false) Long titleId) {
+        return R.success(dataCleaningService.getDashboardStatistics(titleId));
+    }
+
+    @GetMapping("/unmatched-classify")
+    @Operation(summary = "查询分类不匹配的清洗数据", description = "返回 match_source = UNMATCHED 的清洗数据，用于失败明细下钻；不传 titleId 时返回全部（限 500 条）")
+    public R<List<CleanedDataEntity>> getUnmatchedClassify(@RequestParam(required = false) Long titleId) {
+        return R.success(dataCleaningService.getUnmatchedClassify(titleId));
     }
 
     // ==================== 查询 ====================

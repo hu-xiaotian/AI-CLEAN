@@ -37,4 +37,16 @@ public interface FailedResultDataMapper extends BaseMapper<FailedResultDataEntit
      */
     @Delete("DELETE FROM failed_result_data WHERE temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")
     int deleteByTitleId(@Param("titleId") Long titleId);
+
+    /**
+     * 查询全部填充失败记录
+     */
+    @Select("SELECT * FROM failed_result_data ORDER BY id")
+    List<FailedResultDataEntity> selectAll();
+
+    /**
+     * 统计某数据文件下的填充失败记录数
+     */
+    @Select("SELECT COUNT(*) FROM failed_result_data f INNER JOIN temp_data td ON f.temp_data_id = td.id WHERE td.temp_data_title_id = #{titleId}")
+    Long countByTitleId(@Param("titleId") Long titleId);
 }
