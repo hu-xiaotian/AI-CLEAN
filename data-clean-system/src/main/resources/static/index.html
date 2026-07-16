@@ -272,9 +272,20 @@
             </div>
             <div class="card" id="aiCheckCard" style="display:none">
                 <h3 style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-                    <span>AI 辅助分类检测（基于 main_data_category 标准库比对）</span>
+                    <span>AI 辅助分类检测（基于标准库比对）</span>
                     <button class="btn btn-sm btn-primary" id="batchApplyBtn" style="display:none" onclick="batchApplyClassifyFix()">批量应用全部建议</button>
                 </h3>
+                <div id="aiCheckProgressCard" class="mt-2" style="display:none">
+                    <div class="progress-bar has-text mt-2">
+                        <div class="progress-fill" id="aiCheckFill" style="width:0%;background:var(--accent)">0%</div>
+                    </div>
+                    <div class="clean-stats-inline mt-2" style="display:flex;gap:24px;flex-wrap:wrap">
+                        <span>已检测: <strong id="aiCheckCurrent">0</strong> / <strong id="aiCheckTotal">0</strong></span>
+                        <span style="color:var(--success)">一致: <strong id="aiCheckMatched">0</strong></span>
+                        <span style="color:var(--danger)">不一致: <strong id="aiCheckMismatch">0</strong></span>
+                    </div>
+                    <p id="aiCheckStatus" class="mt-1" style="font-size:13px;color:var(--text-secondary)"></p>
+                </div>
                 <div id="aiCheckSummary" class="mt-2" style="font-size:13px;color:var(--text-secondary)"></div>
                 <div class="table-scroll mt-2" style="max-height:520px;overflow-y:auto">
                     <table class="data-table" id="aiCheckTable">

@@ -139,6 +139,13 @@ public class DataCleaningController {
         return R.success(dataCleaningService.aiClassifyCheck(titleId, useAi));
     }
 
+    @PostMapping("/ai-classify-check-async")
+    @Operation(summary = "AI 辅助分类检测（异步，带进度）", description = "异步执行分类检测，通过 WebSocket 主题 /topic/ai-classify-check/{titleId} 实时推送进度（start/progress/complete/error）与每条明细，避免同步阻塞导致页面无响应。")
+    public R<String> aiClassifyCheckAsync(@RequestParam Long titleId,
+                                          @RequestParam(required = false, defaultValue = "false") Boolean useAi) {
+        return R.success(dataCleaningService.aiClassifyCheckAsync(titleId, useAi));
+    }
+
     @PostMapping("/apply-classify-fix")
     @Operation(summary = "应用分类修正", description = "将指定清洗数据的分类替换为推荐的标准分类编码（targetCode）并保存，替换后按标准库规则重新评分。")
     public R<Map<String, Object>> applyClassifyFix(@RequestParam Long id,

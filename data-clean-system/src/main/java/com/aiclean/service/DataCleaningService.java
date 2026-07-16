@@ -38,6 +38,8 @@ public interface DataCleaningService {
 
     // ===== AI 辅助分类检测（基于 main_data_category 标准库比对）=====
     Map<String, Object> aiClassifyCheck(Long titleId, Boolean useAi);
+    /** 异步执行 AI 辅助分类检测，通过 WebSocket 主题 /topic/ai-classify-check/{titleId} 实时推送进度与明细 */
+    String aiClassifyCheckAsync(Long titleId, Boolean useAi);
 
     // ===== 应用分类修正：将清洗数据的分类替换为推荐的标准编码并保存 =====
     Map<String, Object> applyClassifyFix(Long id, String targetCode);

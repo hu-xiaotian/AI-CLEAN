@@ -2270,6 +2270,122 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         return result;
     }
 
+    /**
+     * 异步执行 AI 辅助分类检测：逐条检测并通过 WebSocket 推送进度与明细，
+     * 避免同步阻塞（尤其 AI 模式下逐行调用大模型耗时很长）导致前端无响应、看不到数据。
+     */
+    @Override
+    @Async
+    public String aiClassifyCheckAsync(Long titleId, Boolean useAi) {
+        log.info("开始 AI 辅助分类检测（异步），表头ID: {}, useAi: {}", titleId, useAi);
+        try {
+            stdLib.ensureLoaded();
+            List<CleanedDataEntity> list = cleanedDataMapper.selectAllByTempDataTitleId(titleId);
+            boolean aiOn = Boolean.TRUE.equals(useAi) && aiClientService.isEnabled();
+
+            if (list == null || list.isEmpty()) {
+                sendAiClassifyComplete(titleId, 0, 0, 0, 0, aiOn, "该文件暂无清洗数据，请先执行数据清洗");
+                return "ai_classify_check_task_" + titleId;
+            }
+
+            int total = list.size();
+            double sum = 0;
+            int matchedCount = 0;
+            int mismatchCount = 0;
+
+            // 开始消息
+            Map<String, Object> startMsg = new LinkedHashMap<>();
+            startMsg.put("type", "start");
+            startMsg.put("titleId", titleId);
+            startMsg.put("total", total);
+            startMsg.put("matchedCount", 0);
+            startMsg.put("mismatchCount", 0);
+            startMsg.put("progressPercent", 0);
+            startMsg.put("useAi", aiOn);
+            startMsg.put("timestamp", System.currentTimeMillis());
+            sendAiClassifyMessage(titleId, startMsg);
+
+            int current = 0;
+            for (CleanedDataEntity cd : list) {
+                current++;
+                ClassifyCheckDetail d;
+                try {
+                    d = detectSingle(cd, aiOn);
+                    cleanedDataMapper.updateById(cd);
+                } catch (Exception e) {
+                    log.error("AI 分类检测单条失败，cleanedDataId: {}", cd.getId(), e);
+                    d = new ClassifyCheckDetail();
+                    d.setId(cd.getId());
+                    d.setMaterialCode(cd.getMaterialCode());
+                    d.setMaterialName(cd.getMaterialName());
+                    d.setCategoryCode(cd.getCategoryCode());
+                    d.setCategoryName(cd.getCategoryName());
+                    d.setScore(0.0);
+                    d.setMatched(false);
+                    d.setReason("检测异常: " + e.getMessage());
+                }
+                sum += (d.getScore() != null ? d.getScore() : 0);
+                if (Boolean.TRUE.equals(d.getMatched())) matchedCount++;
+                else mismatchCount++;
+
+                sendAiClassifyProgress(titleId, "progress", current, total, d, matchedCount, mismatchCount, null);
+            }
+
+            double avg = total > 0 ? Math.round(sum / total * 10) / 10.0 : 0;
+            sendAiClassifyComplete(titleId, total, matchedCount, mismatchCount, avg, aiOn, null);
+            log.info("AI 辅助分类检测完成，表头ID: {}, 总数: {}, 一致: {}, 不一致: {}", titleId, total, matchedCount, mismatchCount);
+        } catch (Exception e) {
+            log.error("AI 辅助分类检测任务失败，表头ID: {}", titleId, e);
+            Map<String, Object> errMsg = new LinkedHashMap<>();
+            errMsg.put("type", "error");
+            errMsg.put("titleId", titleId);
+            errMsg.put("message", e.getMessage());
+            errMsg.put("timestamp", System.currentTimeMillis());
+            sendAiClassifyMessage(titleId, errMsg);
+        }
+        return "ai_classify_check_task_" + titleId;
+    }
+
+    private void sendAiClassifyComplete(Long titleId, int total, int matchedCount, int mismatchCount,
+                                        double avgScore, boolean aiOn, String message) {
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", "complete");
+        msg.put("titleId", titleId);
+        msg.put("total", total);
+        msg.put("matchedCount", matchedCount);
+        msg.put("mismatchCount", mismatchCount);
+        msg.put("avgScore", avgScore);
+        msg.put("useAi", aiOn);
+        msg.put("progressPercent", 100);
+        msg.put("timestamp", System.currentTimeMillis());
+        if (message != null) msg.put("message", message);
+        sendAiClassifyMessage(titleId, msg);
+    }
+
+    private void sendAiClassifyProgress(Long titleId, String type, int current, int total,
+                                        ClassifyCheckDetail detail, int matchedCount, int mismatchCount, String message) {
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", type);
+        msg.put("titleId", titleId);
+        msg.put("current", current);
+        msg.put("total", total);
+        msg.put("matchedCount", matchedCount);
+        msg.put("mismatchCount", mismatchCount);
+        msg.put("progressPercent", total > 0 ? (int) ((double) current / total * 100) : 0);
+        msg.put("timestamp", System.currentTimeMillis());
+        if (detail != null) msg.put("detail", detail);
+        if (message != null) msg.put("message", message);
+        sendAiClassifyMessage(titleId, msg);
+    }
+
+    private void sendAiClassifyMessage(Long titleId, Map<String, Object> msg) {
+        try {
+            messagingTemplate.convertAndSend("/topic/ai-classify-check/" + titleId, JSON.toJSONString(msg));
+        } catch (Exception e) {
+            log.warn("WebSocket 推送 AI 分类检测消息失败: {}", e.getMessage());
+        }
+    }
+
     /** 单条检测：评分 + 一致性判定 + 更新 cleanedData 的评分与状态 */
     private ClassifyCheckDetail detectSingle(CleanedDataEntity cd, boolean aiOn) {
         CategoryEntity matched = StrUtil.isNotBlank(cd.getCategoryCode())

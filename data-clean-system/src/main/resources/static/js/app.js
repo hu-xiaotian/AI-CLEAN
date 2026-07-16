@@ -1452,6 +1452,11 @@ async function startCleaning() {
 }
 
 // AI 辅助分类检测：将已清洗数据的分类结果与 main_data_category 标准库比对，给出评分
+// 改为异步 + WebSocket 进度推送：检测过程中实时显示进度条、统计与逐条明细，避免同步阻塞导致页面无响应。
+let aiCheckStompClient = null;
+let aiCheckSubscription = null;
+let aiCheckAccum = null;
+
 async function aiClassifyCheck() {
     const titleId = $('#cleanTitleId').value;
     if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
@@ -1459,21 +1464,176 @@ async function aiClassifyCheck() {
     const btn = document.getElementById('aiCheckBtn');
     if (btn) { btn.disabled = true; btn.textContent = '检测中…'; }
 
-    fetch(API + `/cleaning/ai-classify-check?titleId=${titleId}&useAi=${useAi}`, { method: 'POST' })
-        .then(res => safeJson(res, 'AI 分类检测'))
-        .then(data => {
-            if (data.code !== 200) throw new Error(data.msg || '检测失败');
-            renderAiCheck(data.data || {});
-            showToast('检测完成', 'success');
-        })
-        .catch(e => {
-            showToast('检测失败: ' + e.message, 'error');
-            $('#aiCheckCard').style.display = 'block';
-            $('#aiCheckSummary').textContent = '检测失败: ' + e.message;
-        })
-        .finally(() => {
-            if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+    // 重置累计状态
+    aiCheckAccum = { details: [], total: 0, matched: 0, mismatch: 0, sum: 0 };
+
+    // 展示卡片与进度区
+    $('#aiCheckCard').style.display = 'block';
+    $('#aiCheckProgressCard').style.display = 'block';
+    $('#aiCheckFill').style.width = '0%';
+    $('#aiCheckFill').textContent = '0%';
+    $('#aiCheckCurrent').textContent = '0';
+    $('#aiCheckTotal').textContent = '0';
+    $('#aiCheckMatched').textContent = '0';
+    $('#aiCheckMismatch').textContent = '0';
+    $('#aiCheckStatus').textContent = '正在连接检测服务…';
+    $('#aiCheckSummary').textContent = '';
+    $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">检测中，请稍候…</td></tr>';
+    const bb = document.getElementById('batchApplyBtn');
+    if (bb) bb.style.display = 'none';
+
+    // 建立 WebSocket 连接，连接成功后启动异步检测任务
+    disconnectAiCheckWebSocket();
+    const socket = new SockJS('/ws-cleaning');
+    aiCheckStompClient = Stomp.over(socket);
+    aiCheckStompClient.debug = null;
+    aiCheckStompClient.connect({}, function () {
+        aiCheckSubscription = aiCheckStompClient.subscribe('/topic/ai-classify-check/' + titleId, function (message) {
+            handleAiCheckMessage(JSON.parse(message.body));
         });
+        fetch(API + `/cleaning/ai-classify-check-async?titleId=${titleId}&useAi=${useAi}`, { method: 'POST' })
+            .then(res => safeJson(res, 'AI 分类检测'))
+            .then(data => {
+                if (data.code !== 200) throw new Error(data.msg || '启动失败');
+                $('#aiCheckStatus').textContent = '检测任务已启动，正在处理…';
+            })
+            .catch(e => {
+                $('#aiCheckStatus').textContent = '启动失败: ' + e.message;
+                showToast('检测启动失败: ' + e.message, 'error');
+                if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+            });
+    }, function (error) {
+        $('#aiCheckStatus').textContent = '实时连接失败，无法显示进度';
+        showToast('实时连接失败，无法显示进度', 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+    });
+}
+
+// 处理 AI 分类检测的 WebSocket 进度消息
+function handleAiCheckMessage(msg) {
+    const type = msg.type;
+    const total = msg.total || 0;
+    const current = msg.current || 0;
+    const percent = msg.progressPercent || 0;
+    const btn = document.getElementById('aiCheckBtn');
+
+    if (type === 'start') {
+        aiCheckAccum.total = total;
+        $('#aiCheckTotal').textContent = total;
+        $('#aiCheckFill').style.width = '0%';
+        $('#aiCheckFill').textContent = '0%';
+        $('#aiCheckStatus').textContent = '检测开始，共 ' + total + ' 条数据';
+        $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">检测中，请稍候…</td></tr>';
+        return;
+    }
+
+    if (type === 'progress') {
+        const d = msg.detail;
+        if (d) {
+            aiCheckAccum.details.push(d);
+            if (d.matched) aiCheckAccum.matched++; else aiCheckAccum.mismatch++;
+            aiCheckAccum.sum += (d.score != null ? d.score : 0);
+            appendAiCheckRow(aiCheckAccum.details.length, d);
+        }
+        $('#aiCheckFill').style.width = percent + '%';
+        $('#aiCheckFill').textContent = percent + '%';
+        $('#aiCheckCurrent').textContent = current;
+        $('#aiCheckTotal').textContent = total;
+        $('#aiCheckMatched').textContent = aiCheckAccum.matched;
+        $('#aiCheckMismatch').textContent = aiCheckAccum.mismatch;
+        $('#aiCheckStatus').textContent = '检测中… ' + current + '/' + total + ' (一致 ' + aiCheckAccum.matched + ', 不一致 ' + aiCheckAccum.mismatch + ')';
+        return;
+    }
+
+    if (type === 'complete') {
+        const total2 = msg.total != null ? msg.total : aiCheckAccum.total;
+        const matched2 = msg.matchedCount != null ? msg.matchedCount : aiCheckAccum.matched;
+        const mismatch2 = msg.mismatchCount != null ? msg.mismatchCount : aiCheckAccum.mismatch;
+        const avg = msg.avgScore != null ? Number(msg.avgScore).toFixed(1)
+            : (aiCheckAccum.total ? (aiCheckAccum.sum / aiCheckAccum.total).toFixed(1) : '-');
+        $('#aiCheckFill').style.width = '100%';
+        $('#aiCheckFill').textContent = '100%';
+        $('#aiCheckCurrent').textContent = total2;
+        $('#aiCheckMatched').textContent = matched2;
+        $('#aiCheckMismatch').textContent = mismatch2;
+
+        if (msg.message) {
+            $('#aiCheckStatus').textContent = msg.message;
+            $('#aiCheckSummary').textContent = msg.message;
+            $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">暂无数据</td></tr>';
+            if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+            setTimeout(disconnectAiCheckWebSocket, 2000);
+            showToast(msg.message, 'warning');
+            return;
+        }
+
+        $('#aiCheckStatus').textContent = '检测完成，共 ' + total2 + ' 条';
+        // 用累计明细组装完整结果并渲染（保持 apply/batch 所需的 lastAiCheckData 一致）
+        const data = {
+            total: total2,
+            avgScore: avg,
+            matchedCount: matched2,
+            mismatchCount: mismatch2,
+            useAi: msg.useAi,
+            details: aiCheckAccum.details
+        };
+        lastAiCheckData = data;
+        renderAiCheck(data);
+        showToast('检测完成', 'success');
+        if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+        setTimeout(disconnectAiCheckWebSocket, 2000);
+        return;
+    }
+
+    if (type === 'error') {
+        $('#aiCheckStatus').textContent = '检测异常终止: ' + (msg.message || '');
+        $('#aiCheckSummary').textContent = '检测异常终止: ' + (msg.message || '');
+        showToast('检测异常终止', 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+        setTimeout(disconnectAiCheckWebSocket, 2000);
+    }
+}
+
+// 向 AI 分类检测明细表追加一行（与 renderAiCheck 的渲染逻辑保持一致）
+function appendAiCheckRow(index, d) {
+    const tbody = $('#aiCheckTbody');
+    if (tbody.firstElementChild && tbody.firstElementChild.querySelector('.empty-hint')) {
+        tbody.innerHTML = '';
+    }
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-detail-id', d.id);
+    const score = d.score != null ? Number(d.score).toFixed(1) : '-';
+    const scoreClass = d.score != null ? (d.score >= 80 ? 'badge-success' : d.score >= 60 ? 'badge-warning' : 'badge-danger') : '';
+    const matchedBadge = d.matched
+        ? '<span class="badge badge-success">一致</span>'
+        : '<span class="badge badge-danger">不一致</span>';
+    const sysCat = [d.categoryCode, d.categoryName].filter(Boolean).join(' / ');
+    const suggest = (d.matched || !d.bestMatchCode) ? '-' : `<strong>${d.bestMatchCode}</strong>${d.bestMatchName ? '（' + d.bestMatchName + '）' : ''}`;
+    const actionTd = (d.matched || !d.bestMatchCode)
+        ? ''
+        : `<button class="btn btn-sm btn-primary" onclick="applyClassifyFix(${d.id}, '${d.bestMatchCode}')">应用</button>`;
+    tr.innerHTML =
+        '<td>' + (d.materialCode || '-') + '</td>' +
+        '<td>' + (d.materialName || '-') + '</td>' +
+        '<td>' + (sysCat || '-') + '</td>' +
+        '<td><span class="badge ' + scoreClass + '">' + score + '</span></td>' +
+        '<td>' + matchedBadge + '</td>' +
+        '<td>' + suggest + '</td>' +
+        '<td style="font-size:12px">' + (d.reason || '-') + '</td>' +
+        '<td>' + actionTd + '</td>';
+    tbody.appendChild(tr);
+}
+
+// 断开 AI 分类检测的 WebSocket 连接
+function disconnectAiCheckWebSocket() {
+    if (aiCheckSubscription) {
+        try { aiCheckSubscription.unsubscribe(); } catch (e) {}
+        aiCheckSubscription = null;
+    }
+    if (aiCheckStompClient) {
+        try { aiCheckStompClient.disconnect(); } catch (e) {}
+        aiCheckStompClient = null;
+    }
 }
 
 let lastAiCheckData = null;
