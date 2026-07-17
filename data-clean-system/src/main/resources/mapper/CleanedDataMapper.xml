@@ -9,6 +9,7 @@
         <result column="temp_data_id" property="tempDataId"/>
         <result column="category_id" property="categoryId"/>
         <result column="category_code" property="categoryCode"/>
+        <result column="category_name" property="categoryName"/>
         <result column="category_level" property="categoryLevel"/>
         <result column="category_full_path" property="categoryFullPath"/>
         <result column="standard_title_id" property="standardTitleId"/>
@@ -85,7 +86,8 @@
                 AND category_level = #{condition.categoryLevel}
             </if>
             <if test="condition.categoryPathPrefix != null and condition.categoryPathPrefix != ''">
-                AND category_full_path LIKE CONCAT(#{condition.categoryPathPrefix}, '%')
+                AND (category_code LIKE CONCAT(#{condition.categoryPathPrefix}, '%')
+                     OR category_full_path LIKE CONCAT(#{condition.categoryPathPrefix}, '%'))
             </if>
             <if test="condition.materialCode != null and condition.materialCode != ''">
                 AND material_code LIKE CONCAT('%', #{condition.materialCode}, '%')
@@ -139,7 +141,9 @@
     </sql>
 
     <select id="searchByConditions" resultMap="BaseResultMap">
-        SELECT * FROM cleaned_data
+        SELECT cd.*, mdc.category_name
+        FROM cleaned_data cd
+        LEFT JOIN main_data_category mdc ON cd.category_id = mdc.id
         <include refid="whereCondition"/>
         ORDER BY
         <choose>

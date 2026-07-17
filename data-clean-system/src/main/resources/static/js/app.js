@@ -3236,17 +3236,22 @@ async function updateResultStatus(id, status) {
 
 // ==================== 数据检索 ====================
 
-async function searchData() {
+let searchPageState = { page: 1, size: 20, total: 0, pages: 1 };
+
+async function searchData(page) {
+    if (page) searchPageState.page = page;
+    const { page: curPage, size } = searchPageState;
+
     const condition = {
-        materialCode: $('#searchCode').value || null,
-        materialName: $('#searchName').value || null,
-        specification: $('#searchSpec').value || null,
+        materialCode: $('#searchCode').value.trim() || null,
+        materialName: $('#searchName').value.trim() || null,
+        specification: $('#searchSpec').value.trim() || null,
         qualityScoreMin: $('#searchScoreMin').value ? parseFloat($('#searchScoreMin').value) : null,
-        page: parseInt($('#searchPage').value) || 1,
-        pageSize: 20,
+        page: curPage,
+        pageSize: size,
     };
-    if ($('#searchCatCode').value) {
-        condition.categoryPathPrefix = $('#searchCatCode').value;
+    if ($('#searchCatCode').value.trim()) {
+        condition.categoryPathPrefix = $('#searchCatCode').value.trim();
     }
 
     showLoading('正在搜索数据…');
@@ -3256,11 +3261,15 @@ async function searchData() {
             api('/cleaning/cleaned-data/count', { method: 'POST', body: condition }),
         ]);
 
+        searchPageState.total = count || 0;
+        searchPageState.pages = Math.max(1, Math.ceil((count || 0) / size));
+
         $('#searchResultCard').style.display = 'block';
         $('#searchCount').textContent = count || 0;
+        updateSearchPagination();
 
         if (!results || results.length === 0) {
-            $('#searchTbody').innerHTML = '<tr><td colspan="9" class="empty-hint">未找到匹配数据</td></tr>';
+            $('#searchTbody').innerHTML = '<tr><td colspan="11" class="empty-hint">未找到匹配数据</td></tr>';
             return;
         }
         $('#searchTbody').innerHTML = results.map(r => `
@@ -3270,10 +3279,12 @@ async function searchData() {
                 <td>${r.materialName || '-'}</td>
                 <td>${r.specification || '-'}</td>
                 <td>${r.categoryCode || '-'}</td>
+                <td>${r.categoryName || '-'}</td>
                 <td>${r.matchSource || '-'}</td>
                 <td>${r.matchConfidence != null ? (r.matchConfidence * 100).toFixed(0) + '%' : '-'}</td>
                 <td>${r.qualityScore != null ? r.qualityScore.toFixed(1) : '-'}</td>
                 <td>${statusBadge(r.status)}</td>
+                <td><button class="btn btn-sm btn-info" onclick="viewSourceData(${r.tempDataId ?? 'null'})">源数据</button></td>
             </tr>
         `).join('');
     } catch (e) {
@@ -3281,6 +3292,30 @@ async function searchData() {
     } finally {
         hideLoading();
     }
+}
+
+function updateSearchPagination() {
+    const { page, size, total, pages } = searchPageState;
+    $('#searchPageInfo').textContent = `共 ${total} 条`;
+    $('#searchCurPage').textContent = page;
+    $('#searchTotalPages').textContent = pages;
+
+    let html = '';
+    html += `<button class="btn btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="searchData(1)">首页</button>`;
+    html += `<button class="btn btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="searchData(${page - 1})">上一页</button>`;
+    const maxBtns = 5;
+    let startPage = Math.max(1, page - Math.floor(maxBtns / 2));
+    let endPage = Math.min(pages, startPage + maxBtns - 1);
+    if (endPage - startPage < maxBtns - 1) {
+        startPage = Math.max(1, endPage - maxBtns + 1);
+    }
+    for (let i = startPage; i <= endPage; i++) {
+        html += `<button class="btn btn-sm ${i === page ? 'btn-primary' : ''}" onclick="searchData(${i})">${i}</button>`;
+    }
+    html += `<button class="btn btn-sm" ${page >= pages ? 'disabled' : ''} onclick="searchData(${page + 1})">下一页</button>`;
+    html += `<button class="btn btn-sm" ${page >= pages ? 'disabled' : ''} onclick="searchData(${pages})">末页</button>`;
+    html += ` <span style="font-size:12px;margin-left:8px">每页 ${size} 条</span>`;
+    $('#searchPageBtns').innerHTML = html;
 }
 
 // ==================== 标准字段表头管理 ====================
