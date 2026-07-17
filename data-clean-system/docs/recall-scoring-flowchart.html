@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>召回打分局部流程图 + 示例</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 24px; background:#fafafa; line-height:1.6; }
+    h1 { font-size: 20px; } h2 { font-size: 16px; margin-top: 28px; }
+    .mermaid { background:#fff; padding:16px; border-radius:8px; box-shadow:0 1px 4px rgba(0,0,0,.1); }
+    table { border-collapse: collapse; background:#fff; margin-top:8px; box-shadow:0 1px 4px rgba(0,0,0,.1); }
+    th, td { border:1px solid #ddd; padding:6px 10px; font-size:13px; text-align:left; }
+    th { background:#f0f4f8; }
+    .note { background:#fffbe6; border-left:4px solid #faad14; padding:8px 12px; margin-top:12px; }
+    code { background:#f2f2f2; padding:1px 4px; border-radius:3px; }
+  </style>
+</head>
+<body>
+  <h1>候选召回打分（retrieveCandidates）局部流程图</h1>
+
+  <div class="mermaid">
+flowchart TD
+    In([输入: CleanedDataEntity material, topK]) --> Init[初始化 scoreMap: Map&lt;分类ID, 相关性&gt;]
+
+    Init --> F1[字段1: 系统分类编码<br/>scoreCode weight=1.0]
+    Init --> F2[字段2: 物料代码<br/>scoreCode weight=0.8]
+    Init --> F3[字段3: 系统分类名称<br/>scoreText weight=0.9]
+    Init --> F4[字段4: 物料名称<br/>scoreText weight=0.85]
+    Init --> F5[字段5: 规格<br/>scoreText weight=0.6]
+    Init --> F6[字段6: 牌号<br/>scoreText weight=0.5]
+
+    F1 --> SC1{scoreCode 路径}
+    F2 --> SC2{scoreCode 路径}
+    SC1 --> SCN[normalizeCode 去空格/连字符/斜杠]
+    SC2 --> SCN
+    SCN --> SCI[codeIndex 哈希精确查找]
+    SCI -->|命中 C| BUMP1[bump C.id, weight<br/>Math.max 合并]
+
+    F3 --> ST{scoreText 路径}
+    F4 --> ST
+    F5 --> ST
+    F6 --> ST
+    ST --> STN[normalize 转小写/去标点空格]
+    STN --> NID[nameIndex 精确查找<br/>命中 C → bump weight]
+    STN --> TOK[tokenize 按非(字母/数字/中文)切分]
+    TOK --> TID[tokenIndex 查找<br/>命中 C → bump weight*0.6]
+
+    BUMP1 --> Merge
+    NID --> Merge
+    TID --> Merge
+
+    Merge[scoreMap 合并完成<br/>每分类取各字段最高信号] --> Sort[按 relevance 降序排序]
+    Sort --> Top[取前 topK 个<br/>list.subList 0, min(topK,size)]
+    Top --> Out([输出: List&lt;Candidate&gt; 候选子集])
+  </div>
+
+  <h2>具体物料打分走查（演示）</h2>
+  <p>标准库（内存索引）含 3 个分类，tokenIndex 按名称建立：</p>
+  <ul>
+    <li><b>C1</b> 编码 <code>B07</code> 名称「不锈钢板」（同义词含「304」）</li>
+    <li><b>C2</b> 编码 <code>B08</code> 名称「不锈钢」</li>
+    <li><b>C3</b> 编码 <code>B09</code> 名称「钢板」</li>
+  </ul>
+  <p>待检测物料（为演示分词效果，物料名称中「不锈钢 / 钢板」作为独立词出现）：</p>
+  <ul>
+    <li>系统分类编码 = <code>B07</code>，系统分类名称 = <code>不锈钢板</code></li>
+    <li>物料名称 = <code>不锈钢 钢板</code>，规格 = <code>304</code>，牌号 = 空</li>
+  </ul>
+
+  <table>
+    <thead>
+      <tr><th>步骤</th><th>调用</th><th>文本/编码</th><th>命中分类</th><th>权重</th><th>该分类 bump 后(取 max)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>scoreCode</td><td>categoryCode=B07</td><td>C1</td><td>1.0</td><td>C1 = 1.0</td></tr>
+      <tr><td>2</td><td>scoreCode</td><td>materialCode(无)</td><td>—</td><td>0.8</td><td>无命中</td></tr>
+      <tr><td>3</td><td>scoreText</td><td>categoryName=不锈钢板</td><td>C1(精确+分词)</td><td>0.9 / 0.54</td><td>C1 = max(1.0,0.9,0.54) = 1.0</td></tr>
+      <tr><td>4</td><td>scoreText</td><td>materialName=不锈钢 钢板</td><td>C2(不锈钢), C3(钢板)</td><td>0.85×0.6=0.51</td><td>C2 = 0.51，C3 = 0.51</td></tr>
+      <tr><td>5</td><td>scoreText</td><td>specification=304</td><td>C1(同义词304)</td><td>0.6×0.6=0.36</td><td>C1 = max(1.0,0.36) = 1.0</td></tr>
+      <tr><td>6</td><td>scoreText</td><td>grade(空)</td><td>—</td><td>0.5</td><td>无命中</td></tr>
+    </tbody>
+  </table>
+
+  <p><b>排序结果</b>：C1(1.0) &gt; C2(0.51) = C3(0.51)。topK=10 时三者全部作为候选返回，喂给大模型做最终判断。</p>
+
+  <div class="note">
+    <b>中文分词局限（重要）</b>：当前 <code>tokenize</code> 只按「非(字母/数字/中文)」切分，<u>纯中文连续串不会被子串拆分</u>。
+    例如物料名「碳素结构钢」只会产生一个 token「碳素结构钢」，无法召回名称「结构钢」或「碳素钢」的分类。
+    因此召回对中文长名称的泛化能力有限——物料名最好含可切分的英文/数字/分隔符，或标准库补充同义词来弥补。
+  </div>
+
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { rankSpacing: 50, nodeSpacing: 24 } });
+  </script>
+</body>
+</html>

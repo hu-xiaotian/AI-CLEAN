@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI 辅助分类检测流程图</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 24px; background:#fafafa; }
+    h1 { font-size: 20px; }
+    .mermaid { background:#fff; padding:16px; border-radius:8px; box-shadow:0 1px 4px rgba(0,0,0,.1); }
+  </style>
+</head>
+<body>
+  <h1>AI 辅助分类检测算法流程图</h1>
+  <div class="mermaid">
+flowchart TD
+    Start([入口: aiClassifyCheck / aiClassifyCheckAsync]) --> LoadLib[标准库 ensureLoaded<br/>main_data_category 全表内存索引]
+    LoadLib --> Query[查询该 titleId 下<br/>全部已清洗数据 list]
+    Query --> Empty{list 为空?}
+    Empty -- 是 --> EmptyMsg[返回/推送: 暂无清洗数据]
+    Empty -- 否 --> Loop{{逐条遍历 cd in list}}
+
+    Loop --> Match[系统编码命中标准库?<br/>stdLib.getByCode categoryCode]
+    Match --> Cand[候选召回 retrieveCandidates<br/>top-K 相关性打分<br/>编码+名称+规格+牌号+分词]
+    Cand --> AiOn{aiOn?<br/>useAi=true 且 AI 已配置}
+
+    %% ===== AI 模式 =====
+    AiOn -- 是 --> BuildPrompt[构造用户提示词<br/>物料信息 + 候选清单<br/>+ 反向校验提示]
+    BuildPrompt --> CallAI[调用大模型<br/>AiClientService.chat<br/>system + user]
+    CallAI --> Parse[解析 JSON<br/>parseAiDetect<br/>score/matched/bestMatchCode/reason]
+    Parse --> DetMatch{确定性判定 matchedFlag}
+    DetMatch -- 系统编码不在标准库 --> MF1[matchedFlag = false]
+    DetMatch -- AI 未给可识别编码 --> MF2[matchedFlag = AI 的 matched]
+    DetMatch -- 系统编码 == bestMatchCode --> MF3[matchedFlag = true]
+    DetMatch -- 否则 --> MF4[matchedFlag = false]
+    MF1 --> Fallback{AI 调用异常?}
+    MF2 --> Fallback
+    MF3 --> Fallback
+    MF4 --> Fallback
+    Fallback -- 是 --> RuleFallback[回退 stdLib.ruleCheck<br/>规则校验]
+    Fallback -- 否 --> WriteBack
+
+    %% ===== 规则模式 =====
+    AiOn -- 否 --> Rule[stdLib.ruleCheck<br/>确定性比对<br/>编码35+名称30+层级15/8/3+单位10+描述10]
+    Rule --> WriteBack
+
+    RuleFallback --> WriteBack
+
+    %% ===== 回写与状态 =====
+    WriteBack[回写 cd:<br/>qualityScore=score<br/>accuracyScore=score*0.8] --> Status{按阈值设 status}
+    Status -- score < thresholdReview --> StReview[NEEDS_REVIEW 待复核]
+    Status -- score >= thresholdExport --> StExport[EXPORT_READY 可导出]
+    Status -- 介于之间 --> StApprove[APPROVED 已通过]
+    StReview --> HideSug
+    StExport --> HideSug
+    StApprove --> HideSug
+    HideSug[若 bestMatchCode == 系统编码<br/>则不展示建议] --> Detail[生成 ClassifyCheckDetail]
+    Detail --> AsyncPush{异步模式?}
+    AsyncPush -- 是 --> Push[WebSocket 推送<br/>progress 单条明细]
+    AsyncPush -- 否 --> Accum
+    Push --> Loop
+    Accum[汇总: total/avgScore/<br/>matchedCount/mismatchCount/details] --> End([返回结果 / 推送 complete])
+    Loop -- 遍历完成 --> Accum
+  </div>
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { rankSpacing: 50, nodeSpacing: 30 } });
+  </script>
+</body>
+</html>
