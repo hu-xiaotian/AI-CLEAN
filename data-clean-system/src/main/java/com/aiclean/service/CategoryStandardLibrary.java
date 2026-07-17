@@ -130,6 +130,126 @@ public class CategoryStandardLibrary {
         return codeIndex.get(normalizeCode(code));
     }
 
+    /** 按主键查询标准分类 */
+    public CategoryEntity getById(Long id) {
+        ensureLoaded();
+        return id == null ? null : byId.get(id);
+    }
+
+    /** 返回全部标准分类（副本，避免外部修改索引） */
+    public List<CategoryEntity> getAllCategories() {
+        ensureLoaded();
+        return new ArrayList<>(allCategories);
+    }
+
+    /** 返回标准库当前条数（用于诊断/提示词） */
+    public int size() {
+        ensureLoaded();
+        return allCategories.size();
+    }
+
+    /** 按层级返回标准分类（如 level=1 返回所有一级分类），按编码排序 */
+    public List<CategoryEntity> getByLevel(int level) {
+        ensureLoaded();
+        List<CategoryEntity> r = new ArrayList<>();
+        for (CategoryEntity c : allCategories) {
+            if (c.getLevel() != null && c.getLevel() == level) r.add(c);
+        }
+        r.sort(Comparator.comparing(c -> c.getCategoryCode() == null ? "" : c.getCategoryCode()));
+        return r;
+    }
+
+    /** 按父节点返回直接子分类，按排序/编码排序 */
+    public List<CategoryEntity> getChildren(Long parentId) {
+        ensureLoaded();
+        List<CategoryEntity> r = new ArrayList<>();
+        for (CategoryEntity c : allCategories) {
+            if (Objects.equals(c.getParentId(), parentId)) r.add(c);
+        }
+        r.sort((a, b) -> {
+            int so = compareInt(a.getSortOrder(), b.getSortOrder());
+            return so != 0 ? so : compareStr(a.getCategoryCode(), b.getCategoryCode());
+        });
+        return r;
+    }
+
+    /**
+     * 关键词检索标准分类（编码精确/前缀 + 名称精确 + 分词重叠），
+     * 用于把用户自然语言问题映射到标准库中的相关记录。返回去重后的前 limit 条。
+     */
+    public List<CategoryEntity> searchByKeyword(String keyword, int limit) {
+        ensureLoaded();
+        if (StrUtil.isBlank(keyword)) return new ArrayList<>();
+        String raw = keyword.trim();
+        String normKw = normalize(raw);
+        Set<Long> ids = new LinkedHashSet<>();
+        // 编码精确（含旧编码）
+        CategoryEntity byCode = getByCode(raw);
+        if (byCode != null) ids.add(byCode.getId());
+        // 编码前缀
+        for (CategoryEntity c : allCategories) {
+            if (c.getCategoryCode() != null && c.getCategoryCode().startsWith(raw)) ids.add(c.getId());
+        }
+        // 名称精确 + 分词
+        if (normKw != null) {
+            List<CategoryEntity> byName = nameIndex.get(normKw);
+            if (byName != null) byName.forEach(c -> ids.add(c.getId()));
+            for (String tok : tokenize(normKw)) {
+                List<CategoryEntity> byTok = tokenIndex.get(tok);
+                if (byTok != null) byTok.forEach(c -> ids.add(c.getId()));
+            }
+        }
+        List<CategoryEntity> result = new ArrayList<>();
+        for (Long id : ids) {
+            CategoryEntity c = byId.get(id);
+            if (c != null) result.add(c);
+        }
+        if (result.size() > limit) result = result.subList(0, limit);
+        return result;
+    }
+
+    /** 返回某分类的完整祖先链（含自身），从根到当前节点 */
+    public List<CategoryEntity> getAncestors(Long id) {
+        ensureLoaded();
+        List<CategoryEntity> chain = new ArrayList<>();
+        CategoryEntity cur = getById(id);
+        Set<Long> guard = new HashSet<>();
+        while (cur != null && guard.add(cur.getId())) {
+            chain.add(0, cur);
+            cur = cur.getParentId() == null ? null : getById(cur.getParentId());
+        }
+        return chain;
+    }
+
+    /** 返回某分类的整棵子树（含自身），先序遍历 */
+    public List<CategoryEntity> getSubtree(Long id) {
+        ensureLoaded();
+        List<CategoryEntity> out = new ArrayList<>();
+        collectSubtree(id, out);
+        return out;
+    }
+
+    private void collectSubtree(Long id, List<CategoryEntity> out) {
+        CategoryEntity root = getById(id);
+        if (root == null) return;
+        out.add(root);
+        for (CategoryEntity c : allCategories) {
+            if (Objects.equals(c.getParentId(), id)) collectSubtree(c.getId(), out);
+        }
+    }
+
+    private int compareInt(Integer a, Integer b) {
+        int x = a == null ? 0 : a;
+        int y = b == null ? 0 : b;
+        return Integer.compare(x, y);
+    }
+
+    private int compareStr(String a, String b) {
+        String x = a == null ? "" : a;
+        String y = b == null ? "" : b;
+        return x.compareTo(y);
+    }
+
     // ===================== 候选召回 =====================
 
     /**

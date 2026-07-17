@@ -1175,3 +1175,26 @@ select.form-input { cursor: pointer; appearance: none; background-image: url("da
 .ai-chat-input .btn { align-self: flex-end; }
 
 .ai-chat-disabled { padding: 10px 14px; font-size: 12px; color: var(--warning); background: var(--warning-subtle); border-top: 1px solid var(--border); }
+
+/* AI 对话模式切换 */
+.ai-chat-modes { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.ai-mode-btn {
+    flex: 1; padding: 5px 8px; font-size: 12px; font-weight: 500; cursor: pointer;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);
+    color: var(--text-secondary); transition: all .15s ease;
+}
+.ai-mode-btn:hover { border-color: var(--accent); color: var(--text); }
+.ai-mode-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* AI 标准分类来源卡片 */
+.ai-msg-source { align-self: stretch; max-width: 100%; background: transparent; border: none; padding: 0; }
+.ai-source-title { font-size: 11px; color: var(--text-tertiary); margin: 2px 2px 6px; }
+.ai-source-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.ai-source-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 6px 8px; display: flex; flex-direction: column; gap: 1px; overflow: hidden;
+}
+.ai-source-code { font-size: 11px; font-weight: 700; color: var(--accent); font-family: var(--font-mono, monospace); }
+.ai-source-name { font-size: 12px; color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-source-path { font-size: 10px; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+

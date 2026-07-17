@@ -4317,6 +4317,8 @@ function copyDashboardSummary() {
 
 let chatHistory = [];
 let aiChatReady = false;
+// AI 对话模式：general（通用问答）/ category（标准分类代码查询，接入 main_data_category）
+let aiChatMode = 'general';
 
 async function initAiChat() {
     try {
@@ -4361,6 +4363,12 @@ async function sendAiMessage() {
     thinking.textContent = '正在思考…';
     box.appendChild(thinking);
     box.scrollTop = box.scrollHeight;
+
+    // 标准分类问答模式（或问题被识别为标准分类查询）：基于 main_data_category 检索并回答
+    if (aiChatMode === 'category' || isCategoryQuestion(text)) {
+        await runCategoryChat(box, thinking, text);
+        return;
+    }
 
     // 触发方式二：用户提问"某段文字属于哪一类" -> 复用 AI 辅助分类检测逻辑识别该文字，返回推荐分类/编码/理由
     const classifyInput = extractClassifyText(text);
@@ -4532,6 +4540,90 @@ function clearChat() {
     chatHistory = [];
     $('#aiChatMessages').innerHTML = '';
 }
+
+// 切换 AI 对话模式（通用问答 / 标准分类查询）
+function setAiChatMode(mode) {
+    aiChatMode = mode;
+    $$('.ai-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+    const input = $('#aiChatInput');
+    if (input) {
+        input.placeholder = mode === 'category'
+            ? '例如：分类编码100101是什么？/ 有哪些一级分类？/ 铸钢件的标准编码是多少？'
+            : '输入消息，或点击看板中的「问AI」把内容带过来…';
+    }
+}
+
+// 识别用户问题是否为"标准分类查询"（即使处于通用模式也路由到标准分类问答）
+function isCategoryQuestion(text) {
+    const t = (text || '').toLowerCase();
+    const keys = ['标准分类', '分类编码', '分类代码', '分类目录', '标准库', '类目',
+        'main_data_category', '有哪些分类', '分类有哪些', '查分类', '分类查询',
+        '分类信息', '分类表', '标准分类库', '分类层级', '分类说明',
+        '一级分类', '二级分类', '三级分类', '全部分类', '所有分类', '列举分类',
+        '有哪些一级', '有哪些二级', '有哪些三级', '分类有哪些'];
+    return keys.some(k => t.includes(k.toLowerCase()));
+}
+
+// 标准分类问答：基于 main_data_category 检索相关记录并交由 AI 回答，展示命中来源
+async function runCategoryChat(box, thinking, text) {
+    thinking.textContent = '正在检索标准分类库并生成回答…';
+    try {
+        const res = await api('/ai/category-chat', {
+            method: 'POST',
+            body: JSON.stringify({ messages: chatHistory })
+        });
+        if (box.contains(thinking)) box.removeChild(thinking);
+        const reply = (res && res.reply) ? res.reply : '(无回复)';
+        appendChatMessage('assistant', reply);
+        chatHistory.push({ role: 'assistant', content: reply });
+        if (res && res.sources && res.sources.length) {
+            appendCategorySources(res.sources);
+        }
+    } catch (e) {
+        if (box.contains(thinking)) box.removeChild(thinking);
+        appendChatMessage('assistant', '标准分类问答失败：' + e.message);
+    }
+}
+
+// 渲染命中的标准分类来源卡片
+function appendCategorySources(sources) {
+    const box = $('#aiChatMessages');
+    const wrap = document.createElement('div');
+    wrap.className = 'ai-msg ai-msg-source';
+
+    const title = document.createElement('div');
+    title.className = 'ai-source-title';
+    title.textContent = '参考标准分类（' + sources.length + ' 条）';
+    wrap.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.className = 'ai-source-grid';
+    sources.slice(0, 8).forEach(s => {
+        const card = document.createElement('div');
+        card.className = 'ai-source-card';
+
+        const code = document.createElement('div');
+        code.className = 'ai-source-code';
+        code.textContent = s.categoryCode || '-';
+
+        const name = document.createElement('div');
+        name.className = 'ai-source-name';
+        name.textContent = s.categoryName || '-';
+
+        const path = document.createElement('div');
+        path.className = 'ai-source-path';
+        path.textContent = (s.fullPath || '') + (s.unit ? (' · ' + s.unit) : '');
+
+        card.appendChild(code);
+        card.appendChild(name);
+        card.appendChild(path);
+        grid.appendChild(card);
+    });
+    wrap.appendChild(grid);
+    box.appendChild(wrap);
+    box.scrollTop = box.scrollHeight;
+}
+
 
 function copyToChat(text) {
     const input = $('#aiChatInput');
