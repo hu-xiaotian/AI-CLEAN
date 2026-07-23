@@ -833,6 +833,8 @@
         <div class="tabs">
             <button class="tab active" data-tab="fill" onclick="switchFailureTab('fill')">填充失败 (<span id="failCountFill">0</span>)</button>
             <button class="tab" data-tab="unmatch" onclick="switchFailureTab('unmatch')">分类不匹配 (<span id="failCountUnmatch">0</span>)</button>
+            <button class="tab" data-tab="dup" onclick="switchFailureTab('dup')">重复数据 (<span id="failCountDup">0</span>)</button>
+            <button class="tab" data-tab="lowconf" onclick="switchFailureTab('lowconf')">低置信样本 (<span id="failCountLowConf">0</span>)</button>
         </div>
         <div id="failureTabFill" class="failure-tab">
             <div class="table-scroll" style="max-height:440px;overflow-y:auto">
@@ -862,6 +864,37 @@
                     </tr></thead>
                     <tbody id="unmatchTbody"></tbody>
                 </table>
+            </div>
+            <div id="failureTabDup" class="failure-tab" style="display:none">
+                <div class="table-scroll" style="max-height:440px;overflow-y:auto">
+                    <table class="data-table">
+                        <thead><tr>
+                            <th style="width:60px">ID</th>
+                            <th style="width:120px">物料代码</th>
+                            <th>物料名称</th>
+                            <th style="width:120px">分类编码</th>
+                            <th>行指纹(数据血缘)</th>
+                            <th style="width:80px">操作</th>
+                        </tr></thead>
+                        <tbody id="dupTbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="failureTabLowConf" class="failure-tab" style="display:none">
+                <div class="table-scroll" style="max-height:440px;overflow-y:auto">
+                    <table class="data-table">
+                        <thead><tr>
+                            <th style="width:60px">ID</th>
+                            <th>来源文本(属性拆分列)</th>
+                            <th style="width:140px">原分类</th>
+                            <th style="width:140px">推荐分类</th>
+                            <th style="width:90px">置信度</th>
+                            <th style="width:80px">质量分</th>
+                            <th style="width:80px">操作</th>
+                        </tr></thead>
+                        <tbody id="lowConfTbody"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>

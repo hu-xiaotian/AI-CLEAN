@@ -107,6 +107,10 @@ public interface DataCleaningService {
     Map<String, Object> getDashboardStatistics(Long titleId);
     /** 查询分类不匹配（match_source = UNMATCHED）的清洗数据，用于失败明细下钻 */
     List<CleanedDataEntity> getUnmatchedClassify(Long titleId);
+    /** 查询重复数据（is_duplicate=1），用于看板下钻；不传 titleId 时返回全部 */
+    List<CleanedDataEntity> getDuplicateData(Long titleId);
+    /** 查询低置信样本（active_learning_sample sample_type=LOW_CONFIDENCE），用于看板下钻；不传 titleId 时返回全部 */
+    List<ActiveLearningSampleEntity> getLowConfidenceSamples(Long titleId);
 
     // ===== 未映射结果 =====
     List<CleanedDataEntity> getUnmappedResults(Long titleId);

@@ -262,6 +262,8 @@ public class CategoryStandardLibrary {
         scoreCode(scoreMap, material != null ? material.getCategoryCode() : null, 1.0);
         scoreCode(scoreMap, material != null ? material.getMaterialCode() : null, 0.8);
         scoreText(scoreMap, material != null ? material.getCategoryName() : null, 0.9);
+        // 属性拆分列(全描述)是最丰富的匹配信号：权重最高，使 AI 打分基于导入指定的属性拆分列，而非仅属性名称列
+        scoreText(scoreMap, material != null ? material.getFullDescription() : null, 0.95);
         scoreText(scoreMap, material != null ? material.getMaterialName() : null, 0.85);
         scoreText(scoreMap, material != null ? material.getSpecification() : null, 0.6);
         scoreText(scoreMap, material != null ? material.getGrade() : null, 0.5);

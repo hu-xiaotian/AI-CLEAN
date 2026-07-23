@@ -162,7 +162,7 @@ function formatDate(str) {
 
 function statusBadge(status) {
     const map = {
-        'draft':'badge-default','needs_review':'badge-warning','reviewing':'badge-info',
+        'draft':'badge-default','processing':'badge-info','needs_review':'badge-warning','reviewing':'badge-info',
         'approved':'badge-success','rejected':'badge-danger','modified':'badge-info',
         'export_ready':'badge-success','processed':'badge-info','completed':'badge-success',
     };
@@ -328,7 +328,7 @@ function ocDoCleaning(titleId, ruleId, useAi) {
                 if (p.status === 'completed') finish(true);
                 else finish(false, '清洗超时，请到“智能分类”页查看状态');
             } catch (e) { finish(false, '清洗超时'); }
-        }, 30 * 60 * 1000);
+        }, 60 * 60 * 1000);
     });
 }
 
@@ -478,7 +478,7 @@ function ocDoExtractAi(titleId) {
         // 超时兜底
         timeout = setTimeout(() => {
             if (!settled) finish(false, 'AI 提取超时（30分钟），请到“属性提取”页查看状态');
-        }, 30 * 60 * 1000);
+        }, 60 * 60 * 1000);
     });
 }
 
@@ -494,6 +494,12 @@ async function runOneClickClean() {
     ocRunning = true;
     $('#ocStartBtn').disabled = true;
     resetOcUI();
+
+    // AI 介入（启用 AI 评分 或 AI 智能提取）时，整体进度卡片启动动态 AI 特效
+    const ocAiInvolved = ($('#ocUseAi') && $('#ocUseAi').checked) || extractMode === 'ai';
+    const ocProgressCard = $('#ocOverallFill') ? $('#ocOverallFill').closest('.card') : null;
+    if (ocAiInvolved && ocProgressCard) AiFx.activate(ocProgressCard);
+
     try {
         // 步骤一：智能分类
         const useAi = $('#ocUseAi') && $('#ocUseAi').checked;
@@ -528,6 +534,7 @@ async function runOneClickClean() {
     } finally {
         ocRunning = false;
         $('#ocStartBtn').disabled = false;
+        if (ocProgressCard && ocProgressCard.classList.contains('ai-active')) AiFx.deactivate(ocProgressCard);
         if (ocPollTimer) { clearInterval(ocPollTimer); ocPollTimer = null; }
         if (ocStompClient) { try { ocStompClient.disconnect(); } catch (e) {} ocStompClient = null; }
     }
@@ -1347,6 +1354,10 @@ async function startAiExtract() {
     $('#aiExtractError').textContent = '0';
     $('#aiExtractStatus').textContent = '正在连接 AI 提取服务…';
 
+    // 启动动态 AI 特效
+    const aiExCard = document.getElementById('aiExtractProgressCard');
+    if (aiExCard) AiFx.activate(aiExCard);
+
     disconnectAiExtractWs();
 
     connectAiExtractWs(titleId, function connected() {
@@ -1403,6 +1414,7 @@ function disconnectAiExtractWs() {
 function handleAiExtractMessage(msg) {
     if (!msg) return;
     const type = msg.type;
+    const aiExCard = document.getElementById('aiExtractProgressCard');
     const current = msg.current || 0;
     const total = msg.total || 0;
     const percent = msg.progressPercent || 0;
@@ -1423,12 +1435,14 @@ function handleAiExtractMessage(msg) {
     } else if (type === 'complete') {
         $('#aiExtractStatus').textContent = (msg.message || 'AI 提取完成') + '，共处理 ' + total + ' 条 (成功 ' + success + ', 失败 ' + error + ')';
         showToast('AI 属性提取完成');
+        if (aiExCard && aiExCard.classList.contains('ai-active')) AiFx.deactivate(aiExCard);
         loadExtraTitles();
         loadExtraTitlesForSelect('mapExtraTitleId');
         setTimeout(disconnectAiExtractWs, 2000);
     } else if (type === 'error') {
         $('#aiExtractStatus').textContent = 'AI 提取异常终止：' + (msg.message || '');
         showToast('AI 提取异常终止', 'error');
+        if (aiExCard && aiExCard.classList.contains('ai-active')) AiFx.deactivate(aiExCard);
         setTimeout(disconnectAiExtractWs, 2000);
     }
 }
@@ -1458,6 +1472,12 @@ async function startCleaning() {
     const titleId = $('#cleanTitleId').value;
     if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
     const useAi = $('#cleanUseAi') && $('#cleanUseAi').checked;
+
+    // AI 介入时启动动态 AI 特效（纯规则清洗不触发，保持克制）
+    if (useAi) {
+        const clCard = document.getElementById('cleanLiveCard');
+        if (clCard) AiFx.activate(clCard);
+    }
 
     // 断开之前的连接
     disconnectWebSocket();
@@ -1518,6 +1538,11 @@ async function aiClassifyCheck() {
     $('#aiCheckStatus').textContent = '正在连接检测服务…';
     $('#aiCheckSummary').textContent = '';
     $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">检测中，请稍候…</td></tr>';
+
+    // 启动动态 AI 特效
+    const aiCheckCardEl = document.getElementById('aiCheckCard');
+    if (aiCheckCardEl) AiFx.activate(aiCheckCardEl);
+
     const bb = document.getElementById('batchApplyBtn');
     if (bb) bb.style.display = 'none';
 
@@ -1551,6 +1576,7 @@ async function aiClassifyCheck() {
 // 处理 AI 分类检测的 WebSocket 进度消息
 function handleAiCheckMessage(msg) {
     const type = msg.type;
+    const aiCheckCardEl = document.getElementById('aiCheckCard');
     const total = msg.total || 0;
     const current = msg.current || 0;
     const percent = msg.progressPercent || 0;
@@ -1601,6 +1627,7 @@ function handleAiCheckMessage(msg) {
             $('#aiCheckSummary').textContent = msg.message;
             $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">暂无数据</td></tr>';
             if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+            if (aiCheckCardEl && aiCheckCardEl.classList.contains('ai-active')) AiFx.deactivate(aiCheckCardEl);
             setTimeout(disconnectAiCheckWebSocket, 2000);
             showToast(msg.message, 'warning');
             return;
@@ -1620,6 +1647,7 @@ function handleAiCheckMessage(msg) {
         renderAiCheck(data);
         showToast('检测完成', 'success');
         if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+        if (aiCheckCardEl && aiCheckCardEl.classList.contains('ai-active')) AiFx.deactivate(aiCheckCardEl);
         setTimeout(disconnectAiCheckWebSocket, 2000);
         return;
     }
@@ -1629,6 +1657,7 @@ function handleAiCheckMessage(msg) {
         $('#aiCheckSummary').textContent = '检测异常终止: ' + (msg.message || '');
         showToast('检测异常终止', 'error');
         if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
+        if (aiCheckCardEl && aiCheckCardEl.classList.contains('ai-active')) AiFx.deactivate(aiCheckCardEl);
         setTimeout(disconnectAiCheckWebSocket, 2000);
     }
 }
@@ -1874,12 +1903,16 @@ function handleCleaningMessage(msg) {
         $('#cleanStatus').innerHTML = '<p style="color:var(--accent);font-size:13px">清洗中… ' + current + '/' + total + ' (成功 ' + success + ', 失败 ' + error + ')</p>';
     } else if (type === 'complete') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--success);font-size:13px">清洗完成，共处理 ' + total + ' 条 (成功 ' + success + ', 失败 ' + error + ')</p>';
+        const clCard = document.getElementById('cleanLiveCard');
+        if (clCard && clCard.classList.contains('ai-active')) AiFx.deactivate(clCard);
         showToast('数据清洗完成');
         loadCleanStats();
         // 延迟断开
         setTimeout(disconnectWebSocket, 2000);
     } else if (type === 'error') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--danger);font-size:13px">清洗异常终止，已处理 ' + current + '/' + total + ' 条</p>';
+        const clCard = document.getElementById('cleanLiveCard');
+        if (clCard && clCard.classList.contains('ai-active')) AiFx.deactivate(clCard);
         showToast('清洗异常终止', 'error');
         loadCleanStats();
         setTimeout(disconnectWebSocket, 2000);
@@ -4132,6 +4165,8 @@ async function resetUserPassword(id) {
 let _dashStats = null;
 let _failList = [];
 let _unmatchList = [];
+let _duplicateList = [];
+let _lowConfList = [];
 
 const STATUS_LABELS = {
     'draft': '草稿', 'needs_review': '待审核', 'reviewing': '审核中',
@@ -4185,6 +4220,8 @@ function renderDashboard(s) {
         { label: '清洗总条数', value: s.totalCleaned, color: 'var(--accent)' },
         { label: '分类匹配', value: s.matchCount, color: 'var(--success)', click: "switchFailureTab('unmatch');openFailureModal()", sub: '点击查看不匹配' },
         { label: '分类不匹配', value: s.unmatchCount, color: 'var(--warning)', click: "switchFailureTab('unmatch');openFailureModal()", sub: '点击查看' },
+        { label: '重复数据', value: s.duplicateCount || 0, color: 'var(--warning)', click: "switchFailureTab('dup');openFailureModal()", sub: '点击查看' },
+        { label: '低置信样本', value: s.lowConfidenceCount || 0, color: 'var(--danger)', click: "switchFailureTab('lowconf');openFailureModal()", sub: '点击查看' },
         { label: '填充成功', value: s.successCount, color: 'var(--success)' },
         { label: '填充失败', value: s.failureCount, color: 'var(--danger)', click: "switchFailureTab('fill');openFailureModal()", sub: '点击查看失败明细' }
     ];
@@ -4247,34 +4284,40 @@ function renderDonut(canvasId, legendId, data, colorOverride) {
 }
 
 // 失败明细
-async function openFailureModal() {
-    $('#failureOverlay').classList.add('show');
-    $('#failureModal').classList.add('show');
-    const titleId = $('#dashTitleId').value;
-    const qs = titleId ? '?titleId=' + titleId : '';
-    try {
-        const [fills, unmatches] = await Promise.all([
-            api('/cleaning/failed-results' + qs),
-            api('/cleaning/unmatched-classify' + qs)
-        ]);
-        renderFailTable(fills || []);
-        renderUnmatchTable(unmatches || []);
-    } catch (e) {
-        console.error('加载失败明细失败:', e);
-        showToast('加载失败明细失败: ' + e.message, 'error');
+    async function openFailureModal() {
+        $('#failureOverlay').classList.add('show');
+        $('#failureModal').classList.add('show');
+        const titleId = $('#dashTitleId').value;
+        const qs = titleId ? '?titleId=' + titleId : '';
+        try {
+            const [fills, unmatches, dups, lowconfs] = await Promise.all([
+                api('/cleaning/failed-results' + qs),
+                api('/cleaning/unmatched-classify' + qs),
+                api('/cleaning/duplicate-data' + qs),
+                api('/cleaning/low-confidence-samples' + qs)
+            ]);
+            renderFailTable(fills || []);
+            renderUnmatchTable(unmatches || []);
+            renderDuplicateTable(dups || []);
+            renderLowConfTable(lowconfs || []);
+        } catch (e) {
+            console.error('加载失败明细失败:', e);
+            showToast('加载失败明细失败: ' + e.message, 'error');
+        }
     }
-}
 
 function closeFailureModal() {
     $('#failureOverlay').classList.remove('show');
     $('#failureModal').classList.remove('show');
 }
 
-function switchFailureTab(tab) {
-    document.querySelectorAll('#failureModal .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    $('#failureTabFill').style.display = tab === 'fill' ? 'block' : 'none';
-    $('#failureTabUnmatch').style.display = tab === 'unmatch' ? 'block' : 'none';
-}
+    function switchFailureTab(tab) {
+        document.querySelectorAll('#failureModal .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+        $('#failureTabFill').style.display = tab === 'fill' ? 'block' : 'none';
+        $('#failureTabUnmatch').style.display = tab === 'unmatch' ? 'block' : 'none';
+        $('#failureTabDup').style.display = tab === 'dup' ? 'block' : 'none';
+        $('#failureTabLowConf').style.display = tab === 'lowconf' ? 'block' : 'none';
+    }
 
 function renderFailTable(list) {
     _failList = list || [];
@@ -4296,25 +4339,66 @@ function renderFailTable(list) {
     `).join('');
 }
 
-function renderUnmatchTable(list) {
-    _unmatchList = list || [];
-    $('#failCountUnmatch').textContent = _unmatchList.length;
-    const tb = $('#unmatchTbody');
-    if (!_unmatchList.length) {
-        tb.innerHTML = '<tr><td colspan="6" class="empty-hint">暂无分类不匹配记录</td></tr>';
-        return;
+    function renderUnmatchTable(list) {
+        _unmatchList = list || [];
+        $('#failCountUnmatch').textContent = _unmatchList.length;
+        const tb = $('#unmatchTbody');
+        if (!_unmatchList.length) {
+            tb.innerHTML = '<tr><td colspan="6" class="empty-hint">暂无分类不匹配记录</td></tr>';
+            return;
+        }
+        tb.innerHTML = _unmatchList.map((c, idx) => `
+            <tr>
+                <td>${c.id}</td>
+                <td>${escapeHtml(c.materialCode) || '-'}</td>
+                <td>${escapeHtml(c.materialName) || '-'}</td>
+                <td>${c.categoryCode || '-'}</td>
+                <td>${c.matchSource || '-'}</td>
+                <td><button class="btn btn-sm btn-info" onclick="askAiAboutUnmatch(${idx})">问AI</button></td>
+            </tr>
+        `).join('');
     }
-    tb.innerHTML = _unmatchList.map((c, idx) => `
-        <tr>
-            <td>${c.id}</td>
-            <td>${escapeHtml(c.materialCode) || '-'}</td>
-            <td>${escapeHtml(c.materialName) || '-'}</td>
-            <td>${c.categoryCode || '-'}</td>
-            <td>${c.matchSource || '-'}</td>
-            <td><button class="btn btn-sm btn-info" onclick="askAiAboutUnmatch(${idx})">问AI</button></td>
-        </tr>
-    `).join('');
-}
+
+    function renderDuplicateTable(list) {
+        _duplicateList = list || [];
+        $('#failCountDup').textContent = _duplicateList.length;
+        const tb = $('#dupTbody');
+        if (!_duplicateList.length) {
+            tb.innerHTML = '<tr><td colspan="6" class="empty-hint">暂无重复数据</td></tr>';
+            return;
+        }
+        tb.innerHTML = _duplicateList.map((c, idx) => `
+            <tr>
+                <td>${c.id}</td>
+                <td>${escapeHtml(c.materialCode) || '-'}</td>
+                <td>${escapeHtml(c.materialName) || '-'}</td>
+                <td>${c.categoryCode || '-'}</td>
+                <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(c.sourceRowHash)}">${escapeHtml(c.sourceRowHash)}</td>
+                <td><button class="btn btn-sm btn-info" onclick="askAiAboutDuplicate(${idx})">问AI</button></td>
+            </tr>
+        `).join('');
+    }
+
+    function renderLowConfTable(list) {
+        _lowConfList = list || [];
+        $('#failCountLowConf').textContent = _lowConfList.length;
+        const tb = $('#lowConfTbody');
+        if (!_lowConfList.length) {
+            tb.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无低置信样本</td></tr>';
+            return;
+        }
+        tb.innerHTML = _lowConfList.map((c, idx) => `
+            <tr>
+                <td>${c.id}</td>
+                <td style="max-width:260px;white-space:pre-wrap;font-size:12px">${escapeHtml(c.sourceText) || '-'}</td>
+                <td>${escapeHtml(c.sourceCategoryName) || '-'}</td>
+                <td>${escapeHtml(c.targetCategoryName) || '-'}</td>
+                <td>${c.confidence != null ? c.confidence : '-'}</td>
+                <td>${c.score != null ? c.score : '-'}</td>
+                <td><button class="btn btn-sm btn-info" onclick="askAiAboutLowConf(${idx})">问AI</button></td>
+            </tr>
+        `).join('');
+    }
 
 function askAiAboutFail(idx) {
     const f = _failList[idx];
@@ -4324,13 +4408,29 @@ function askAiAboutFail(idx) {
     showToast('已带入 AI 对话框', 'success');
 }
 
-function askAiAboutUnmatch(idx) {
-    const c = _unmatchList[idx];
-    if (!c) return;
-    const text = `【分类不匹配记录】\nID: ${c.id}\n物料代码: ${c.materialCode || '-'}\n物料名称: ${c.materialName || '-'}\n分类编码: ${c.categoryCode || '-'}\n匹配来源: ${c.matchSource || '-'}\n\n该物料未被匹配到标准分类，请分析可能原因并给出处理建议。`;
-    copyToChat(text);
-    showToast('已带入 AI 对话框', 'success');
-}
+    function askAiAboutUnmatch(idx) {
+        const c = _unmatchList[idx];
+        if (!c) return;
+        const text = `【分类不匹配记录】\nID: ${c.id}\n物料代码: ${c.materialCode || '-'}\n物料名称: ${c.materialName || '-'}\n分类编码: ${c.categoryCode || '-'}\n匹配来源: ${c.matchSource || '-'}\n\n该物料未被匹配到标准分类，请分析可能原因并给出处理建议。`;
+        copyToChat(text);
+        showToast('已带入 AI 对话框', 'success');
+    }
+
+    function askAiAboutDuplicate(idx) {
+        const c = _duplicateList[idx];
+        if (!c) return;
+        const text = `【重复数据记录】\nID: ${c.id}\n物料代码: ${c.materialCode || '-'}\n物料名称: ${c.materialName || '-'}\n分类编码: ${c.categoryCode || '-'}\n行指纹(数据血缘): ${c.sourceRowHash || '-'}\n\n该记录与同文件内其他记录指纹相同（数据血缘重复），请分析是否应去重或合并，并给出处理建议。`;
+        copyToChat(text);
+        showToast('已带入 AI 对话框', 'success');
+    }
+
+    function askAiAboutLowConf(idx) {
+        const c = _lowConfList[idx];
+        if (!c) return;
+        const text = `【低置信样本】\nID: ${c.id}\n来源文本(属性拆分列): ${c.sourceText || '-'}\n原分类: ${c.sourceCategoryName || '-'}\n推荐分类: ${c.targetCategoryName || '-'}\n置信度: ${c.confidence != null ? c.confidence : '-'}\n质量分: ${c.score != null ? c.score : '-'}\n说明: ${c.reason || '-'}\n\n该样本为 AI 分类检测低置信/未匹配，已沉淀为主动学习样本，请分析可能原因并给出处理建议。`;
+        copyToChat(text);
+        showToast('已带入 AI 对话框', 'success');
+    }
 
 function copyDashboardSummary() {
     const s = _dashStats;
@@ -4342,6 +4442,7 @@ function copyDashboardSummary() {
     lines.push('导入总行数：' + s.totalRows);
     lines.push('清洗总条数：' + s.totalCleaned);
     lines.push('分类匹配：' + s.matchCount + '，分类不匹配：' + s.unmatchCount);
+    lines.push('重复数据：' + (s.duplicateCount || 0) + '，低置信样本：' + (s.lowConfidenceCount || 0));
     lines.push('填充成功：' + s.successCount + '，填充失败：' + s.failureCount);
     lines.push('平均质量分：' + s.avgScore);
     copyToChat(lines.join('\n') + '\n\n请帮我分析以上数据，指出可能的问题与改进建议。');
@@ -4398,6 +4499,9 @@ async function sendAiMessage() {
     thinking.textContent = '正在思考…';
     box.appendChild(thinking);
     box.scrollTop = box.scrollHeight;
+    const aiPanel = document.getElementById('aiChatPanel');
+    if (aiPanel) aiPanel.classList.add('ai-thinking-active');
+    try {
 
     // 标准分类问答模式（或问题被识别为标准分类查询）：基于 main_data_category 检索并回答
     if (aiChatMode === 'category' || isCategoryQuestion(text)) {
@@ -4443,6 +4547,13 @@ async function sendAiMessage() {
     } catch (e) {
         if (box.contains(thinking)) box.removeChild(thinking);
         appendChatMessage('assistant', '调用失败：' + e.message);
+    }
+
+    } catch (e) {
+        if (box.contains(thinking)) box.removeChild(thinking);
+        appendChatMessage('assistant', '调用失败：' + e.message);
+    } finally {
+        if (aiPanel) aiPanel.classList.remove('ai-thinking-active');
     }
 }
 
@@ -4680,3 +4791,146 @@ document.addEventListener('DOMContentLoaded', () => {
     initSelects().catch(console.error);
     initAiChat().catch(console.error);
 });
+
+/* ============================================================
+   动态 AI 特效引擎 —— 在 AI 介入运行时于卡片上叠加神经网络动画
+   仅在 AI 任务真正执行期间激活，任务结束即淡出，避免常驻耗电。
+   ============================================================ */
+const AiFx = {
+    instances: new Map(),
+
+    // 激活某卡片的 AI 特效（注入神经网络画布 + 呼吸光晕）
+    activate(card) {
+        if (!card || this.instances.has(card)) return;
+        card.classList.add('ai-active');
+        const canvas = document.createElement('canvas');
+        canvas.className = 'ai-fx-canvas';
+        card.appendChild(canvas);
+        const inst = { card, canvas, nodes: [], pulses: [], raf: null, t: 0, w: 0, h: 0, ro: null };
+        this._initNodes(inst);
+        this.instances.set(card, inst);
+        this._resize(inst);
+        try {
+            inst.ro = new ResizeObserver(() => this._resize(inst));
+            inst.ro.observe(card);
+        } catch (e) { /* ResizeObserver 不可用时忽略，动画仍可运行 */ }
+        this._loop(inst);
+    },
+
+    // 结束特效并移除画布
+    deactivate(card) {
+        const inst = this.instances.get(card);
+        if (!inst) return;
+        card.classList.remove('ai-active');
+        if (inst.raf) cancelAnimationFrame(inst.raf);
+        if (inst.ro) { try { inst.ro.disconnect(); } catch (e) {} }
+        const cv = inst.canvas;
+        setTimeout(() => { if (cv && cv.parentNode) cv.parentNode.removeChild(cv); }, 480);
+        this.instances.delete(card);
+    },
+
+    _resize(inst) {
+        const r = inst.card.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        inst.w = Math.max(1, r.width);
+        inst.h = Math.max(1, r.height);
+        inst.canvas.width = inst.w * dpr;
+        inst.canvas.height = inst.h * dpr;
+        inst.canvas.style.width = inst.w + 'px';
+        inst.canvas.style.height = inst.h + 'px';
+        const ctx = inst.canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    },
+
+    _initNodes(inst) {
+        const count = 18;
+        inst.nodes = [];
+        for (let i = 0; i < count; i++) {
+            inst.nodes.push({
+                x: Math.random(),
+                y: Math.random(),
+                vx: (Math.random() - 0.5) * 0.00055,
+                vy: (Math.random() - 0.5) * 0.00055,
+                r: 1.4 + Math.random() * 2.4
+            });
+        }
+    },
+
+    _loop(inst) {
+        inst.raf = requestAnimationFrame(() => this._loop(inst));
+        inst.t++;
+        const ctx = inst.canvas.getContext('2d');
+        const w = inst.w, h = inst.h;
+        if (w < 2 || h < 2) return;
+        ctx.clearRect(0, 0, w, h);
+
+        const nodes = inst.nodes;
+        for (const n of nodes) {
+            n.x += n.vx; n.y += n.vy;
+            if (n.x < 0 || n.x > 1) n.vx *= -1;
+            if (n.y < 0 || n.y > 1) n.vy *= -1;
+            n.x = Math.max(0, Math.min(1, n.x));
+            n.y = Math.max(0, Math.min(1, n.y));
+        }
+
+        const maxD = Math.min(w, h) * 0.34;
+        // 连线
+        for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+                const a = nodes[i], b = nodes[j];
+                const dx = (a.x - b.x) * w, dy = (a.y - b.y) * h;
+                const dist = Math.hypot(dx, dy);
+                if (dist < maxD) {
+                    const alpha = (1 - dist / maxD) * 0.16;
+                    ctx.strokeStyle = 'rgba(37,99,235,' + alpha + ')';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(a.x * w, a.y * h);
+                    ctx.lineTo(b.x * w, b.y * h);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        // 节点（发光）
+        for (const n of nodes) {
+            const x = n.x * w, y = n.y * h;
+            const g = ctx.createRadialGradient(x, y, 0, x, y, n.r * 3.2);
+            g.addColorStop(0, 'rgba(99,102,241,0.85)');
+            g.addColorStop(0.45, 'rgba(37,99,235,0.45)');
+            g.addColorStop(1, 'rgba(37,99,235,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(x, y, n.r * 3.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.beginPath();
+            ctx.arc(x, y, n.r * 0.6, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 脉冲光点沿连线流动（体现 AI 推理/数据流动）
+        if (inst.t % 7 === 0) {
+            const i = Math.floor(Math.random() * nodes.length);
+            const j = Math.floor(Math.random() * nodes.length);
+            if (i !== j) {
+                const a = nodes[i], b = nodes[j];
+                const dx = (a.x - b.x) * w, dy = (a.y - b.y) * h;
+                if (Math.hypot(dx, dy) < maxD) inst.pulses.push({ a, b, p: 0 });
+            }
+        }
+        inst.pulses = inst.pulses.filter(pl => pl.p < 1);
+        for (const pl of inst.pulses) {
+            pl.p += 0.02;
+            const x = (pl.a.x + (pl.b.x - pl.a.x) * pl.p) * w;
+            const y = (pl.a.y + (pl.b.y - pl.a.y) * pl.p) * h;
+            const g = ctx.createRadialGradient(x, y, 0, x, y, 4.5);
+            g.addColorStop(0, 'rgba(6,182,212,0.95)');
+            g.addColorStop(1, 'rgba(6,182,212,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+};

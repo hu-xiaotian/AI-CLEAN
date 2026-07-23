@@ -2,6 +2,7 @@ package com.aiclean.service.impl;
 
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.crypto.digest.DigestUtil;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.aiclean.entity.*;
@@ -11,6 +12,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.aiclean.entity.enums.DataStatus;
 import com.aiclean.mapper.*;
 import com.aiclean.ai.AiClientService;
+import com.aiclean.agent.ShardingAgent;
 import com.aiclean.match.*;
 import com.aiclean.model.ParseRule;
 import com.aiclean.model.SearchCondition;
@@ -22,11 +24,13 @@ import com.aiclean.dto.StatusCount;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -37,6 +41,11 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -60,7 +69,10 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Autowired private FieldMappingAuditMapper fieldMappingAuditMapper;
     @Autowired private TitleStandardTitleMapper titleStandardTitleMapper;
     @Autowired private CategorySynonymMapper categorySynonymMapper;
+    @Autowired private ActiveLearningSampleMapper activeLearningSampleMapper;
     @Autowired private CategoryMatcher categoryMatcher;
+    @Autowired private ShardingAgent shardingAgent;
+    @Autowired @Qualifier("cleaningExecutor") private ThreadPoolTaskExecutor cleaningExecutor;
     @Autowired private TransactionTemplate transactionTemplate;
     @Autowired private SimpMessagingTemplate messagingTemplate;
     @Autowired private AiClientService aiClientService;
@@ -70,6 +82,22 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Value("${app.data-cleaning.batch-size}") private int batchSize;
     @Value("${app.data-cleaning.quality-score.threshold-review}") private double thresholdReview;
     @Value("${app.data-cleaning.quality-score.threshold-export}") private double thresholdExport;
+
+    /** 阈值自适应：依据整批评分分布动态计算 review/export 阈值（而非固定 60/80） */
+    @Value("${app.data-cleaning.quality-score.adaptive:false}") private boolean adaptiveThreshold;
+    @Value("${app.data-cleaning.quality-score.adaptive-review-percentile:30}") private double adaptiveReviewPercentile;
+    @Value("${app.data-cleaning.quality-score.adaptive-export-percentile:70}") private double adaptiveExportPercentile;
+    @Value("${app.data-cleaning.quality-score.adaptive-review-min:40}") private double adaptiveReviewMin;
+    @Value("${app.data-cleaning.quality-score.adaptive-review-max:75}") private double adaptiveReviewMax;
+    @Value("${app.data-cleaning.quality-score.adaptive-export-min:65}") private double adaptiveExportMin;
+    @Value("${app.data-cleaning.quality-score.adaptive-export-max:95}") private double adaptiveExportMax;
+
+    /** 多智能体并行清洗（Sharding Agent）配置：是否启用并行分片 */
+    @Value("${app.data-cleaning.sharding.enabled:true}") private boolean shardingEnabled;
+    /** 分片策略：HASH / CATEGORY_TREE（按一级分类分片） */
+    @Value("${app.data-cleaning.sharding.strategy:CATEGORY_TREE}") private String shardingStrategy;
+    /** 目标并行度（分片数上限） */
+    @Value("${app.data-cleaning.sharding.parallelism:4}") private int shardingParallelism;
 
     /** AI 提取系统提示词（可配置，见 application.yml -> app.ai.system-prompt） */
     @Value("${app.ai.system-prompt:你是一个专业的数据属性提取助手。你的任务是根据用户给定的一组目标字段，从一段物料/商品的描述文本中提取对应的值。你必须只返回一个 JSON 对象：键为目标字段名（严格使用用户提供的字段名），值为提取到的内容字符串；未出现的字段填空字符串\"\"。不要输出任何解释或 Markdown 代码块，只输出纯 JSON。}")
@@ -212,6 +240,11 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         // 5. 删除补充数据表头 (extra_data_title)
         int extraTitleCount = extraDataTitleMapper.deleteByTempDataTitleId(titleId);
         log.info("删除补充数据表头: {} 条", extraTitleCount);
+
+        // 5.5 删除填充失败记录 (failed_result_data)
+        // 必须放在删除 temp_data 之前，因 deleteByTitleId 依赖 temp_data 子查询定位
+        int failedCount = failedResultDataMapper.deleteByTitleId(titleId);
+        log.info("删除填充失败记录: {} 条", failedCount);
 
         // 6. 删除原始数据行 (temp_data)
         int tempDataCount = tempDataMapper.deleteByTitleId(titleId);
@@ -684,6 +717,12 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         cleanedData.setMatchConfidence(matchResult.getConfidence());
         fillCategoryInfo(cleanedData, matchedCategory);
 
+        // 记录导入时指定的"属性拆分列"原始文本，供 AI 打分匹配使用；并计算行指纹用于数据血缘/去重
+        cleanedData.setFullDescription(fullDescription);
+        cleanedData.setSourceRowHash(computeSourceRowHash(cleanedData));
+        // 单条清洗不跨行去重，置为 0
+        cleanedData.setIsDuplicate(0);
+
         // 提取核心字段
         cleanedData.setMaterialCode(getColByTitle(titleEntity, "物料代码", tempData, 3));
         cleanedData.setMaterialName(extraAttrs.getOrDefault("物资名称", extraAttrs.getOrDefault("物资简称", "")));
@@ -741,58 +780,134 @@ public class DataCleaningServiceImpl implements DataCleaningService {
      * 使用 TransactionTemplate 确保在异步线程中事务正确生效
      */
     public void doStartCleaning(Long titleId, Long parseRuleId, Boolean useAi) {
+        // 0. 如果该批次已清洗过，先清理旧数据，确保重新生成。
+        // 注意：清理必须在并行清洗之前、且在独立事务（自动提交）中提交，
+        // 否则外层事务会持有 cleaned_data 的间隙锁(gap lock)，与并行 Worker 的 INSERT 相互阻塞，
+        // 导致 "Lock wait timeout exceeded"。因此此处放在外层 transactionTemplate 之前执行。
+        cleanPreviousCleaningData(titleId);
+
+        // 标记表头为"清洗中"并立即提交（独立自动提交，不在外层事务内），
+        // 使"智能分类"页在长时间 AI 清洗期间能即时看到进行中状态（否则会一直显示草稿直到整批结束）。
+        TempDataTitleEntity titleForStatus = tempDataTitleMapper.selectById(titleId);
+        if (titleForStatus != null) {
+            titleForStatus.setStatus(DataStatus.PROCESSING);
+            tempDataTitleMapper.updateById(titleForStatus);
+        }
+
         transactionTemplate.executeWithoutResult(status -> {
             try {
                 log.info("异步清洗任务开始执行，表头ID: {}, 规则ID: {}", titleId, parseRuleId);
-
-                // 0. 如果该批次已清洗过，先清理旧数据，确保重新生成
-                cleanPreviousCleaningData(titleId);
 
                 // 1. 预加载共享数据，避免循环内重复查询
                 // 说明：全描述属性提取（extractExtraData）已拆分为独立步骤，
                 // 不再在智能分类时自动执行，需由调用方（如一键数据清洗）显式触发。
                 TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
+
                 ParseRuleEntity ruleEntity = parseRuleMapper.selectById(parseRuleId);
                 ParseRule parseRule = ruleEntity != null ? ruleEntity.toParseRule() : getDefaultParseRule();
                 List<CategoryEntity> allCategories = categoryMapper.selectList(null);
                 List<CategorySynonymEntity> synonyms = categorySynonymMapper.selectList(null);
                 log.info("预加载完成，分类总数: {}, 同义词数: {}, 待清洗数据: {}", allCategories.size(), synonyms.size(), tempDataMapper.countByTitleId(titleId));
 
-                // 2. 批量匹配清洗
+                // 2. 批量匹配清洗（多智能体编排：Orchestrator + Sharding Agent + 并行 Worker）
                 List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(titleId);
-                int successCount = 0;
-                int errorCount = 0;
-                int consecutiveErrors = 0;
-                final int maxConsecutiveErrors = 5;
+                // 数据血缘：同文件内行指纹集合（并发安全），用于标记重复数据
+                Set<String> seenHashes = ConcurrentHashMap.newKeySet();
                 final int totalCount = tempDataList.size();
 
-                // 发送开始消息
-                sendCleaningProgress(titleId, "start", 0, totalCount, null, successCount, errorCount);
+                // 2.1 Sharding Agent：把待清洗数据按策略分片
+                ShardingAgent.ShardStrategy strategy = !shardingEnabled ? ShardingAgent.ShardStrategy.HASH
+                        : ("HASH".equalsIgnoreCase(shardingStrategy) ? ShardingAgent.ShardStrategy.HASH
+                                : ShardingAgent.ShardStrategy.CATEGORY_TREE);
+                Map<Long, String> categoryTreeKeys = Collections.emptyMap();
+                if (strategy == ShardingAgent.ShardStrategy.CATEGORY_TREE) {
+                    // 预匹配一级分类作为分片 key（仅用于调度，清洗阶段仍独立匹配）
+                    categoryTreeKeys = computeCategoryTreeKeys(tempDataList, parseRule, titleEntity, allCategories, synonyms);
+                }
+                int parallelism = shardingEnabled ? Math.max(1, shardingParallelism) : 1;
+                List<List<TempDataEntity>> shards = shardingAgent.shard(tempDataList, strategy, parallelism, categoryTreeKeys);
+                log.info("Sharding Agent 分片完成，策略: {}, 并行度: {}, 分片数: {}", strategy, parallelism, shards.size());
 
-                for (int i = 0; i < tempDataList.size(); i++) {
-                    try {
-                        CleanedDataEntity cleaned = matchAndCleanInternal(tempDataList.get(i), null, parseRule,
-                                titleEntity, allCategories, synonyms, useAi);
-                        successCount++;
-                        consecutiveErrors = 0;
+                // 2.2 并行 Worker：每个 shard 由独立线程在各自事务中清洗，状态延迟打标（deferStatus=true）
+                List<CleanedDataEntity> allCleaned = Collections.synchronizedList(new ArrayList<>());
+                List<Double> allScores = Collections.synchronizedList(new ArrayList<>());
+                AtomicInteger successCount = new AtomicInteger(0);
+                AtomicInteger errorCount = new AtomicInteger(0);
+                AtomicBoolean stopped = new AtomicBoolean(false);
 
-                        // 每清洗一条数据，通过 WebSocket 推送进度
-                        sendCleaningProgress(titleId, "progress", i + 1, totalCount, cleaned, successCount, errorCount);
-                    } catch (Exception e) {
-                        errorCount++;
-                        consecutiveErrors++;
-                        log.error("清洗数据失败，tempDataId: {}", tempDataList.get(i).getId(), e);
+                sendCleaningProgress(titleId, "start", 0, totalCount, null, 0, 0);
 
-                        // 推送错误信息
-                        sendCleaningProgress(titleId, "progress", i + 1, totalCount, null, successCount, errorCount);
+                ExecutorService es = cleaningExecutor.getThreadPoolExecutor();
+                List<Callable<Void>> tasks = new ArrayList<>();
+                // 分片内分批提交：每批独立事务，避免单个大事务长时间持有锁，并缩小故障爆炸半径
+                final int CLEAN_BATCH_SIZE = 100;
+                for (List<TempDataEntity> shard : shards) {
+                    tasks.add(() -> {
+                        if (stopped.get()) return null;
+                        AtomicInteger localErr = new AtomicInteger(0);
+                        int batchStart = 0;
+                        while (batchStart < shard.size() && !stopped.get()) {
+                            int batchEnd = Math.min(batchStart + CLEAN_BATCH_SIZE, shard.size());
+                            List<TempDataEntity> batch = shard.subList(batchStart, batchEnd);
+                            transactionTemplate.executeWithoutResult(s -> {
+                                for (TempDataEntity td : batch) {
+                                    if (stopped.get()) break;
+                                    try {
+                                        CleanedDataEntity cleaned = matchAndCleanInternal(td, null, parseRule,
+                                                titleEntity, allCategories, synonyms, useAi, seenHashes, true);
+                                        allCleaned.add(cleaned);
+                                        allScores.add(cleaned.getQualityScore() != null ? cleaned.getQualityScore() : 0.0);
+                                        int cur = successCount.incrementAndGet();
+                                        sendCleaningProgress(titleId, "progress", cur, totalCount, cleaned, cur, errorCount.get());
+                                    } catch (Exception e) {
+                                        localErr.incrementAndGet();
+                                        int cur = errorCount.incrementAndGet();
+                                        log.error("并行清洗失败，tempDataId: {}", td.getId(), e);
+                                        sendCleaningProgress(titleId, "progress", successCount.get() + cur, totalCount, null, successCount.get(), cur);
+                                        if (localErr.get() >= 5) {
+                                            stopped.set(true);
+                                            log.error("分片内连续失败 {} 次，停止后续清洗。已成功: {}, 失败: {}", localErr.get(), successCount.get(), errorCount.get());
+                                            break;
+                                        }
+                                    }
+                                }
+                            });
+                            batchStart = batchEnd;
+                        }
+                        return null;
+                    });
+                }
+                try {
+                    List<Future<Void>> futures = es.invokeAll(tasks);
+                    for (Future<Void> f : futures) {
+                        try { f.get(); } catch (Exception e) { log.error("分片执行异常", e); }
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    stopped.set(true);
+                }
+                int done = successCount.get() + errorCount.get();
+                sendCleaningProgress(titleId, "progress", done, totalCount, null, successCount.get(), errorCount.get());
 
-                        if (consecutiveErrors >= maxConsecutiveErrors) {
-                            log.error("连续失败 {} 次，停止清洗任务。已处理: {}/{}, 成功: {}, 失败: {}",
-                                    maxConsecutiveErrors, i + 1, totalCount, successCount, errorCount);
-                            sendCleaningProgress(titleId, "error", i + 1, totalCount, null, successCount, errorCount);
-                            throw new RuntimeException(
-                                    String.format("数据清洗异常终止：连续 %d 次失败（已处理 %d/%d 条）",
-                                            maxConsecutiveErrors, i + 1, totalCount));
+                // 2.3 第二阶段：阈值自适应统一打标（初始清洗也启用自适应阈值）+ 建审核任务
+                double[] thr = resolveThresholds(allScores);
+                double review = thr[0], export = thr[1];
+                for (CleanedDataEntity cd : allCleaned) {
+                    double score = cd.getQualityScore() != null ? cd.getQualityScore() : 0.0;
+                    applyStatus(cd, score, review, export);
+                    if (score < review) {
+                        createReviewTask(cd, "质量评分过低: " + score);
+                    }
+                    cleanedDataMapper.updateById(cd);
+                }
+
+                // 2.4 低置信样本沉淀（主动学习）：初始清洗阶段若启用 AI，则把低分/未匹配样本沉淀为 LOW_CONFIDENCE
+                if (Boolean.TRUE.equals(useAi) && aiClientService.isEnabled()) {
+                    for (CleanedDataEntity cd : allCleaned) {
+                        double score = cd.getQualityScore() != null ? cd.getQualityScore() : 0.0;
+                        boolean matched = cd.getCategoryId() != null && !"UNMATCHED".equals(cd.getMatchSource());
+                        if (score < review && !matched) {
+                            persistLowConfidenceSample(cd, score);
                         }
                     }
                 }
@@ -802,9 +917,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 tempDataTitleMapper.updateById(titleEntity);
 
                 // 发送完成消息
-                sendCleaningProgress(titleId, "complete", totalCount, totalCount, null, successCount, errorCount);
+                sendCleaningProgress(titleId, "complete", totalCount, totalCount, null, successCount.get(), errorCount.get());
 
-                log.info("数据清洗完成，成功: {}, 失败: {}", successCount, errorCount);
+                log.info("数据清洗完成，成功: {}, 失败: {}", successCount.get(), errorCount.get());
             } catch (Exception e) {
                 log.error("数据清洗任务执行失败，表头ID: {}", titleId, e);
                 // 推送错误消息
@@ -821,6 +936,35 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 status.setRollbackOnly();
             }
         });
+    }
+
+    /** 为每条原始数据预匹配一级分类，作为 CATEGORY_TREE 分片 key（仅用于调度，清洗阶段仍独立匹配） */
+    private Map<Long, String> computeCategoryTreeKeys(List<TempDataEntity> list, ParseRule parseRule,
+                                                      TempDataTitleEntity titleEntity,
+                                                      List<CategoryEntity> allCategories,
+                                                      List<CategorySynonymEntity> synonyms) {
+        Map<Long, String> map = new HashMap<>();
+        for (TempDataEntity td : list) {
+            try {
+                String fullDescription = "";
+                if (titleEntity != null && StrUtil.isNotBlank(titleEntity.getFullDescCol())) {
+                    int idx = findFullDescColIndex(titleEntity, titleEntity.getFullDescCol());
+                    if (idx > 0) fullDescription = td.getColData(idx);
+                }
+                Map<String, String> extraAttrs = parseRule.parse(fullDescription);
+                CategoryMatchOutcome outcome = categoryMatcher.match(
+                        buildMatchContext(td, extraAttrs, titleEntity, allCategories, synonyms));
+                if (outcome.getCategory() != null && StrUtil.isNotBlank(outcome.getCategory().getFullPath())) {
+                    String fp = outcome.getCategory().getFullPath();
+                    map.put(td.getId(), fp.split("/")[0]);
+                } else {
+                    map.put(td.getId(), "UNMATCHED");
+                }
+            } catch (Exception e) {
+                map.put(td.getId(), "UNKNOWN");
+            }
+        }
+        return map;
     }
 
     /**
@@ -852,7 +996,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     private CleanedDataEntity matchAndCleanInternal(TempDataEntity tempData, Long extraDataTitleId,
                                                     ParseRule parseRule, TempDataTitleEntity titleEntity,
                                                      List<CategoryEntity> allCategories,
-                                                     List<CategorySynonymEntity> synonyms, Boolean useAi) {
+                                                     List<CategorySynonymEntity> synonyms, Boolean useAi,
+                                                     Set<String> seenHashes, boolean deferStatus) {
         // 获取extra_data
         ExtraDataEntity extraData = null;
         if (extraDataTitleId != null) {
@@ -881,6 +1026,17 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         cleanedData.setMatchConfidence(matchResult.getConfidence());
         fillCategoryInfo(cleanedData, matchedCategory);
 
+        // 记录导入时指定的"属性拆分列"原始文本，供 AI 打分匹配使用；并计算行指纹用于数据血缘/去重
+        cleanedData.setFullDescription(fullDescription);
+        String rowHash = computeSourceRowHash(cleanedData);
+        cleanedData.setSourceRowHash(rowHash);
+        // 数据血缘/去重：同文件内指纹重复标记，便于后续增量清洗与重复数据下钻
+        if (seenHashes != null && rowHash != null && !seenHashes.add(rowHash)) {
+            cleanedData.setIsDuplicate(1);
+        } else {
+            cleanedData.setIsDuplicate(0);
+        }
+
         // 提取核心字段
         cleanedData.setMaterialCode(getColByTitle(titleEntity, "物料代码", tempData, 3));
         cleanedData.setMaterialName(extraAttrs.getOrDefault("物资名称", extraAttrs.getOrDefault("物资简称", "")));
@@ -895,12 +1051,18 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         cleanedData.setQualityScore(qualityScore);
         cleanedData.setAccuracyScore(qualityScore * 0.8);
 
-        if (qualityScore < thresholdReview) {
+        // 延迟打标（deferStatus=true）：初始清洗并行分片阶段使用，先占位为待审核，
+        // 最终状态由编排器按整批评分分布（阈值自适应）在第二阶段统一判定，避免逐条用固定阈值导致分布失衡。
+        if (deferStatus) {
             cleanedData.setStatus(DataStatus.NEEDS_REVIEW);
-        } else if (qualityScore >= thresholdExport) {
-            cleanedData.setStatus(DataStatus.EXPORT_READY);
         } else {
-            cleanedData.setStatus(DataStatus.APPROVED);
+            if (qualityScore < thresholdReview) {
+                cleanedData.setStatus(DataStatus.NEEDS_REVIEW);
+            } else if (qualityScore >= thresholdExport) {
+                cleanedData.setStatus(DataStatus.EXPORT_READY);
+            } else {
+                cleanedData.setStatus(DataStatus.APPROVED);
+            }
         }
 
         // 分类未命中三级：不赋一/二级编码，标记为待审核（无效数据页统计）
@@ -911,8 +1073,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
         cleanedDataMapper.insert(cleanedData);
 
-        // 入库后再创建审核任务，确保能拿到自增主键 entity_id
-        if (qualityScore < thresholdReview) {
+        // 审核任务延迟至第二阶段（仅当质量分低于自适应阈值时创建），避免延迟模式下重复创建
+        if (!deferStatus && qualityScore < thresholdReview) {
             createReviewTask(cleanedData, "质量评分过低: " + qualityScore);
         }
 
@@ -2066,6 +2228,18 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         } else {
             stats.put("scope", "all");
         }
+
+        // 重复数据（数据血缘/去重）与低置信样本（主动学习）统计，供看板下钻
+        long duplicate = scoped
+                ? nullToZero(cleanedDataMapper.countDuplicatesByTitleId(titleId))
+                : nullToZero(cleanedDataMapper.countDuplicates());
+        stats.put("duplicateCount", duplicate);
+
+        long lowConf = scoped
+                ? nullToZero(activeLearningSampleMapper.countLowConfidenceByTitleId(titleId))
+                : nullToZero(activeLearningSampleMapper.countLowConfidence());
+        stats.put("lowConfidenceCount", lowConf);
+
         return stats;
     }
 
@@ -2075,6 +2249,22 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             return cleanedDataMapper.selectUnmatchedByTitleId(titleId);
         }
         return cleanedDataMapper.selectUnmatchedAll();
+    }
+
+    @Override
+    public List<CleanedDataEntity> getDuplicateData(Long titleId) {
+        if (titleId != null) {
+            return cleanedDataMapper.selectDuplicatesByTitleId(titleId);
+        }
+        return cleanedDataMapper.selectDuplicatesAll();
+    }
+
+    @Override
+    public List<ActiveLearningSampleEntity> getLowConfidenceSamples(Long titleId) {
+        if (titleId != null) {
+            return activeLearningSampleMapper.selectLowConfidenceByTitleId(titleId);
+        }
+        return activeLearningSampleMapper.selectLowConfidenceAll();
     }
 
     private long nullToZero(Number v) { return v != null ? v.longValue() : 0L; }
@@ -2251,6 +2441,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                     .replace("{categoryCode}", StrUtil.nullToEmpty(cleanedData.getCategoryCode()))
                     .replace("{categoryName}", StrUtil.nullToEmpty(cleanedData.getCategoryName()))
                     .replace("{categoryFullPath}", StrUtil.nullToEmpty(cleanedData.getCategoryFullPath()))
+                    .replace("{fullDescription}", StrUtil.nullToEmpty(cleanedData.getFullDescription()))
                     .replace("{candidates}", sb.toString());
             // 反向校验提示：系统编码是否真实存在于标准库，直接告诉模型，避免其盲目“确认”
             boolean sysInLib = StrUtil.isNotBlank(cleanedData.getCategoryCode())
@@ -2262,12 +2453,20 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             return parseAiDetect(aiText);
         } catch (Exception e) {
             log.warn("AI 分类检测失败，回退规则校验，tempDataId: {}", cleanedData.getTempDataId(), e);
-            CategoryStandardLibrary.RuleCheck rc = stdLib.ruleCheck(cleanedData, matchedCategory);
-            result.score = rc.getScore();
-            result.matched = rc.isConsistent();
-            result.bestMatchCode = rc.getBestMatchCode();
-            result.bestMatchName = rc.getBestMatchName();
-            result.reason = "AI 失败，" + rc.getReason();
+            try {
+                CategoryStandardLibrary.RuleCheck rc = stdLib.ruleCheck(cleanedData, matchedCategory);
+                result.score = rc.getScore();
+                result.matched = rc.isConsistent();
+                result.bestMatchCode = rc.getBestMatchCode();
+                result.bestMatchName = rc.getBestMatchName();
+                result.reason = "AI 失败，" + rc.getReason();
+            } catch (Exception ex2) {
+                // 最终兜底：绝不抛出，给保守分，避免单条数据中断整批清洗
+                result.score = 0;
+                result.matched = false;
+                result.reason = "AI 与规则校验均失败：" + e.getMessage();
+                log.warn("AI 与规则校验均失败，使用保守分 0，tempDataId: {}", cleanedData.getTempDataId(), ex2);
+            }
             return result;
         }
     }
@@ -2287,7 +2486,15 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         int s = text.indexOf('{');
         int e = text.lastIndexOf('}');
         if (s < 0 || e <= s) throw new RuntimeException("AI 返回无 JSON");
-        JSONObject obj = JSON.parseObject(text.substring(s, e + 1));
+        String json = text.substring(s, e + 1);
+        JSONObject obj;
+        try {
+            obj = JSON.parseObject(json);
+        } catch (Exception ex) {
+            // 自愈：AI 可能返回非法 JSON 转义（如牌号 "45\C" 中的 \C），修正后重试一次
+            log.warn("AI JSON 解析失败，尝试修正非法转义后重试: {}", ex.getMessage());
+            obj = JSON.parseObject(sanitizeInvalidJsonEscape(json));
+        }
         Object scoreObj = obj.get("score");
         if (scoreObj != null) r.score = Math.max(0, Math.min(Double.parseDouble(scoreObj.toString()), 100));
         Object matchedObj = obj.get("matched");
@@ -2303,9 +2510,51 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         return r;
     }
 
+    /**
+     * 修正非法 JSON 转义：反斜杠后若不是合法转义字符（" \ / b f n r t u）时，
+     * 将反斜杠转义为 "\\"，保留后续字符。用于兼容大模型偶尔输出的非法转义（如 "45\C"）。
+     */
+    private static String sanitizeInvalidJsonEscape(String json) {
+        if (json == null) return null;
+        StringBuilder sb = new StringBuilder(json.length() + 16);
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '\\') {
+                if (i + 1 < json.length()) {
+                    char n = json.charAt(i + 1);
+                    if ("\"\\/bfnrtu".indexOf(n) >= 0) {
+                        sb.append(c).append(n); // 合法转义，原样保留
+                    } else {
+                        sb.append("\\\\").append(n); // 非法转义，转义反斜杠并保留后续字符
+                    }
+                    i++;
+                } else {
+                    sb.append("\\\\"); // 行尾孤立反斜杠
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
     private String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() <= max ? s : s.substring(0, max);
+    }
+
+    /**
+     * 计算原始行数据指纹（数据血缘/去重/增量清洗用）。
+     * 基于分类编码、物料代码、规格、牌号与属性拆分列组合，MD5 后返回。
+     */
+    private String computeSourceRowHash(CleanedDataEntity cd) {
+        if (cd == null) return null;
+        String raw = StrUtil.nullToEmpty(cd.getCategoryCode()) + "|"
+                + StrUtil.nullToEmpty(cd.getMaterialCode()) + "|"
+                + StrUtil.nullToEmpty(cd.getSpecification()) + "|"
+                + StrUtil.nullToEmpty(cd.getGrade()) + "|"
+                + StrUtil.nullToEmpty(cd.getFullDescription());
+        return DigestUtil.md5Hex(raw);
     }
 
     /** 解析 AI 返回的评分：兼容 JSON {"score":N} 或纯数字；解析失败抛出异常由调用方回退 */
@@ -2355,6 +2604,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         CleanedDataEntity cd = new CleanedDataEntity();
         cd.setMaterialName(text);
         cd.setSpecification(text);
+        // 用户文字本身即"属性拆分列"内容，AI 打分依据它而非仅属性名称列
+        cd.setFullDescription(text);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("input", text);
@@ -2404,15 +2655,32 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         int matchedCount = 0;
         int mismatchCount = 0;
         List<ClassifyCheckDetail> details = new ArrayList<>();
+        List<Double> scores = new ArrayList<>();
+        // 第一轮：逐条检测，收集评分
         for (CleanedDataEntity cd : list) {
             ClassifyCheckDetail d = detectSingle(cd, aiOn);
+            details.add(d);
+            scores.add(d.getScore() != null ? d.getScore() : 0);
+        }
+        // 阈值自适应：依据整批分布计算 review/export 阈值并统一打标
+        double[] thr = resolveThresholds(scores);
+        double review = thr[0], export = thr[1];
+        for (int i = 0; i < list.size(); i++) {
+            CleanedDataEntity cd = list.get(i);
+            ClassifyCheckDetail d = details.get(i);
+            double score = scores.get(i);
+            applyStatus(cd, score, review, export);
+            if (aiOn && score < review && !Boolean.TRUE.equals(d.getMatched())) {
+                persistLowConfidenceSample(cd, score);
+            }
             cleanedDataMapper.updateById(cd);
-            sum += (d.getScore() != null ? d.getScore() : 0);
+            sum += score;
             if (Boolean.TRUE.equals(d.getMatched())) matchedCount++;
             else mismatchCount++;
-            details.add(d);
         }
         result.put("total", total);
+        result.put("reviewThreshold", review);
+        result.put("exportThreshold", export);
         result.put("avgScore", total > 0 ? Math.round(sum / total * 10) / 10.0 : 0);
         result.put("matchedCount", matchedCount);
         result.put("mismatchCount", mismatchCount);
@@ -2457,6 +2725,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             sendAiClassifyMessage(titleId, startMsg);
 
             int current = 0;
+            // 第一轮：逐条检测，收集评分（状态暂不落库，待自适应阈值统一打标）
+            List<ClassifyCheckDetail> details = new ArrayList<>();
+            List<Double> scores = new ArrayList<>();
             for (CleanedDataEntity cd : list) {
                 current++;
                 ClassifyCheckDetail d;
@@ -2475,11 +2746,26 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                     d.setMatched(false);
                     d.setReason("检测异常: " + e.getMessage());
                 }
-                sum += (d.getScore() != null ? d.getScore() : 0);
+                details.add(d);
+                scores.add(d.getScore() != null ? d.getScore() : 0);
+                sendAiClassifyProgress(titleId, "progress", current, total, d, matchedCount, mismatchCount, null);
+            }
+
+            // 阈值自适应：依据整批分布统一打标，并沉淀低置信样本（主动学习）
+            double[] thr = resolveThresholds(scores);
+            double review = thr[0], export = thr[1];
+            for (int i = 0; i < list.size(); i++) {
+                CleanedDataEntity cd = list.get(i);
+                ClassifyCheckDetail d = details.get(i);
+                double score = scores.get(i);
+                applyStatus(cd, score, review, export);
+                if (aiOn && score < review && !Boolean.TRUE.equals(d.getMatched())) {
+                    persistLowConfidenceSample(cd, score);
+                }
+                cleanedDataMapper.updateById(cd);
+                sum += score;
                 if (Boolean.TRUE.equals(d.getMatched())) matchedCount++;
                 else mismatchCount++;
-
-                sendAiClassifyProgress(titleId, "progress", current, total, d, matchedCount, mismatchCount, null);
             }
 
             double avg = total > 0 ? Math.round(sum / total * 10) / 10.0 : 0;
@@ -2537,7 +2823,67 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         }
     }
 
-    /** 单条检测：评分 + 一致性判定 + 更新 cleanedData 的评分与状态 */
+    /**
+     * 依据整批评分分布计算 review/export 阈值（阈值自适应）。
+     * 样本不足或关闭自适应时回退到固定配置阈值；结果按配置上下限钳制，且保证 export > review。
+     */
+    private double[] resolveThresholds(List<Double> scores) {
+        if (!adaptiveThreshold || scores == null || scores.size() < 10) {
+            return new double[]{thresholdReview, thresholdExport};
+        }
+        List<Double> sorted = new ArrayList<>(scores);
+        sorted.sort(Double::compareTo);
+        double review = percentile(sorted, adaptiveReviewPercentile / 100.0);
+        double export = percentile(sorted, adaptiveExportPercentile / 100.0);
+        review = Math.max(adaptiveReviewMin, Math.min(adaptiveReviewMax, review));
+        export = Math.max(adaptiveExportMin, Math.min(adaptiveExportMax, export));
+        if (export <= review) export = Math.min(adaptiveExportMax, review + 5);
+        return new double[]{review, export};
+    }
+
+    /** 线性插值百分位数（sorted 为升序） */
+    private double percentile(List<Double> sorted, double p) {
+        if (sorted.isEmpty()) return 0;
+        int n = sorted.size();
+        double idx = (n - 1) * Math.max(0, Math.min(1, p));
+        int lo = (int) Math.floor(idx);
+        int hi = (int) Math.ceil(idx);
+        if (lo == hi) return sorted.get(lo);
+        return sorted.get(lo) + (idx - lo) * (sorted.get(hi) - sorted.get(lo));
+    }
+
+    /** 依据阈值对单条清洗数据打状态（NEEDS_REVIEW / APPROVED / EXPORT_READY） */
+    private void applyStatus(CleanedDataEntity cd, double score, double review, double export) {
+        if (score < review) cd.setStatus(DataStatus.NEEDS_REVIEW);
+        else if (score >= export) cd.setStatus(DataStatus.EXPORT_READY);
+        else cd.setStatus(DataStatus.APPROVED);
+    }
+
+    /** 沉淀低置信/未匹配样本（主动学习），同一清洗数据仅沉淀一次 */
+    private void persistLowConfidenceSample(CleanedDataEntity cd, double score) {
+        if (cd == null || cd.getId() == null) return;
+        long exist = activeLearningSampleMapper.selectCount(
+                new LambdaQueryWrapper<ActiveLearningSampleEntity>()
+                        .eq(ActiveLearningSampleEntity::getEntityId, cd.getId())
+                        .eq(ActiveLearningSampleEntity::getSampleType, "LOW_CONFIDENCE"));
+        if (exist > 0) return;
+        ActiveLearningSampleEntity s = new ActiveLearningSampleEntity();
+        s.setSampleType("LOW_CONFIDENCE");
+        s.setEntityId(cd.getId());
+        s.setSourceText(cd.getFullDescription());
+        s.setSourceCategoryName(cd.getCategoryName());
+        s.setSourceCategoryCode(cd.getCategoryCode());
+        s.setTargetCategoryId(cd.getCategoryId());
+        s.setTargetCategoryCode(cd.getCategoryCode());
+        s.setTargetCategoryName(cd.getCategoryName());
+        s.setConfidence(cd.getMatchConfidence());
+        s.setScore(score);
+        s.setReason("AI 分类检测低置信/未匹配");
+        s.setStatus("pending");
+        activeLearningSampleMapper.insert(s);
+    }
+
+    /** 单条检测：评分 + 一致性判定 + 更新 cleanedData 的评分；状态由调用方按阈值统一打标 */
     private ClassifyCheckDetail detectSingle(CleanedDataEntity cd, boolean aiOn) {
         CategoryEntity matched = StrUtil.isNotBlank(cd.getCategoryCode())
                 ? stdLib.getByCode(cd.getCategoryCode()) : null;
@@ -2581,9 +2927,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
         cd.setQualityScore(score);
         cd.setAccuracyScore(score * 0.8);
-        if (score < thresholdReview) cd.setStatus(DataStatus.NEEDS_REVIEW);
-        else if (score >= thresholdExport) cd.setStatus(DataStatus.EXPORT_READY);
-        else cd.setStatus(DataStatus.APPROVED);
+        // 状态判定延迟到调用方：依据整批评分分布计算自适应阈值（resolveThresholds）后统一打标
 
         // 若建议编码与系统编码相同，并非“更好的建议”，不展示，避免“判不一致却建议同一编码”的歧义
         if (StrUtil.isNotBlank(bestMatchCode) && StrUtil.isNotBlank(cd.getCategoryCode())) {
@@ -2616,7 +2960,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
      */
     @Override
     public Map<String, Object> applyClassifyFix(Long id, String targetCode) {
-        return doApplyFix(id, targetCode);
+        return doApplyFix(id, targetCode, true);
     }
 
     @Override
@@ -2632,7 +2976,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 Long id = Long.valueOf(idObj.toString());
                 String code = codeObj.toString();
                 try {
-                    results.add(doApplyFix(id, code));
+                    results.add(doApplyFix(id, code, false));
                     applied++;
                 } catch (Exception e) {
                     failed++;
@@ -2644,6 +2988,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 }
             }
         }
+        // 批量修正完成后统一热重载标准库，使本次回流的同义词立即生效
+        if (applied > 0) stdLib.reload();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("titleId", titleId);
         out.put("applied", applied);
@@ -2654,11 +3000,14 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     }
 
     /** 将指定清洗数据的分类替换为推荐的标准分类（按编码从标准库查找），替换后重新评分并保存 */
-    private Map<String, Object> doApplyFix(Long id, String targetCode) {
+    private Map<String, Object> doApplyFix(Long id, String targetCode, boolean reloadStdLib) {
         CleanedDataEntity cd = cleanedDataMapper.selectById(id);
         if (cd == null) throw new RuntimeException("清洗数据不存在: " + id);
         CategoryEntity target = stdLib.getByCode(targetCode);
         if (target == null) throw new RuntimeException("标准库中不存在编码: " + targetCode);
+        // 记录修正前的(错误)分类，用于知识回流与主动学习样本沉淀
+        String originalName = cd.getCategoryName();
+        String originalCode = cd.getCategoryCode();
         // 用推荐的标准分类替换错误分类
         cd.setCategoryId(target.getId());
         cd.setCategoryCode(target.getCategoryCode());
@@ -2673,6 +3022,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         else if (score >= thresholdExport) cd.setStatus(DataStatus.EXPORT_READY);
         else cd.setStatus(DataStatus.APPROVED);
         cleanedDataMapper.updateById(cd);
+        // 自学习闭环：把人工修正沉淀为同义词（知识回流）+ 主动学习样本
+        feedbackFromCorrection(id, originalName, originalCode, target, cd, score);
+        if (reloadStdLib) stdLib.reload();
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("id", id);
         r.put("categoryCode", cd.getCategoryCode());
@@ -2681,6 +3033,48 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         r.put("score", score);
         r.put("status", cd.getStatus());
         return r;
+    }
+
+    /**
+     * 修正非法 JSON 转义：反斜杠后若不是合法转义字符（" \ / b f n r t u）时，
+     * 将反斜杠转义为 "\\"，保留后续字符。用于兼容大模型偶尔输出的非法转义（如 "45\C"）。
+     */
+    /**
+     * 分类修正后的自学习闭环：
+     * 1) 若原分类名称非空且不同于目标标准名称，将其作为同义词写回标准库（知识回流），
+     *    下次同类数据可直接被 matchBySynonym 命中；
+     * 2) 沉淀一条 CORRECTION 主动学习样本，用于后续训练/微调或规则优化。
+     */
+    private void feedbackFromCorrection(Long cleanedDataId, String originalName, String originalCode,
+                                        CategoryEntity target, CleanedDataEntity cd, double score) {
+        if (target == null) return;
+        if (StrUtil.isNotBlank(originalName) && !originalName.trim().equals(target.getCategoryName())) {
+            long exist = categorySynonymMapper.selectCount(
+                    new LambdaQueryWrapper<CategorySynonymEntity>()
+                            .eq(CategorySynonymEntity::getSynonymName, originalName.trim())
+                            .eq(CategorySynonymEntity::getCategoryId, target.getId()));
+            if (exist == 0) {
+                CategorySynonymEntity syn = new CategorySynonymEntity();
+                syn.setCategoryId(target.getId());
+                syn.setSynonymName(originalName.trim());
+                syn.setDescription("分类修正自动回流(" + StrUtil.nullToEmpty(originalCode) + "->" + target.getCategoryCode() + ")");
+                categorySynonymMapper.insert(syn);
+            }
+        }
+        ActiveLearningSampleEntity sample = new ActiveLearningSampleEntity();
+        sample.setSampleType("CORRECTION");
+        sample.setEntityId(cleanedDataId);
+        sample.setSourceText(cd.getFullDescription());
+        sample.setSourceCategoryName(originalName);
+        sample.setSourceCategoryCode(originalCode);
+        sample.setTargetCategoryId(target.getId());
+        sample.setTargetCategoryCode(target.getCategoryCode());
+        sample.setTargetCategoryName(target.getCategoryName());
+        sample.setConfidence(cd.getMatchConfidence());
+        sample.setScore(score);
+        sample.setReason("人工修正分类");
+        sample.setStatus("pending");
+        activeLearningSampleMapper.insert(sample);
     }
 
     /** AI 检测结果 */

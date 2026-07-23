@@ -262,4 +262,22 @@ public interface CleanedDataMapper extends BaseMapper<CleanedDataEntity> {
     @Select("SELECT * FROM cleaned_data WHERE match_source = 'UNMATCHED' ORDER BY id LIMIT 500")
     List<CleanedDataEntity> selectUnmatchedAll();
 
+    // ==================== 重复数据（数据血缘/去重）====================
+
+    /** 统计某数据文件下重复数据（is_duplicate=1）数量 */
+    @Select("SELECT COUNT(*) FROM cleaned_data WHERE is_duplicate = 1 AND temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")
+    Long countDuplicatesByTitleId(@Param("titleId") Long titleId);
+
+    /** 统计全部重复数据数量 */
+    @Select("SELECT COUNT(*) FROM cleaned_data WHERE is_duplicate = 1")
+    Long countDuplicates();
+
+    /** 查询某数据文件下重复数据（is_duplicate=1） */
+    @Select("SELECT * FROM cleaned_data WHERE is_duplicate = 1 AND temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId}) ORDER BY id LIMIT 500")
+    List<CleanedDataEntity> selectDuplicatesByTitleId(@Param("titleId") Long titleId);
+
+    /** 查询全部重复数据（限制数量） */
+    @Select("SELECT * FROM cleaned_data WHERE is_duplicate = 1 ORDER BY id LIMIT 1000")
+    List<CleanedDataEntity> selectDuplicatesAll();
+
 }

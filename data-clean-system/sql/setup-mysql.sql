@@ -358,6 +358,9 @@ CREATE TABLE `cleaned_data` (
                                 `technical_standard` VARCHAR(500) DEFAULT NULL COMMENT '技术标准号',
                                 `grade` VARCHAR(200) DEFAULT NULL COMMENT '牌号',
                                 `unit` VARCHAR(50) DEFAULT NULL COMMENT '计量单位',
+                                `full_description` TEXT COMMENT '导入时指定的"属性拆分列"原始文本，用于 AI 打分匹配',
+                                `source_row_hash` VARCHAR(64) DEFAULT NULL COMMENT '原始行数据指纹（数据血缘/去重/增量清洗）',
+                                `is_duplicate` TINYINT DEFAULT 0 COMMENT '是否重复数据（同文件内指纹相同）: 0-否,1-是',
                                 `status` VARCHAR(50) DEFAULT 'draft' COMMENT '状态',
                                 `quality_score` DOUBLE DEFAULT 0 COMMENT '质量评分',
                                 `completeness_score` DOUBLE DEFAULT 0 COMMENT '完整性评分',
@@ -367,6 +370,8 @@ CREATE TABLE `cleaned_data` (
                                 `reviewed_at` TIMESTAMP NULL DEFAULT NULL COMMENT '审核时间',
                                 `export_batch_id` BIGINT DEFAULT NULL COMMENT '导出批次ID',
                                 `exported_at` TIMESTAMP NULL DEFAULT NULL COMMENT '导出时间',
+                                `match_source` VARCHAR(50) DEFAULT NULL COMMENT '分类匹配来源(SYNONYM/NAME_EXACT/NAME_FUZZY/CODE_EXACT/CODE_PREFIX/EXTRA_NAME/SEMANTIC/UNMATCHED)',
+                                `match_confidence` DOUBLE DEFAULT NULL COMMENT '分类匹配置信度(0~1)',
                                 `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                                 `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                                 `created_by` VARCHAR(50) DEFAULT 'system' COMMENT '创建人',
@@ -379,6 +384,7 @@ CREATE INDEX `idx_cd_category_path` ON `cleaned_data`(`category_full_path`);
 CREATE INDEX `idx_cd_material_code` ON `cleaned_data`(`material_code`);
 CREATE INDEX `idx_cd_status` ON `cleaned_data`(`status`);
 CREATE INDEX `idx_cd_temp_data_id` ON `cleaned_data`(`temp_data_id`);
+CREATE INDEX `idx_cd_match_source` ON `cleaned_data`(`match_source`);
 
 -- 11. 字段映射审核表 (field_mapping_audit)
 -- 系统字段映射结果与人工审核记录
@@ -484,6 +490,33 @@ CREATE TABLE `export_batch` (
 CREATE INDEX `idx_eb_status` ON `export_batch`(`status`);
 CREATE INDEX `idx_eb_exported_by` ON `export_batch`(`exported_by`);
 CREATE INDEX `idx_eb_export_type` ON `export_batch`(`export_type`);
+
+-- 14. 主动学习样本表 (active_learning_sample)
+-- 沉淀"低置信/人工修正"样本，用于后续训练、微调或规则优化（自学习闭环）
+DROP TABLE IF EXISTS `active_learning_sample`;
+CREATE TABLE `active_learning_sample` (
+                                  `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+                                  `sample_type` VARCHAR(50) NOT NULL COMMENT '样本类型: LOW_CONFIDENCE(低置信)/CORRECTION(人工修正)',
+                                  `entity_id` BIGINT DEFAULT NULL COMMENT '关联清洗数据ID(cleaned_data.id)',
+                                  `source_text` TEXT COMMENT '原始属性拆分列文本/物料描述',
+                                  `source_category_name` VARCHAR(500) DEFAULT NULL COMMENT '原始(错误)分类名称',
+                                  `source_category_code` VARCHAR(50) DEFAULT NULL COMMENT '原始(错误)分类编码',
+                                  `target_category_id` BIGINT DEFAULT NULL COMMENT '修正后/推荐的标准分类ID',
+                                  `target_category_code` VARCHAR(50) DEFAULT NULL COMMENT '修正后/推荐的标准分类编码',
+                                  `target_category_name` VARCHAR(500) DEFAULT NULL COMMENT '修正后/推荐的标准分类名称',
+                                  `confidence` DOUBLE DEFAULT NULL COMMENT '匹配置信度',
+                                  `score` DOUBLE DEFAULT NULL COMMENT '质量评分',
+                                  `reason` VARCHAR(500) DEFAULT NULL COMMENT '说明',
+                                  `status` VARCHAR(50) DEFAULT 'pending' COMMENT '状态: pending/used',
+                                  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                                  `created_by` VARCHAR(50) DEFAULT 'system' COMMENT '创建人',
+                                  `updated_by` VARCHAR(50) DEFAULT 'system' COMMENT '更新人'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='主动学习样本表';
+
+CREATE INDEX `idx_als_type` ON `active_learning_sample`(`sample_type`);
+CREATE INDEX `idx_als_entity_id` ON `active_learning_sample`(`entity_id`);
+CREATE INDEX `idx_als_target_code` ON `active_learning_sample`(`target_category_code`);
 
 SET FOREIGN_KEY_CHECKS = 1;
 

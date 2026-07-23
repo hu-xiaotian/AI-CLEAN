@@ -11,6 +11,7 @@ import lombok.Getter;
 public enum DataStatus {
     
     DRAFT("draft", "草稿"),
+    PROCESSING("processing", "清洗中"),
     NEEDS_REVIEW("needs_review", "待审核"),
     REVIEWING("reviewing", "审核中"),
     APPROVED("approved", "审核通过"),

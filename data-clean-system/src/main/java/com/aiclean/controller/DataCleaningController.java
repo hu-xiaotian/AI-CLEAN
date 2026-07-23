@@ -273,6 +273,18 @@ public class DataCleaningController {
         return R.success(dataCleaningService.getUnmatchedClassify(titleId));
     }
 
+    @GetMapping("/duplicate-data")
+    @Operation(summary = "查询重复数据", description = "返回 is_duplicate=1 的清洗数据（数据血缘/去重），用于看板下钻；不传 titleId 时返回全部（限 1000 条）")
+    public R<List<CleanedDataEntity>> getDuplicateData(@RequestParam(required = false) Long titleId) {
+        return R.success(dataCleaningService.getDuplicateData(titleId));
+    }
+
+    @GetMapping("/low-confidence-samples")
+    @Operation(summary = "查询低置信样本", description = "返回 active_learning_sample 中 sample_type=LOW_CONFIDENCE 的样本（主动学习沉淀），用于看板下钻；不传 titleId 时返回全部（限 500 条）")
+    public R<List<ActiveLearningSampleEntity>> getLowConfidenceSamples(@RequestParam(required = false) Long titleId) {
+        return R.success(dataCleaningService.getLowConfidenceSamples(titleId));
+    }
+
     // ==================== 查询 ====================
 
     @PostMapping("/cleaned-data/search")

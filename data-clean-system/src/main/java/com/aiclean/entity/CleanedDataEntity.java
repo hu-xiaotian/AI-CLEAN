@@ -87,6 +87,21 @@ public class CleanedDataEntity extends BaseEntity {
     private String unit;
     
     /**
+     * 导入时指定的"属性拆分列"原始文本（全描述），用于 AI 打分匹配，而非仅用解析出的属性名称列
+     */
+    private String fullDescription;
+    
+    /**
+     * 原始行数据指纹（数据血缘/去重/增量清洗），按关键字段计算
+     */
+    private String sourceRowHash;
+    
+    /**
+     * 是否重复数据（同文件内指纹相同）
+     */
+    private Integer isDuplicate;
+    
+    /**
      * 状态
      */
     private DataStatus status;

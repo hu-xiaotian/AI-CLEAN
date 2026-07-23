@@ -7,7 +7,7 @@ spring:
   datasource:
     # 开发环境使用MySQL (生产环境使用达梦)
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+    url: jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&sessionVariables=transaction_isolation='READ-COMMITTED'
     username: root
     password: Mysql123456.
     # 达梦数据库配置示例:
@@ -142,6 +142,24 @@ app:
     quality-score:
       threshold-review: 60
       threshold-export: 80
+      # 阈值自适应：依据整批清洗/检测评分分布动态计算 review/export 阈值（而非固定 60/80）
+      adaptive: false
+      # 分位数（0~100），review 取低分位、export 取高分位
+      adaptive-review-percentile: 30
+      adaptive-export-percentile: 70
+      # 自适应阈值钳制范围，避免极端分布导致阈值失效
+      adaptive-review-min: 40
+      adaptive-review-max: 75
+      adaptive-export-min: 65
+      adaptive-export-max: 95
+
+    # 多智能体并行清洗（Sharding Agent）：按分片并行处理，提升大文件吞吐
+    sharding:
+      enabled: true
+      # 分片策略：HASH（按 id 均匀分片）/ CATEGORY_TREE（按一级分类分桶并行）
+      strategy: CATEGORY_TREE
+      # 目标并行度（分片数上限），同时作为清洗线程池核心线程数
+      parallelism: 4
     # 标准库配置（main_data_category 全表比对）
     standard-library:
       # AI 检测时从全表召回的候选数量（top-K）
@@ -247,9 +265,10 @@ app:
     # ===== AI 辅助分类检测（基于 main_data_category 全表候选比对）=====
     # 系统提示词
     classification-detect-system-prompt: 你是一名严谨的工业品物料数据质量审核专家。你必须依据“物料自身的名称、规格、牌号、技术标准”独立判断其正确分类，不得仅凭“系统分类编码是否出现在候选列表中”就认定正确。只输出要求的 JSON，不要输出其他内容。
-    # 用户提示词模板：占位符 {materialCode}{materialName}{specification}{grade}{technicalStandard}{unit}{categoryCode}{categoryName}{categoryFullPath}{candidates}
+    # 用户提示词模板：占位符 {materialCode}{materialName}{specification}{grade}{technicalStandard}{unit}{categoryCode}{categoryName}{categoryFullPath}{fullDescription}{candidates}
+    # 注：{fullDescription} 为导入时指定的"属性拆分列"原始文本，AI 打分优先依据它而非仅属性名称列
     classification-detect-prompt: |
-      请审核下面这条物料的系统分类是否正确。你必须依据物料自身的名称、规格、牌号、技术标准，独立判断它“真正应该属于”标准分类库中的哪一个分类，再与系统给出的分类对比。
+      请审核下面这条物料的系统分类是否正确。你必须依据物料自身的名称、规格、牌号、技术标准以及"属性拆分列(全描述)"，独立判断它“真正应该属于”标准分类库中的哪一个分类，再与系统给出的分类对比。
 
       【待审核物料】
       物料代码：{materialCode}
@@ -258,6 +277,7 @@ app:
       牌号：{grade}
       技术标准：{technicalStandard}
       计量单位：{unit}
+      属性拆分列（导入时指定的全描述，优先依据）：{fullDescription}
 
       【系统分类结果】
       分类编码：{categoryCode}
