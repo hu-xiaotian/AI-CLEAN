@@ -199,7 +199,7 @@ function switchPage(name) {
         'import': () => { loadTitles(); },                          // 刷新导入文件列表
         'rule': () => { loadRules(true); },                            // 刷新解析规则列表
         'extract': () => { loadTitles(); loadRules(); loadExtraTitles(); loadTitlesForSelect('extractTitleId'); loadRulesForSelect('extractRuleId'); loadTitlesForSelect('aiExtractTitleId'); },  // 刷新提取相关数据
-        'clean': () => { loadTitles(); loadRules(); loadCleanStats(); loadTitlesForSelect('cleanTitleId'); loadRulesForSelect('cleanRuleId'); },     // 刷新清洗相关数据
+        'clean': () => { refreshCleanPage(); },     // 刷新清洗相关数据 + 加载已清洗记录
         'mapping': () => { 
             loadTitlesForSelect('mapTitleId'); 
             loadExtraTitlesForSelect('mapExtraTitleId'); 
@@ -523,6 +523,11 @@ async function runOneClickClean() {
         setOcStep('map', 'done');
         setOcOverall(100, '全部完成');
         showToast('一键数据清洗全部完成！');
+
+        // 清洗完成：自动跳转到「智能分类」页，展示清洗记录与 AI 辅助评分结果
+        ocPendingTitleId = titleId;
+        ocPendingAiCheck = ($('#ocUseAi') && $('#ocUseAi').checked);
+        switchPage('clean');
     } catch (e) {
         // 标记当前进行中的步骤为失败
         ['clean', 'extract', 'map'].forEach(n => {
@@ -1466,6 +1471,99 @@ async function loadCleanStats() {
         $('#statCleaned').textContent = '-';
         $('#statAvgScore').textContent = '-';
     }
+}
+
+// 一键清洗完成后，切换到智能分类页时携带的上下文（待加载的文件与是否自动触发 AI 检测）
+let ocPendingTitleId = null;
+let ocPendingAiCheck = false;
+
+// 刷新智能分类页：加载下拉、统计，并展示已清洗记录与 AI 辅助评分
+async function refreshCleanPage() {
+    loadTitles();
+    loadRules();
+    loadCleanStats();
+    loadRulesForSelect('cleanRuleId');
+    await loadTitlesForSelect('cleanTitleId');
+    // 一键清洗完成后跳转到本页时，自动选中对应的数据文件
+    if (ocPendingTitleId != null) {
+        const ct = document.getElementById('cleanTitleId');
+        if (ct) ct.value = String(ocPendingTitleId);
+        ocPendingTitleId = null;
+    }
+    const titleId = $('#cleanTitleId').value;
+    if (titleId) loadCleanedRecords(titleId);
+    // 一键清洗若启用了 AI 辅助评分，自动触发 AI 辅助分类检测以展示逐条评分
+    if (ocPendingAiCheck) {
+        ocPendingAiCheck = false;
+        const cu = document.getElementById('cleanUseAi');
+        if (cu) cu.checked = true;
+        aiClassifyCheck();
+    }
+}
+
+// 加载已清洗记录（按数据文件），并在智能分类页展示 AI 辅助评分结果
+async function loadCleanedRecords(titleId) {
+    const card = document.getElementById('cleanedRecordsCard');
+    const tbody = $('#cleanedRecordsTbody');
+    if (!titleId) {
+        if (card) card.style.display = 'none';
+        return;
+    }
+    if (card) card.style.display = 'block';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">加载中…</td></tr>';
+    try {
+        const list = await api('/cleaning/cleaned-data/search', {
+            method: 'POST',
+            body: { tempDataTitleId: parseInt(titleId, 10), queryAll: true, sortBy: 'createdAt', sortOrder: 'desc' }
+        });
+        renderCleanedRecords(list || []);
+    } catch (e) {
+        console.error('加载清洗结果记录失败:', e);
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">加载失败：' + (e && e.message ? e.message : e) + '</td></tr>';
+    }
+}
+
+// 渲染清洗结果记录表格（含 AI 辅助评分、AI 分类理由与状态）
+function renderCleanedRecords(list) {
+    const tbody = $('#cleanedRecordsTbody');
+    const summary = $('#cleanedRecordsSummary');
+    if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无清洗结果记录</td></tr>';
+        if (summary) summary.textContent = '共 0 条';
+        return;
+    }
+    let sum = 0, scored = 0;
+    let html = '';
+    list.forEach((d, i) => {
+        const idx = i + 1;
+        const score = d.qualityScore != null ? Number(d.qualityScore).toFixed(1) : '-';
+        const scoreClass = d.qualityScore != null ? (d.qualityScore >= 80 ? 'badge-success' : d.qualityScore >= 60 ? 'badge-warning' : 'badge-danger') : '';
+        const name = d.materialName ? (d.materialName.length > 24 ? d.materialName.substring(0, 24) + '…' : d.materialName) : '-';
+        const reason = d.aiReason ? d.aiReason : '-';
+        const reasonCell = d.aiReason
+            ? '<div class="reason-cell" title="' + escapeHtml(d.aiReason) + '">' + escapeHtml(d.aiReason) + '</div>'
+            : '<span class="empty-hint">-</span>';
+        html += '<tr>' +
+            '<td>' + idx + '</td>' +
+            '<td>' + (d.materialCode || '-') + '</td>' +
+            '<td title="' + (d.materialName || '') + '">' + name + '</td>' +
+            '<td>' + (d.categoryName || '-') + '</td>' +
+            '<td>' + (d.categoryCode || '-') + '</td>' +
+            '<td><span class="badge ' + scoreClass + '">' + score + '</span></td>' +
+            '<td>' + reasonCell + '</td>' +
+            '<td>' + statusBadge(statusCleanText(d.status)) + '</td>' +
+        '</tr>';
+        if (d.qualityScore != null) { sum += d.qualityScore; scored++; }
+    });
+    tbody.innerHTML = html;
+    const avg = scored ? (sum / scored).toFixed(1) : '-';
+    if (summary) summary.textContent = '共 ' + list.length + ' 条 ｜ 平均 AI 辅助评分 ' + avg;
+}
+
+// 智能分类页切换数据文件时联动加载已清洗记录
+function onCleanTitleChange() {
+    const titleId = $('#cleanTitleId').value;
+    loadCleanedRecords(titleId);
 }
 
 async function startCleaning() {

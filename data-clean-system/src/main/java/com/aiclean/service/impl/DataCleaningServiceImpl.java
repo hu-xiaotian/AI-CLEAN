@@ -2410,7 +2410,10 @@ public class DataCleaningServiceImpl implements DataCleaningService {
      */
     private double aiScoreClassification(CleanedDataEntity cleanedData, CategoryEntity matchedCategory,
                                           List<CategoryStandardLibrary.Candidate> candidates) {
-        return aiDetect(cleanedData, matchedCategory, candidates).score;
+        AiDetectResult result = aiDetect(cleanedData, matchedCategory, candidates);
+        // 记录 AI 分类的理由描述，供智能分类页展示
+        cleanedData.setAiReason(result.reason);
+        return result.score;
     }
 
     /**

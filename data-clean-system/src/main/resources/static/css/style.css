@@ -887,6 +887,18 @@ select.form-input { cursor: pointer; appearance: none; background-image: url("da
 .record-count { font-size: 12px; color: var(--text-secondary); }
 .table-container { overflow-x: auto; }
 
+/* AI 分类理由单元格：限制高度，超出滚动 */
+.reason-cell {
+    max-height: 64px;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.table-container { overflow-x: auto; }
+
 /* -------- View Info -------- */
 .view-info-grid {
     display: grid;

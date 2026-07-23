@@ -363,6 +363,7 @@ CREATE TABLE `cleaned_data` (
                                 `is_duplicate` TINYINT DEFAULT 0 COMMENT '是否重复数据（同文件内指纹相同）: 0-否,1-是',
                                 `status` VARCHAR(50) DEFAULT 'draft' COMMENT '状态',
                                 `quality_score` DOUBLE DEFAULT 0 COMMENT '质量评分',
+                                `ai_reason` TEXT COMMENT 'AI 辅助分类理由描述（启用 AI 辅助评分时记录）',
                                 `completeness_score` DOUBLE DEFAULT 0 COMMENT '完整性评分',
                                 `accuracy_score` DOUBLE DEFAULT 0 COMMENT '准确度评分',
                                 `review_comment` VARCHAR(200) COMMENT '审核备注',

@@ -160,7 +160,7 @@
                         </div>
                     </div>
                     <div class="form-group">
-                        <label>AI 辅助评分</label>
+                        <label>AI 辅助分类</label>
                         <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
                             <input type="checkbox" id="ocUseAi">
                             <span style="font-size:13px">启用 AI</span>
@@ -296,7 +296,7 @@
             <p class="desc">分类匹配 → 质量评分 → 审核任务创建</p>
             <div class="card">
                 <div class="form-grid">
-                    <div class="form-group"><label>数据文件</label><select id="cleanTitleId" class="form-input"></select></div>
+                    <div class="form-group"><label>数据文件</label><select id="cleanTitleId" class="form-input" onchange="onCleanTitleChange()"></select></div>
                     <div class="form-group">
                         <label>AI 辅助评分</label>
                         <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
@@ -360,6 +360,30 @@
                         </thead>
                         <tbody id="cleanLiveTbody">
                             <tr><td colspan="7" class="empty-hint">等待清洗数据…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card" id="cleanedRecordsCard" style="display:none">
+                <h3 style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+                    <span>清洗结果记录</span>
+                    <span id="cleanedRecordsSummary" class="record-count"></span>
+                </h3>
+                <p class="desc">已清洗完成的数据记录，AI 辅助评分（质量评分）越高表示越符合标准分类体系。</p>
+                <div class="table-scroll mt-2" style="max-height:560px;overflow-y:auto">
+                    <table class="data-table" id="cleanedRecordsTable">
+                        <thead><tr>
+                            <th style="width:40px">#</th>
+                            <th>物料代码</th>
+                            <th>物料名称</th>
+                            <th>分类名称</th>
+                            <th>分类编码</th>
+                            <th>AI辅助评分</th>
+                            <th style="min-width:220px">AI分类理由</th>
+                            <th>状态</th>
+                        </tr></thead>
+                        <tbody id="cleanedRecordsTbody">
+                            <tr><td colspan="8" class="empty-hint">请选择数据文件并点击「开始清洗」，或执行一键清洗后查看</td></tr>
                         </tbody>
                     </table>
                 </div>

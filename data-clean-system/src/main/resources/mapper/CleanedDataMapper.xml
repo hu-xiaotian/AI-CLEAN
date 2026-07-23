@@ -21,6 +21,7 @@
         <result column="unit" property="unit"/>
         <result column="status" property="status"/>
         <result column="quality_score" property="qualityScore"/>
+        <result column="ai_reason" property="aiReason"/>
         <result column="completeness_score" property="completenessScore"/>
         <result column="accuracy_score" property="accuracyScore"/>
         <result column="review_comment" property="reviewComment"/>
@@ -137,6 +138,9 @@
             <if test="condition.reviewed != null and condition.reviewed == true">
                 AND reviewed_at IS NOT NULL
             </if>
+            <if test="condition.tempDataTitleId != null">
+                AND td.temp_data_title_id = #{condition.tempDataTitleId}
+            </if>
         </if>
     </sql>
 
@@ -144,6 +148,7 @@
         SELECT cd.*, mdc.category_name
         FROM cleaned_data cd
         LEFT JOIN main_data_category mdc ON cd.category_id = mdc.id
+        LEFT JOIN temp_data td ON cd.temp_data_id = td.id
         <include refid="whereCondition"/>
         ORDER BY
         <choose>
@@ -158,7 +163,8 @@
     </select>
 
     <select id="countByConditions" resultType="java.lang.Long">
-        SELECT COUNT(*) FROM cleaned_data
+        SELECT COUNT(*) FROM cleaned_data cd
+        LEFT JOIN temp_data td ON cd.temp_data_id = td.id
         <include refid="whereCondition"/>
     </select>
 

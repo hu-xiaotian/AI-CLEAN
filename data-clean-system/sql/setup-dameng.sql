@@ -336,6 +336,7 @@ CREATE TABLE cleaned_data (
     unit VARCHAR2(50),
     status VARCHAR2(50) DEFAULT 'draft',
     quality_score DOUBLE DEFAULT 0,
+    ai_reason CLOB COMMENT 'AI 辅助分类理由描述（启用 AI 辅助评分时记录）',
     completeness_score DOUBLE DEFAULT 0,
     accuracy_score DOUBLE DEFAULT 0,
     review_comment CLOB,

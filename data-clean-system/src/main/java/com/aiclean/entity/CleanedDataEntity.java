@@ -112,6 +112,11 @@ public class CleanedDataEntity extends BaseEntity {
     private Double qualityScore;
     
     /**
+     * AI 辅助分类理由描述（启用 AI 辅助评分时，大模型对分类合理性的说明）
+     */
+    private String aiReason;
+    
+    /**
      * 完整性评分
      */
     private Double completenessScore;
