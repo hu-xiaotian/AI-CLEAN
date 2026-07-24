@@ -311,6 +311,7 @@ function ocDoCleaning(titleId, ruleId, useAi) {
                     if (msg.type === 'start' || msg.type === 'progress') started = true;
                     ocUpdateCleanProgress(msg);
                     if (msg.type === 'complete') finish(true);
+                    else if (msg.type === 'stopped') finish(false, '已手动停止清洗');
                     else if (msg.type === 'error') finish(false, '清洗异常终止');
                 });
             }, () => { /* WebSocket 失败，依赖轮询兜底 */ });
@@ -497,6 +498,7 @@ async function runOneClickClean() {
 
     ocRunning = true;
     $('#ocStartBtn').disabled = true;
+    $('#ocStopBtn').disabled = false;
     resetOcUI();
 
     // 启用 AI（「启用 AI」勾选）时，弹出全屏 AI 清洗特效动态图
@@ -548,12 +550,29 @@ async function runOneClickClean() {
     } finally {
         ocRunning = false;
         $('#ocStartBtn').disabled = false;
+        $('#ocStopBtn').disabled = true;
         if (ocProgressCard && ocProgressCard.classList.contains('ai-active')) AiFx.deactivate(ocProgressCard);
         // 关闭 AI 清洗特效弹窗（成功后稍作停留展示 100% 完成态）
         if (ocSuccess) setTimeout(() => AiCleanOverlay.hide(), 1200);
         else AiCleanOverlay.hide();
         if (ocPollTimer) { clearInterval(ocPollTimer); ocPollTimer = null; }
         if (ocStompClient) { try { ocStompClient.disconnect(); } catch (e) {} ocStompClient = null; }
+    }
+}
+
+// 停止一键清洗（调用后端停止清洗接口）
+async function stopOneClickClean() {
+    if (!ocRunning) { showToast('当前没有正在执行的清洗任务', 'warning'); return; }
+    const titleId = $('#ocTitleId').value;
+    if (!titleId) { showToast('未选择数据文件', 'warning'); return; }
+    if (!confirm('确定要停止当前的清洗任务吗？已清洗的数据将保留。')) return;
+    try {
+        const res = await fetch(API + `/cleaning/stop/${titleId}`, { method: 'POST' });
+        const data = await safeJson(res, '停止清洗');
+        if (data.code !== 200) throw new Error(data.msg || '停止失败');
+        showToast('已发送停止信号，任务将在处理完当前分片后停止', 'success');
+    } catch (e) {
+        showToast('停止失败: ' + e.message, 'error');
     }
 }
 

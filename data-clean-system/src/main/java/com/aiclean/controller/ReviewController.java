@@ -1,6 +1,7 @@
 package com.aiclean.controller;
 
 import com.aiclean.common.R;
+import com.aiclean.common.UserContext;
 import com.aiclean.entity.ReviewTaskEntity;
 import com.aiclean.entity.enums.ReviewTaskType;
 import com.aiclean.entity.enums.TaskPriority;
@@ -78,8 +79,10 @@ public class ReviewController {
      */
     @GetMapping("/tasks/my-pending")
     @Operation(summary = "获取我的待办任务", description = "获取当前用户的待办任务")
-    public R<List<ReviewTaskEntity>> getMyPendingTasks(@RequestParam("userId") String userId) {
+    public R<List<ReviewTaskEntity>> getMyPendingTasks() {
         try {
+            String userId = UserContext.getUsername();
+            if (userId == null) return R.unauthorized("未登录");
             List<ReviewTaskEntity> tasks = reviewService.getMyPendingTasks(userId);
             return R.success("待办任务获取成功", tasks);
         } catch (Exception e) {
@@ -95,9 +98,10 @@ public class ReviewController {
     @Operation(summary = "分配任务", description = "将任务分配给指定用户")
     public R<ReviewTaskEntity> assignTask(
             @PathVariable Long id,
-            @RequestParam("assignee") String assignee,
-            @RequestParam("assigner") String assigner) {
+            @RequestParam("assignee") String assignee) {
         try {
+            String assigner = UserContext.getUsername();
+            if (assigner == null) return R.unauthorized("未登录");
             ReviewTaskEntity task = reviewService.assignTask(id, assignee, assigner);
             return R.success("任务分配成功", task);
         } catch (Exception e) {
@@ -111,10 +115,10 @@ public class ReviewController {
      */
     @PutMapping("/tasks/{id}/start")
     @Operation(summary = "开始处理任务", description = "开始处理指定任务")
-    public R<ReviewTaskEntity> startTask(
-            @PathVariable Long id,
-            @RequestParam("userId") String userId) {
+    public R<ReviewTaskEntity> startTask(@PathVariable Long id) {
         try {
+            String userId = UserContext.getUsername();
+            if (userId == null) return R.unauthorized("未登录");
             ReviewTaskEntity task = reviewService.startTask(id, userId);
             return R.success("任务开始处理", task);
         } catch (Exception e) {
@@ -130,10 +134,11 @@ public class ReviewController {
     @Operation(summary = "完成任务", description = "完成指定任务")
     public R<ReviewTaskEntity> completeTask(
             @PathVariable Long id,
-            @RequestParam("userId") String userId,
             @RequestParam("resolution") String resolution,
             @RequestParam("comment") String comment) {
         try {
+            String userId = UserContext.getUsername();
+            if (userId == null) return R.unauthorized("未登录");
             ReviewTaskEntity task = reviewService.completeTask(id, userId, resolution, comment);
             return R.success("任务完成成功", task);
         } catch (Exception e) {
@@ -149,9 +154,10 @@ public class ReviewController {
     @Operation(summary = "取消任务", description = "取消指定任务")
     public R<ReviewTaskEntity> cancelTask(
             @PathVariable Long id,
-            @RequestParam("userId") String userId,
             @RequestParam("reason") String reason) {
         try {
+            String userId = UserContext.getUsername();
+            if (userId == null) return R.unauthorized("未登录");
             ReviewTaskEntity task = reviewService.cancelTask(id, userId, reason);
             return R.success("任务取消成功", task);
         } catch (Exception e) {

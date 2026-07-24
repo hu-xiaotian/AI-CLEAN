@@ -14,6 +14,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -956,26 +957,34 @@ public class ExportServiceImpl implements ExportService {
     }
 
     /**
-     * 生成Excel文件
+     * 生成Excel文件（使用 SXSSFWorkbook 流式写入，避免大文件 OOM）
      */
     private void generateExcelFile(String filePath, QueryWrapper<CleanedDataEntity> queryWrapper,
                                   List<String> includeColumns, ExportBatchEntity batch) throws IOException {
-        try (Workbook workbook = new XSSFWorkbook()) {
+        // 预加载分类 ID -> 名称映射（一次查询替代 N 次 selectById）
+        Map<Long, String> categoryNameCache = Collections.emptyMap();
+        if (includeColumns.contains("category_name")) {
+            List<CategoryEntity> allCategories = categoryMapper.selectList(null);
+            categoryNameCache = new HashMap<>();
+            for (CategoryEntity cat : allCategories) {
+                categoryNameCache.put(cat.getId(), cat.getCategoryName());
+            }
+        }
+
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook(200)) { // 内存中保留 200 行窗口
             Sheet sheet = workbook.createSheet("数据导出");
 
             // 创建表头
             Row headerRow = sheet.createRow(0);
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerStyle.setFont(headerFont);
+            headerStyle.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+            headerStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
             for (int i = 0; i < includeColumns.size(); i++) {
                 Cell cell = headerRow.createCell(i);
                 cell.setCellValue(getFieldDisplayName(includeColumns.get(i)));
-                
-                // 设置表头样式
-                CellStyle headerStyle = workbook.createCellStyle();
-                Font headerFont = workbook.createFont();
-                headerFont.setBold(true);
-                headerStyle.setFont(headerFont);
-                headerStyle.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
-                headerStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
                 cell.setCellStyle(headerStyle);
             }
 
@@ -997,7 +1006,7 @@ public class ExportServiceImpl implements ExportService {
                     Row dataRow = sheet.createRow(exportedRecords + 1);
                     for (int i = 0; i < includeColumns.size(); i++) {
                         Cell cell = dataRow.createCell(i);
-                        String fieldValue = getFieldValue(data, includeColumns.get(i));
+                        String fieldValue = getFieldValueCached(data, includeColumns.get(i), categoryNameCache);
                         cell.setCellValue(fieldValue != null ? fieldValue : "");
                     }
                     exportedRecords++;
@@ -1010,15 +1019,11 @@ public class ExportServiceImpl implements ExportService {
                 page++;
             }
 
-            // 自动调整列宽
-            for (int i = 0; i < includeColumns.size(); i++) {
-                sheet.autoSizeColumn(i);
-            }
-
             // 保存文件
             try (FileOutputStream outputStream = new FileOutputStream(filePath)) {
                 workbook.write(outputStream);
             }
+            workbook.dispose(); // 清理 SXSSF 临时文件
 
             batch.setTotalRecords(exportedRecords);
             log.info("Excel文件生成完成, 路径: {}, 记录数: {}", filePath, exportedRecords);
@@ -1225,6 +1230,16 @@ public class ExportServiceImpl implements ExportService {
             log.warn("获取字段值失败, 字段: {}, 数据ID: {}", field, data.getId(), e);
             return null;
         }
+    }
+
+    /**
+     * 获取字段值（带分类名缓存，消除 N+1 查询）
+     */
+    private String getFieldValueCached(CleanedDataEntity data, String field, Map<Long, String> categoryNameCache) {
+        if ("category_name".equals(field)) {
+            return data.getCategoryId() != null ? categoryNameCache.get(data.getCategoryId()) : null;
+        }
+        return getFieldValue(data, field);
     }
 
     // =============== 接口方法实现（部分简化） ===============

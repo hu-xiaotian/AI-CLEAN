@@ -7,9 +7,9 @@ spring:
   datasource:
     # 开发环境使用MySQL (生产环境使用达梦)
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&sessionVariables=transaction_isolation='READ-COMMITTED'
-    username: root
-    password: Mysql123456.
+    url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&sessionVariables=transaction_isolation='READ-COMMITTED'}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:Mysql123456.}
     # 达梦数据库配置示例:
 #    driver-class-name: dm.jdbc.driver.DmDriver
 #    url: jdbc:dm://121.229.145.117:5236?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
@@ -205,11 +205,12 @@ app:
     # 兼容 OpenAI 的 Chat Completions 接口地址，例如：
     #   DeepSeek:  https://api.deepseek.com/v1
     #   通义千问:  http://203.83.238.245:8000/v1
-    base-url: http://203.83.238.245:8000/v1
-    # API 密钥（注意：密钥含 # 号，必须用引号包裹，否则 YAML 会把 # 当作注释导致密钥被截断）
-    api-key: "BYeIf#SGdmufoQLhT3"
+    base-url: ${AI_BASE_URL:http://203.83.238.245:8000/v1}
+    # API 密钥（密钥含 # 号；Spring 占位符默认值里的 # 不是 YAML 注释，无需引号包裹，
+    # 否则引号会作为密钥的一部分发给 AI 服务导致 401。如需外部注入请用环境变量 AI_API_KEY）
+    api-key: ${AI_API_KEY:BYeIf#SGdmufoQLhT3}
     # 模型名称，例如 deepseek-chat / qwen-plus 等
-    model: Qwen2.5-7B
+    model: ${AI_MODEL:Qwen2.5-7B}
     # 采样温度（0~1，越低越稳定）
     temperature: 0.2
     # 最大生成 token 数
@@ -344,10 +345,10 @@ app:
   security:
     # JWT配置
     jwt:
-      # HS256 签名密钥（长度需 >= 32 字节，生产环境请替换为更安全的随机值）
-      secret: ai-clean-secret-key-2024-jwt-hs256-signing-key-please-change-in-prod
+      # HS256 签名密钥（长度需 >= 32 字节，生产环境请通过环境变量 JWT_SECRET 注入随机值）
+      secret: ${JWT_SECRET:ai-clean-secret-key-2024-jwt-hs256-signing-key-please-change-in-prod}
       # 过期时间（毫秒），默认 24 小时
-      expiration: 86400000
+      expiration: ${JWT_EXPIRATION:86400000}
     # CORS配置
     cors:
       allowed-origins: "*"

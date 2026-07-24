@@ -130,6 +130,13 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     /** AI 提取进度缓存（titleId -> 进度信息），供 WebSocket 与轮询兜底使用 */
     private final Map<Long, Map<String, Object>> aiExtractProgressMap = new ConcurrentHashMap<>();
 
+    /** 每个清洗任务的停止信号，key = titleId，供 stopCleaning() 外部中止异步任务 */
+    private final ConcurrentHashMap<Long, AtomicBoolean> cleaningStopFlags = new ConcurrentHashMap<>();
+
+    /** 上次推送清洗进度的时间戳（用于 WebSocket 节流，避免每行都推送） */
+    private final ConcurrentHashMap<Long, Long> lastProgressPushTime = new ConcurrentHashMap<>();
+    private static final long PROGRESS_THROTTLE_MS = 500; // 每 500ms 最多推送一次进度
+
     // ==================== Excel导入 ====================
 
     @Override
@@ -413,6 +420,20 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             empty.put("progressPercent", 0);
             return empty;
         }
+        // 已完成超过 5 分钟的条目自动清理，防止内存泄漏
+        Object completedAt = progress.get("_completedAt");
+        if (completedAt != null && System.currentTimeMillis() - (Long) completedAt > 5 * 60 * 1000) {
+            aiExtractProgressMap.remove(titleId);
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("type", "idle");
+            empty.put("titleId", titleId);
+            empty.put("current", 0);
+            empty.put("total", 0);
+            empty.put("successCount", 0);
+            empty.put("errorCount", 0);
+            empty.put("progressPercent", 0);
+            return empty;
+        }
         return progress;
     }
 
@@ -670,6 +691,10 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         msg.put("progressPercent", total > 0 ? (int) ((double) current / total * 100) : 0);
         msg.put("timestamp", System.currentTimeMillis());
         if (message != null) msg.put("message", message);
+        // 记录完成时间，供 getAiExtractProgress 自动清理过期条目（防止内存泄漏）
+        if ("complete".equals(type) || "error".equals(type)) {
+            msg.put("_completedAt", System.currentTimeMillis());
+        }
         aiExtractProgressMap.put(titleId, msg);
         try {
             messagingTemplate.convertAndSend("/topic/ai-extract/" + titleId, JSON.toJSONString(msg));
@@ -833,7 +858,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 List<Double> allScores = Collections.synchronizedList(new ArrayList<>());
                 AtomicInteger successCount = new AtomicInteger(0);
                 AtomicInteger errorCount = new AtomicInteger(0);
-                AtomicBoolean stopped = new AtomicBoolean(false);
+                // 使用类级别 stopFlag，使 stopCleaning() 可从外部中止本异步任务
+                AtomicBoolean stopped = cleaningStopFlags.computeIfAbsent(titleId, k -> new AtomicBoolean(false));
+                stopped.set(false); // 重置，防止上次残留
 
                 sendCleaningProgress(titleId, "start", 0, totalCount, null, 0, 0);
 
@@ -858,7 +885,13 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                                         allCleaned.add(cleaned);
                                         allScores.add(cleaned.getQualityScore() != null ? cleaned.getQualityScore() : 0.0);
                                         int cur = successCount.incrementAndGet();
-                                        sendCleaningProgress(titleId, "progress", cur, totalCount, cleaned, cur, errorCount.get());
+                                        // WebSocket 节流：每 500ms 最多推送一次，最后一条必推
+                                        long now = System.currentTimeMillis();
+                                        Long lastPush = lastProgressPushTime.get(titleId);
+                                        if (lastPush == null || now - lastPush >= PROGRESS_THROTTLE_MS || cur == totalCount) {
+                                            sendCleaningProgress(titleId, "progress", cur, totalCount, null, cur, errorCount.get());
+                                            lastProgressPushTime.put(titleId, now);
+                                        }
                                     } catch (Exception e) {
                                         localErr.incrementAndGet();
                                         int cur = errorCount.incrementAndGet();
@@ -919,11 +952,18 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 // 发送完成消息
                 sendCleaningProgress(titleId, "complete", totalCount, totalCount, null, successCount.get(), errorCount.get());
 
+                // 清理停止信号和节流时间戳
+                cleaningStopFlags.remove(titleId);
+                lastProgressPushTime.remove(titleId);
+
                 log.info("数据清洗完成，成功: {}, 失败: {}", successCount.get(), errorCount.get());
             } catch (Exception e) {
                 log.error("数据清洗任务执行失败，表头ID: {}", titleId, e);
                 // 推送错误消息
                 sendCleaningProgress(titleId, "error", 0, 0, null, 0, 0);
+                // 清理停止信号和节流时间戳
+                cleaningStopFlags.remove(titleId);
+                lastProgressPushTime.remove(titleId);
                 try {
                     TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
                     if (titleEntity != null) {
@@ -1103,11 +1143,21 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Override
     public void stopCleaning(Long titleId) {
         log.info("停止清洗任务，表头ID: {}", titleId);
+        // 1. 发送停止信号给正在运行的异步任务
+        AtomicBoolean flag = cleaningStopFlags.get(titleId);
+        if (flag != null) {
+            flag.set(true);
+            log.info("已发送停止信号，titleId: {}", titleId);
+        }
+        // 2. 更新表头状态
         TempDataTitleEntity title = tempDataTitleMapper.selectById(titleId);
-        if (title != null && DataStatus.needsReview(title.getStatus())) {
+        if (title != null && (DataStatus.PROCESSING.name().equals(title.getStatus())
+                || DataStatus.needsReview(title.getStatus()))) {
             title.setStatus(DataStatus.REJECTED);
             tempDataTitleMapper.updateById(title);
         }
+        // 3. 通知前端
+        sendCleaningProgress(titleId, "stopped", 0, 0, null, 0, 0);
     }
 
     @Override
@@ -2303,7 +2353,14 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         for (int i = 1; i <= 10; i++) {
             if (fullDescCol.equals(titleEntity.getColTitle(i))) return i;
         }
-        return 5; // 默认第5列
+        // 不再静默回退第5列，返回 -1 由调用方决定降级策略
+        log.warn("未找到列 '{}' 对应的索引，titleId: {}，可用列标题: [{}]",
+                fullDescCol, titleEntity.getId(),
+                java.util.stream.IntStream.rangeClosed(1, 10)
+                    .mapToObj(i -> titleEntity.getColTitle(i))
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.joining(", ")));
+        return -1;
     }
 
     private String getColByTitle(TempDataTitleEntity title, String keyword, TempDataEntity tempData, int defaultIdx) {

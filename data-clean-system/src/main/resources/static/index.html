@@ -166,7 +166,10 @@
                             <span style="font-size:13px">启用 AI</span>
                         </div>
                     </div>
-                    <div class="form-group"><button class="btn btn-primary" id="ocStartBtn" onclick="runOneClickClean()">开始一键清洗</button></div>
+                    <div class="form-group">
+                        <button class="btn btn-primary" id="ocStartBtn" onclick="runOneClickClean()">开始一键清洗</button>
+                        <button class="btn btn-danger" id="ocStopBtn" onclick="stopOneClickClean()" disabled>停止清洗</button>
+                    </div>
                 </div>
 <!--                <p class="mt-2" style="font-size:12px;color:var(&#45;&#45;text-secondary)">提示：选择「AI 智能提取」需先在 application.yml 配置并启用 app.ai（base-url / api-key / model），且每行数据需能确定分类编码（已执行智能分类或设置分类列）并在标准字段表头中有对应字段。</p>-->
             </div>
@@ -904,36 +907,36 @@
                     <tbody id="unmatchTbody"></tbody>
                 </table>
             </div>
-            <div id="failureTabDup" class="failure-tab" style="display:none">
-                <div class="table-scroll" style="max-height:440px;overflow-y:auto">
-                    <table class="data-table">
-                        <thead><tr>
-                            <th style="width:60px">ID</th>
-                            <th style="width:120px">物料代码</th>
-                            <th>物料名称</th>
-                            <th style="width:120px">分类编码</th>
-                            <th>行指纹(数据血缘)</th>
-                            <th style="width:80px">操作</th>
-                        </tr></thead>
-                        <tbody id="dupTbody"></tbody>
-                    </table>
-                </div>
+        </div>
+        <div id="failureTabDup" class="failure-tab" style="display:none">
+            <div class="table-scroll" style="max-height:440px;overflow-y:auto">
+                <table class="data-table">
+                    <thead><tr>
+                        <th style="width:60px">ID</th>
+                        <th style="width:120px">物料代码</th>
+                        <th>物料名称</th>
+                        <th style="width:120px">分类编码</th>
+                        <th>行指纹(数据血缘)</th>
+                        <th style="width:80px">操作</th>
+                    </tr></thead>
+                    <tbody id="dupTbody"></tbody>
+                </table>
             </div>
-            <div id="failureTabLowConf" class="failure-tab" style="display:none">
-                <div class="table-scroll" style="max-height:440px;overflow-y:auto">
-                    <table class="data-table">
-                        <thead><tr>
-                            <th style="width:60px">ID</th>
-                            <th>来源文本(属性拆分列)</th>
-                            <th style="width:140px">原分类</th>
-                            <th style="width:140px">推荐分类</th>
-                            <th style="width:90px">置信度</th>
-                            <th style="width:80px">质量分</th>
-                            <th style="width:80px">操作</th>
-                        </tr></thead>
-                        <tbody id="lowConfTbody"></tbody>
-                    </table>
-                </div>
+        </div>
+        <div id="failureTabLowConf" class="failure-tab" style="display:none">
+            <div class="table-scroll" style="max-height:440px;overflow-y:auto">
+                <table class="data-table">
+                    <thead><tr>
+                        <th style="width:60px">ID</th>
+                        <th>来源文本(属性拆分列)</th>
+                        <th style="width:140px">原分类</th>
+                        <th style="width:140px">推荐分类</th>
+                        <th style="width:90px">置信度</th>
+                        <th style="width:80px">质量分</th>
+                        <th style="width:80px">操作</th>
+                    </tr></thead>
+                    <tbody id="lowConfTbody"></tbody>
+                </table>
             </div>
         </div>
     </div>

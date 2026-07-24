@@ -1,6 +1,7 @@
 package com.aiclean.controller;
 
 import com.aiclean.common.R;
+import com.aiclean.common.UserContext;
 import com.aiclean.entity.ExportBatchEntity;
 import com.aiclean.service.ExportService;
 import com.aiclean.vo.ExportRequestVO;
@@ -10,6 +11,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletResponse;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.OutputStream;
+import java.net.URLEncoder;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -86,10 +92,11 @@ public class ExportController {
     @GetMapping("/my-history")
     @Operation(summary = "获取我的导出历史", description = "获取当前用户的导出历史")
     public R<List<ExportBatchEntity>> getMyExportHistory(
-            @RequestParam(value = "userId") String userId,
             @RequestParam(value = "page", defaultValue = "1") Integer page,
             @RequestParam(value = "size", defaultValue = "20") Integer size) {
         try {
+            String userId = UserContext.getUsername();
+            if (userId == null) return R.unauthorized("未登录");
             List<ExportBatchEntity> history = exportService.getMyExportHistory(userId, page, size);
             return R.success("导出历史获取成功", history);
         } catch (Exception e) {
@@ -133,12 +140,40 @@ public class ExportController {
      */
     @GetMapping("/download/{batchId}")
     @Operation(summary = "下载导出文件", description = "下载指定批次的导出文件")
-    public void downloadExportFile(@PathVariable Long batchId) {
+    public void downloadExportFile(@PathVariable Long batchId, HttpServletResponse response) {
         try {
-            // 这里需要实现文件下载逻辑
             String filePath = exportService.downloadExportFile(batchId);
-            // 实际实现中这里会返回文件流
-            log.info("下载文件: {}", filePath);
+            if (filePath == null) {
+                response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+                response.setContentType("application/json;charset=UTF-8");
+                response.getWriter().write("{\"code\":404,\"msg\":\"导出文件不存在或已过期\"}");
+                return;
+            }
+
+            File file = new File(filePath);
+            if (!file.exists()) {
+                response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+                response.setContentType("application/json;charset=UTF-8");
+                response.getWriter().write("{\"code\":404,\"msg\":\"文件已被清理\"}");
+                return;
+            }
+
+            // 设置下载响应头
+            String fileName = URLEncoder.encode(file.getName(), "UTF-8").replaceAll("\\+", "%20");
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
+            response.setContentLengthLong(file.length());
+
+            // 流式写入
+            try (FileInputStream fis = new FileInputStream(file);
+                 OutputStream os = response.getOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = fis.read(buffer)) != -1) {
+                    os.write(buffer, 0, bytesRead);
+                }
+                os.flush();
+            }
         } catch (Exception e) {
             log.error("下载导出文件失败", e);
             throw new RuntimeException("下载导出文件失败: " + e.getMessage());
