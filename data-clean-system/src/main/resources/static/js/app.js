@@ -253,12 +253,16 @@ function setOcStep(name, state) {
         error: '失败',
     };
     if (statusEl) statusEl.textContent = textMap[state] || state;
+    // 同步到 AI 清洗特效弹窗
+    if (AiCleanOverlay.visible) AiCleanOverlay.setStep(name, state);
 }
 
 function setOcOverall(percent, text) {
     $('#ocOverallFill').style.width = percent + '%';
     $('#ocOverallFill').textContent = percent + '%';
     if (text) $('#ocOverallText').textContent = text;
+    // 同步到 AI 清洗特效弹窗
+    if (AiCleanOverlay.visible) AiCleanOverlay.setProgress(percent, text);
 }
 
 function resetOcUI() {
@@ -495,14 +499,18 @@ async function runOneClickClean() {
     $('#ocStartBtn').disabled = true;
     resetOcUI();
 
+    // 启用 AI（「启用 AI」勾选）时，弹出全屏 AI 清洗特效动态图
+    const useAi = $('#ocUseAi') && $('#ocUseAi').checked;
+    if (useAi) AiCleanOverlay.show();
+
     // AI 介入（启用 AI 评分 或 AI 智能提取）时，整体进度卡片启动动态 AI 特效
-    const ocAiInvolved = ($('#ocUseAi') && $('#ocUseAi').checked) || extractMode === 'ai';
+    const ocAiInvolved = useAi || extractMode === 'ai';
     const ocProgressCard = $('#ocOverallFill') ? $('#ocOverallFill').closest('.card') : null;
     if (ocAiInvolved && ocProgressCard) AiFx.activate(ocProgressCard);
 
+    let ocSuccess = false;
     try {
         // 步骤一：智能分类
-        const useAi = $('#ocUseAi') && $('#ocUseAi').checked;
         setOcStep('clean', 'running');
         setOcOverall(5, '正在执行：智能分类');
         await ocDoCleaning(titleId, ruleId, useAi);
@@ -523,10 +531,11 @@ async function runOneClickClean() {
         setOcStep('map', 'done');
         setOcOverall(100, '全部完成');
         showToast('一键数据清洗全部完成！');
+        ocSuccess = true;
 
         // 清洗完成：自动跳转到「智能分类」页，展示清洗记录与 AI 辅助评分结果
         ocPendingTitleId = titleId;
-        ocPendingAiCheck = ($('#ocUseAi') && $('#ocUseAi').checked);
+        ocPendingAiCheck = useAi;
         switchPage('clean');
     } catch (e) {
         // 标记当前进行中的步骤为失败
@@ -540,6 +549,9 @@ async function runOneClickClean() {
         ocRunning = false;
         $('#ocStartBtn').disabled = false;
         if (ocProgressCard && ocProgressCard.classList.contains('ai-active')) AiFx.deactivate(ocProgressCard);
+        // 关闭 AI 清洗特效弹窗（成功后稍作停留展示 100% 完成态）
+        if (ocSuccess) setTimeout(() => AiCleanOverlay.hide(), 1200);
+        else AiCleanOverlay.hide();
         if (ocPollTimer) { clearInterval(ocPollTimer); ocPollTimer = null; }
         if (ocStompClient) { try { ocStompClient.disconnect(); } catch (e) {} ocStompClient = null; }
     }
@@ -5030,5 +5042,268 @@ const AiFx = {
             ctx.arc(x, y, 4.5, 0, Math.PI * 2);
             ctx.fill();
         }
+    }
+};
+
+/* ===== AI 清洗特效弹窗：全屏动态原型图 =====
+ * 启用 AI 后点击「开始一键清洗」弹出，描绘 AI 清洗进展与酷炫动态图。
+ * 进度/步骤由 setOcOverall / setOcStep 自动同步。 */
+const AiCleanOverlay = {
+    el: null, canvas: null, ctx: null, raf: null,
+    t: 0, w: 0, h: 0, dpr: 1, cx: 0, cy: 0, R: 0,
+    nodes: [], stars: [], stream: [],
+    pct: 0, pctTarget: 0, visible: false, onResize: null,
+
+    show() {
+        if (this.visible) return;
+        this.visible = true;
+        this.el = document.getElementById('aiCleanOverlay');
+        this.canvas = document.getElementById('aiCleanCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.t = 0; this.pct = 0; this.pctTarget = 0;
+        const statusEl = document.getElementById('aiCleanStatus');
+        if (statusEl) statusEl.textContent = '正在初始化 AI 清洗引擎…';
+        this.el.classList.add('show');
+        this._init();
+        this._resize();
+        this.onResize = () => this._resize();
+        window.addEventListener('resize', this.onResize);
+        this._loop();
+    },
+
+    hide() {
+        if (!this.visible) return;
+        this.visible = false;
+        if (this.raf) cancelAnimationFrame(this.raf);
+        this.raf = null;
+        if (this.onResize) window.removeEventListener('resize', this.onResize);
+        if (this.el) this.el.classList.remove('show');
+    },
+
+    setProgress(pct, text) {
+        this.pctTarget = Math.max(0, Math.min(100, Math.round(pct)));
+        if (text) { const s = document.getElementById('aiCleanStatus'); if (s) s.textContent = text; }
+    },
+
+    setStep(name, state) {
+        const el = document.querySelector('#aiCleanOverlay .ai-step[data-step="' + name + '"]');
+        if (!el) return;
+        el.setAttribute('data-state', state);
+        const i = el.querySelector('i');
+        const map = { running: '进行中…', done: '已完成', waiting: '等待中', error: '失败' };
+        if (i && map[state]) i.textContent = map[state];
+    },
+
+    _init() {
+        // 神经网络节点
+        const cnt = 26;
+        this.nodes = [];
+        for (let i = 0; i < cnt; i++) {
+            this.nodes.push({
+                x: Math.random(), y: Math.random(),
+                vx: (Math.random() - 0.5) * 0.0006,
+                vy: (Math.random() - 0.5) * 0.0006,
+                r: 1.5 + Math.random() * 3
+            });
+        }
+        // 背景星点
+        this.stars = [];
+        for (let i = 0; i < 150; i++) {
+            this.stars.push({
+                x: Math.random(), y: Math.random(),
+                r: Math.random() * 1.6 + 0.2,
+                tw: Math.random() * 6.28,
+                sp: 0.02 + Math.random() * 0.05
+            });
+        }
+        this.stream = [];
+    },
+
+    _spawnStream() {
+        if (this.stream.length > 90) return;
+        const ang = Math.random() * Math.PI * 2;
+        const rad = Math.max(this.w, this.h) * 0.55;
+        this.stream.push({
+            x: this.cx + Math.cos(ang) * rad,
+            y: this.cy + Math.sin(ang) * rad,
+            ang: Math.atan2(this.cy - Math.sin(ang) * rad, this.cx - Math.cos(ang) * rad),
+            sp: 1.2 + Math.random() * 2.4
+        });
+    },
+
+    _resize() {
+        const r = this.el.getBoundingClientRect();
+        this.dpr = window.devicePixelRatio || 1;
+        this.w = Math.max(1, r.width);
+        this.h = Math.max(1, r.height);
+        this.canvas.width = this.w * this.dpr;
+        this.canvas.height = this.h * this.dpr;
+        this.canvas.style.width = this.w + 'px';
+        this.canvas.style.height = this.h + 'px';
+        this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        this.cx = this.w / 2;
+        this.cy = this.h / 2;
+        this.R = Math.max(90, Math.min(Math.min(this.w, this.h) * 0.17, 150));
+    },
+
+    _loop() {
+        this.raf = requestAnimationFrame(() => this._loop());
+        this.t++;
+        const ctx = this.ctx, w = this.w, h = this.h, t = this.t;
+        if (w < 2 || h < 2) return;
+        this.pct += (this.pctTarget - this.pct) * 0.06;
+        ctx.clearRect(0, 0, w, h);
+
+        const cx = this.cx, cy = this.cy, R = this.R;
+
+        // 背景星点（呼吸闪烁）
+        for (const s of this.stars) {
+            s.tw += s.sp;
+            const a = 0.2 + 0.55 * (0.5 + 0.5 * Math.sin(s.tw));
+            ctx.fillStyle = 'rgba(150,180,255,' + a + ')';
+            ctx.beginPath();
+            ctx.arc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 神经网络节点漂移
+        for (const n of this.nodes) {
+            n.x += n.vx; n.y += n.vy;
+            if (n.x < 0 || n.x > 1) n.vx *= -1;
+            if (n.y < 0 || n.y > 1) n.vy *= -1;
+            n.x = Math.max(0, Math.min(1, n.x));
+            n.y = Math.max(0, Math.min(1, n.y));
+        }
+        const maxD = Math.min(w, h) * 0.22;
+        for (let i = 0; i < this.nodes.length; i++) {
+            for (let j = i + 1; j < this.nodes.length; j++) {
+                const a = this.nodes[i], b = this.nodes[j];
+                const dx = (a.x - b.x) * w, dy = (a.y - b.y) * h;
+                const d = Math.hypot(dx, dy);
+                if (d < maxD) {
+                    const al = (1 - d / maxD) * 0.22;
+                    ctx.strokeStyle = 'rgba(80,140,255,' + al + ')';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(a.x * w, a.y * h);
+                    ctx.lineTo(b.x * w, b.y * h);
+                    ctx.stroke();
+                }
+            }
+        }
+        for (const n of this.nodes) {
+            const x = n.x * w, y = n.y * h;
+            const g = ctx.createRadialGradient(x, y, 0, x, y, n.r * 3);
+            g.addColorStop(0, 'rgba(120,170,255,0.9)');
+            g.addColorStop(1, 'rgba(120,170,255,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(x, y, n.r * 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 数据粒子被吸入核心（体现数据被 AI 清洗吸收）
+        if (t % 2 === 0) this._spawnStream();
+        this.stream = this.stream.filter(p => {
+            p.x += Math.cos(p.ang) * p.sp;
+            p.y += Math.sin(p.ang) * p.sp;
+            return Math.hypot(p.x - cx, p.y - cy) > R * 1.05;
+        });
+        for (const p of this.stream) {
+            const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 5);
+            g.addColorStop(0, 'rgba(6,220,255,0.95)');
+            g.addColorStop(1, 'rgba(6,220,255,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 核心外发光（随心跳脉动）
+        const pulse = 0.5 + 0.5 * Math.sin(t * 0.05);
+        const og = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.6);
+        og.addColorStop(0, 'rgba(40,90,230,' + (0.35 + 0.18 * pulse) + ')');
+        og.addColorStop(0.5, 'rgba(99,102,241,0.18)');
+        og.addColorStop(1, 'rgba(99,102,241,0)');
+        ctx.fillStyle = og;
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 旋转虚线环（多层）
+        for (let k = 0; k < 3; k++) {
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(t * 0.01 * (k % 2 ? -1 : 1) + k);
+            ctx.strokeStyle = 'rgba(120,180,255,' + (0.5 - k * 0.13) + ')';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 14]);
+            ctx.beginPath();
+            ctx.arc(0, 0, R * (0.7 + k * 0.22), 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // 六边形电路框
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(-t * 0.012);
+        ctx.strokeStyle = 'rgba(6,220,255,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i <= 6; i++) {
+            const a = i / 6 * Math.PI * 2;
+            const x = Math.cos(a) * R * 0.5, y = Math.sin(a) * R * 0.5;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+
+        // 旋转扫描扇区
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(t * 0.03);
+        ctx.fillStyle = 'rgba(6,220,255,0.10)';
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.arc(0, 0, R * 1.18, -0.35, 0.35);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        // 进度环
+        const prog = this.pct / 100;
+        const start = -Math.PI / 2;
+        const end = start + prog * Math.PI * 2;
+        ctx.strokeStyle = 'rgba(120,180,255,0.18)';
+        ctx.lineWidth = 8;
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 1.18, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(6,220,255,0.95)';
+        ctx.lineWidth = 8;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 1.18, start, end);
+        ctx.stroke();
+        ctx.lineCap = 'butt';
+
+        // 核心球体
+        const cg = ctx.createRadialGradient(cx, cy - R * 0.2, 0, cx, cy, R * 0.6);
+        cg.addColorStop(0, 'rgba(180,210,255,0.95)');
+        cg.addColorStop(0.4, 'rgba(70,130,255,0.9)');
+        cg.addColorStop(1, 'rgba(40,70,200,0.5)');
+        ctx.fillStyle = cg;
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 百分比文字
+        ctx.fillStyle = '#eaf2ff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '700 ' + Math.round(R * 0.42) + 'px Inter, system-ui, sans-serif';
+        ctx.fillText(Math.round(this.pct) + '%', cx, cy);
     }
 };

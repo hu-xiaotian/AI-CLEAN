@@ -718,6 +718,21 @@
     </main>
 </div>
 
+<!-- AI 清洗特效弹窗（启用 AI 时一键清洗触发） -->
+<div class="ai-clean-overlay" id="aiCleanOverlay">
+    <canvas class="ai-clean-canvas" id="aiCleanCanvas"></canvas>
+    <div class="ai-clean-hud">
+        <div class="ai-clean-title">AI 智能清洗引擎</div>
+        <div class="ai-clean-status" id="aiCleanStatus">正在初始化 AI 清洗引擎…</div>
+        <div class="ai-clean-steps">
+            <div class="ai-step" data-step="clean"><span class="ai-step-dot"></span><b>智能分类</b><i>等待中</i></div>
+            <div class="ai-step" data-step="extract"><span class="ai-step-dot"></span><b>属性提取</b><i>等待中</i></div>
+            <div class="ai-step" data-step="map"><span class="ai-step-dot"></span><b>属性补全</b><i>等待中</i></div>
+        </div>
+    </div>
+    <button class="ai-clean-close" id="aiCleanClose" type="button" onclick="AiCleanOverlay.hide()">关闭</button>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
