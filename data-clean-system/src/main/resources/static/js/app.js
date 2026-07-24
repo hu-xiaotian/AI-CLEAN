@@ -2452,7 +2452,14 @@ async function loadResultData(page) {
 
 async function downloadResultData() {
     const standardTitleId = $('#resultStandardTitleId').value;
-    if (!standardTitleId) { showToast('请先选择标准字段表头', 'warning'); return; }
+    const titleId = $('#resultTitleId').value;
+
+    // 未选择标准字段表头 -> 多 Sheet 导出（下拉框每一条生成一个 sheet）
+    if (!standardTitleId) {
+        if (!titleId) { showToast('请先选择数据文件', 'warning'); return; }
+        await downloadMultiSheetResult(titleId);
+        return;
+    }
 
     showLoading('正在下载数据…');
     try {
@@ -2548,6 +2555,49 @@ async function downloadResultData() {
         URL.revokeObjectURL(url);
 
         showToast('下载完成，共 ' + allResults.length + ' 条数据');
+    } catch (e) {
+        showToast('下载失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+// 多 Sheet 导出：未选标准字段表头时，后端为下拉框每条标准表头生成一张 sheet，合并为一个 .xlsx 下载
+async function downloadMultiSheetResult(titleId) {
+    showLoading('正在生成多表头下载文件…');
+    try {
+        const token = getToken();
+        const headers = {};
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        const res = await fetch(API + '/cleaning/result-data/export-multi-sheet?tempDataTitleId=' + encodeURIComponent(titleId), {
+            method: 'GET',
+            headers
+        });
+        if (res.status === 401) {
+            hideLoading();
+            redirectToLogin();
+            showToast('登录已过期，请重新登录', 'error');
+            return;
+        }
+        if (!res.ok) {
+            let errMsg = 'HTTP ' + res.status;
+            try { errMsg = (await res.text()) || errMsg; } catch (e) {}
+            throw new Error(errMsg);
+        }
+        const blob = await res.blob();
+        if (!blob || blob.size === 0) { throw new Error('导出内容为空，请确认该数据文件已关联标准字段表头并存在结果数据'); }
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const now = new Date();
+        const ts = now.getFullYear() + ('0' + (now.getMonth() + 1)).slice(-2) + ('0' + now.getDate()).slice(-2) + '_' +
+            ('0' + now.getHours()).slice(-2) + ('0' + now.getMinutes()).slice(-2) + ('0' + now.getSeconds()).slice(-2);
+        link.download = 'result_data_multi_' + titleId + '_' + ts + '.xlsx';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showToast('多表头下载完成');
     } catch (e) {
         showToast('下载失败: ' + e.message, 'error');
     } finally {

@@ -6,6 +6,7 @@ import com.aiclean.model.SearchCondition;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
@@ -94,6 +95,9 @@ public interface DataCleaningService {
 
     List<ResultDataEntity> searchResultData(SearchCondition condition);
     long countResultData(SearchCondition condition);
+
+    /** 导出多 Sheet 结果数据：数据文件下每个标准字段表头生成一张 sheet，表头为该标准表头的属性列，合并为一个 .xlsx 字节流 */
+    byte[] exportResultDataMultiSheet(Long tempDataTitleId) throws IOException;
 
     /** 查询某数据文件下填充失败的结果数据（未匹配标准表头） */
     List<FailedResultDataEntity> getFailedResults(Long titleId);

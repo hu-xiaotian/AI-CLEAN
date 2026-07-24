@@ -11,6 +11,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 
@@ -253,6 +258,39 @@ public class DataCleaningController {
     @Operation(summary = "统计结果数据数量")
     public R<Long> countResultData(@RequestBody SearchCondition condition) {
         return R.success(dataCleaningService.countResultData(condition));
+    }
+
+    @GetMapping("/result-data/export-multi-sheet")
+    @Operation(summary = "导出多 Sheet 结果数据", description = "未选标准字段表头时，将结果数据页面“标准字段表头”下拉框的每一条生成一个 sheet，每个 sheet 表头对应各自标准表头的属性列，最终合并为一个 .xlsx 下载")
+    public void exportResultDataMultiSheet(@RequestParam Long tempDataTitleId, HttpServletResponse response) {
+        try {
+            byte[] data = dataCleaningService.exportResultDataMultiSheet(tempDataTitleId);
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            String fileName = "result_data_multi_" + tempDataTitleId + "_" + timestamp + ".xlsx";
+            String encodedName = URLEncoder.encode(fileName, "UTF-8").replaceAll("\\+", "%20");
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=\"" + encodedName + "\"; filename*=UTF-8''" + encodedName);
+            response.setContentLength(data.length);
+            response.getOutputStream().write(data);
+            response.getOutputStream().flush();
+        } catch (IOException e) {
+            log.error("导出多表头结果数据失败", e);
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            writeError(response, "导出失败: " + e.getMessage());
+        } catch (Exception e) {
+            log.error("导出多表头结果数据失败", e);
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            writeError(response, "导出失败: " + e.getMessage());
+        }
+    }
+
+    private void writeError(HttpServletResponse response, String msg) {
+        try {
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write("{\"code\":500,\"msg\":\"" + msg + "\"}");
+        } catch (IOException ignored) {
+            // 忽略
+        }
     }
 
     @GetMapping("/failed-results")

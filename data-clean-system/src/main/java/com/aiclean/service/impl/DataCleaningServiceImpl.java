@@ -23,6 +23,7 @@ import com.aiclean.dto.ClassifyCheckDetail;
 import com.aiclean.dto.StatusCount;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,6 +35,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -2150,6 +2152,97 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     public long countResultData(SearchCondition condition) {
         Long count = resultDataMapper.countByConditions(condition);
         return count != null ? count : 0;
+    }
+
+    @Override
+    public byte[] exportResultDataMultiSheet(Long tempDataTitleId) throws IOException {
+        if (tempDataTitleId == null) {
+            throw new IllegalArgumentException("数据文件不能为空");
+        }
+        // 1) 取该数据文件关联的标准字段表头列表（即结果数据页面“标准字段表头”下拉框的内容）
+        List<StandardTitleEntity> standardTitles = getStandardTitlesByTitleId(tempDataTitleId);
+        if (standardTitles == null || standardTitles.isEmpty()) {
+            throw new IllegalStateException("该数据文件未关联任何标准字段表头，无法生成多表头导出文件");
+        }
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            CellStyle headerStyle = buildResultExportHeaderStyle(workbook);
+            int sheetSeq = 0;
+            for (StandardTitleEntity st : standardTitles) {
+                // 2) 每个标准字段表头 -> 一张 sheet，sheet 名取自分类名称/编码并追加 ID 保证唯一
+                String sheetName = sanitizeSheetName(st, sheetSeq++);
+                Sheet sheet = workbook.createSheet(sheetName);
+
+                // 表头：ID、状态 + 该标准表头各自的属性列（col_title_1..20）
+                List<String> headers = new ArrayList<>();
+                headers.add("ID");
+                headers.add("状态");
+                for (int i = 1; i <= 20; i++) {
+                    String t = st.getColTitle(i);
+                    headers.add(StrUtil.isNotBlank(t) ? t : ("列" + i));
+                }
+                Row headerRow = sheet.createRow(0);
+                for (int i = 0; i < headers.size(); i++) {
+                    Cell cell = headerRow.createCell(i);
+                    cell.setCellValue(headers.get(i));
+                    cell.setCellStyle(headerStyle);
+                }
+
+                // 3) 该标准表头 + 当前数据文件下的结果数据
+                SearchCondition cond = new SearchCondition();
+                cond.setStandardTitleId(st.getId());
+                cond.setTempDataTitleId(tempDataTitleId);
+                cond.setQueryAll(true);
+                List<ResultDataEntity> rows = resultDataMapper.searchByConditions(cond);
+
+                int r = 1;
+                for (ResultDataEntity rd : rows) {
+                    Row row = sheet.createRow(r++);
+                    row.createCell(0).setCellValue(rd.getId() != null ? String.valueOf(rd.getId()) : "");
+                    row.createCell(1).setCellValue(rd.getStatus() != null ? rd.getStatus() : "");
+                    for (int i = 1; i <= 20; i++) {
+                        String v = rd.getColData(i);
+                        row.createCell(1 + i).setCellValue(v != null ? v : "");
+                    }
+                }
+
+                // 轻量列宽自适应
+                for (int i = 0; i < headers.size(); i++) {
+                    sheet.autoSizeColumn(i);
+                }
+            }
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    /**
+     * 构建结果数据导出的表头样式（加粗 + 灰底）
+     */
+    private CellStyle buildResultExportHeaderStyle(XSSFWorkbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setBold(true);
+        style.setFont(font);
+        style.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        return style;
+    }
+
+    /**
+     * 生成合法的 Excel sheet 名称：去除非法字符、长度限制 31、追加标准表头 ID 保证唯一
+     */
+    private String sanitizeSheetName(StandardTitleEntity st, int index) {
+        String base = st.getCategoryName();
+        if (StrUtil.isBlank(base)) base = st.getCategoryCode();
+        if (StrUtil.isBlank(base)) base = "标准表头";
+        base = base.replaceAll("[\\\\/:*?\\[\\]]", "_").trim();
+        if (base.length() > 25) base = base.substring(0, 25);
+        String name = base + "_" + st.getId();
+        if (name.length() > 31) name = name.substring(0, 31);
+        return name;
     }
 
     @Override
