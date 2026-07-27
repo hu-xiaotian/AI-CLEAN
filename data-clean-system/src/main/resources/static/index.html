@@ -727,6 +727,25 @@
     <div class="ai-clean-hud">
         <div class="ai-clean-title">AI 智能清洗引擎</div>
         <div class="ai-clean-status" id="aiCleanStatus">正在初始化 AI 清洗引擎…</div>
+        <div class="ai-clean-subtitle" id="aiCleanSubtitle">AI 正在对原始数据执行智能识别与结构化处理，请稍候，全程无需人工干预</div>
+
+        <!-- 左侧：清洗流程说明 -->
+        <div class="ai-clean-info">
+            <div class="ai-panel-title">AI 清洗流程说明</div>
+            <ul class="ai-info-list">
+                <li data-step="clean"><span class="ai-info-ic">①</span><div><b>智能分类</b><em>依据语义将数据归入标准分类体系</em></div></li>
+                <li data-step="extract"><span class="ai-info-ic">②</span><div><b>属性提取</b><em>从原始文本中抽取关键字段与属性</em></div></li>
+                <li data-step="map"><span class="ai-info-ic">③</span><div><b>属性补全</b><em>对齐标准字段表头，补全缺失信息</em></div></li>
+            </ul>
+            <p class="ai-info-note">全程基于大模型推理，自动纠偏、去噪与标准化，清洗完成可在「智能分类」页查看逐条评分。</p>
+        </div>
+
+        <!-- 右侧：小贴士 -->
+        <div class="ai-clean-tips">
+            <div class="ai-panel-title">小贴士 · Tips</div>
+            <div class="ai-tips-body" id="aiCleanTips">提示：AI 清洗依赖 application.yml 中配置的模型服务，首次运行请确认 base-url / api-key 已正确填写。</div>
+        </div>
+
         <div class="ai-clean-steps">
             <div class="ai-step" data-step="clean"><span class="ai-step-dot"></span><b>智能分类</b><i>等待中</i></div>
             <div class="ai-step" data-step="extract"><span class="ai-step-dot"></span><b>属性提取</b><i>等待中</i></div>

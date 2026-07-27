@@ -535,9 +535,10 @@ async function runOneClickClean() {
         showToast('一键数据清洗全部完成！');
         ocSuccess = true;
 
-        // 清洗完成：自动跳转到「智能分类」页，展示清洗记录与 AI 辅助评分结果
+        // 清洗完成：自动跳转到「智能分类」页，展示清洗记录
+        // 注：启用 AI 仅执行「智能分类（AI 分类）」，不再自动触发「AI 辅助分类检测」
         ocPendingTitleId = titleId;
-        ocPendingAiCheck = useAi;
+        ocPendingAiCheck = false;
         switchPage('clean');
     } catch (e) {
         // 标记当前进行中的步骤为失败
@@ -5122,6 +5123,15 @@ const AiCleanOverlay = {
     t: 0, w: 0, h: 0, dpr: 1, cx: 0, cy: 0, R: 0,
     nodes: [], stars: [], stream: [],
     pct: 0, pctTarget: 0, visible: false, onResize: null,
+    tips: [
+        'AI 清洗依赖 application.yml 中配置的模型服务，首次运行请确认 base-url / api-key / model 已正确填写。',
+        '数据量越大，清洗耗时越长，当前进度会以百分比实时展示，请耐心等待。',
+        '若某条数据无法判定分类，系统会自动跳过并记录，不影响整体任务的继续执行。',
+        '属性补全基于已配置的标准字段表头，建议提前在「标准字段表头」中维护好标准模板。',
+        '清洗完成后可切换到「智能分类」页查看逐条评分与最终结果，并可手动复核修正。',
+        'AI 提取需要每行数据能确定分类编码（已执行智能分类或设置分类列），并在标准表头中有对应字段。'
+    ],
+    tipIdx: 0, tipTimer: null,
 
     show() {
         if (this.visible) return;
@@ -5132,11 +5142,18 @@ const AiCleanOverlay = {
         this.t = 0; this.pct = 0; this.pctTarget = 0;
         const statusEl = document.getElementById('aiCleanStatus');
         if (statusEl) statusEl.textContent = '正在初始化 AI 清洗引擎…';
+        const subEl = document.getElementById('aiCleanSubtitle');
+        if (subEl) subEl.textContent = 'AI 正在对原始数据执行智能识别与结构化处理，请稍候，全程无需人工干预';
+        // 重置流程说明高亮
+        document.querySelectorAll('#aiCleanOverlay .ai-info-list li').forEach(li => {
+            li.classList.remove('active', 'running');
+        });
         this.el.classList.add('show');
         this._init();
         this._resize();
         this.onResize = () => this._resize();
         window.addEventListener('resize', this.onResize);
+        this._startTips();
         this._loop();
     },
 
@@ -5145,6 +5162,7 @@ const AiCleanOverlay = {
         this.visible = false;
         if (this.raf) cancelAnimationFrame(this.raf);
         this.raf = null;
+        this._stopTips();
         if (this.onResize) window.removeEventListener('resize', this.onResize);
         if (this.el) this.el.classList.remove('show');
     },
@@ -5161,6 +5179,50 @@ const AiCleanOverlay = {
         const i = el.querySelector('i');
         const map = { running: '进行中…', done: '已完成', waiting: '等待中', error: '失败' };
         if (i && map[state]) i.textContent = map[state];
+
+        // 同步高亮左侧流程说明
+        const li = document.querySelector('#aiCleanOverlay .ai-info-list li[data-step="' + name + '"]');
+        if (li) {
+            if (state === 'running') { li.classList.add('active', 'running'); }
+            else if (state === 'done') { li.classList.add('active'); li.classList.remove('running'); }
+            else if (state === 'error') { li.classList.add('active', 'running'); }
+            else { li.classList.remove('active', 'running'); }
+        }
+
+        // 更新副标题为当前阶段描述
+        const sub = document.getElementById('aiCleanSubtitle');
+        if (sub) {
+            if (state === 'running') {
+                const stageDesc = {
+                    clean: '正在进行智能分类：AI 正在逐条判断数据所属的行业标准分类…',
+                    extract: '正在进行属性提取：从原始文本中抽取关键字段与属性…',
+                    map: '正在进行属性补全：将抽取结果对齐标准字段表头并补全缺失项…'
+                };
+                if (stageDesc[name]) sub.textContent = stageDesc[name];
+            } else if (state === 'done' && name === 'map') {
+                sub.textContent = '清洗即将完成，正在生成最终结果并写入数据表，请稍候…';
+            }
+        }
+    },
+
+    _startTips() {
+        const box = document.getElementById('aiCleanTips');
+        if (!box) return;
+        this.tipIdx = 0;
+        box.textContent = this.tips[0];
+        this.tipTimer = setInterval(() => {
+            if (!this.visible) return;
+            box.classList.add('fade');
+            setTimeout(() => {
+                this.tipIdx = (this.tipIdx + 1) % this.tips.length;
+                box.textContent = this.tips[this.tipIdx];
+                box.classList.remove('fade');
+            }, 400);
+        }, 4500);
+    },
+
+    _stopTips() {
+        if (this.tipTimer) { clearInterval(this.tipTimer); this.tipTimer = null; }
     },
 
     _init() {
