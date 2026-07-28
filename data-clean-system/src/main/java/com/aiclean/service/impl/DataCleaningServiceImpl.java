@@ -1050,6 +1050,12 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             }
         }
 
+        // 模糊歧义匹配（如宽泛名称“钢带”并列多个候选）：即使 AI 评分较高也强制进入待审核，
+        // 不把猜测当作确定结论直接导出，交由人工在智能分类页裁决。
+        if ("FUZZY_AMBIGUOUS".equals(matchResult.getSource())) {
+            cleanedData.setStatus(DataStatus.NEEDS_REVIEW);
+        }
+
         // 分类未命中三级：不赋一/二级编码，标记为待审核（无效数据页统计）
         if (matchedCategory == null
                 || "UNMATCHED".equals(matchResult.getSource())) {
@@ -2462,6 +2468,11 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         if (extraAttrs != null && !extraAttrs.isEmpty()) {
             ctx.setExtraValues(new ArrayList<>(extraAttrs.values()));
         }
+        // 物料名称（更具体的文本信号）：优先“物资名称”，其次“物资简称”
+        if (extraAttrs != null) {
+            ctx.setMaterialName(extraAttrs.getOrDefault("物资名称",
+                    extraAttrs.getOrDefault("物资简称", "")));
+        }
         return ctx;
     }
 
@@ -2517,7 +2528,10 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         double aiScore = result.score;
 
         // AI 辅助重分类：评分过低 && AI 推荐了不同编码 && 替换后评分更高 -> 用 AI 推荐分类替换原分类
+        // 注意：当 AI 明确判定“系统分类正确”(matched=true) 时，即便其结构化 bestMatchCode 给出了不同编码，
+        // 也以自然语言判定为准，禁止覆盖——避免大模型“自相矛盾”输出（如声称正确却返回错误编码）误伤正确分类。
         if (aiScore < thresholdReview
+                && !Boolean.TRUE.equals(result.matched)
                 && StrUtil.isNotBlank(result.bestMatchCode)
                 && !result.bestMatchCode.equals(cleanedData.getCategoryCode())) {
             CategoryEntity target = stdLib.getByCode(result.bestMatchCode);
@@ -3029,6 +3043,13 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             bestMatchCode = r.bestMatchCode;
             bestMatchName = r.bestMatchName;
             reason = r.reason;
+            // AI 自相矛盾保护：若 AI 明确判定“系统分类正确”(matched=true) 却又给出不同 bestMatchCode，
+            // 以自然语言判定为准，抑制该错误推荐，避免向用户展示/可被误“应用”的错误编码（如把合金结构钢带误判为焊接钢管）。
+            if (Boolean.TRUE.equals(r.matched) && StrUtil.isNotBlank(bestMatchCode)
+                    && !bestMatchCode.equals(cd.getCategoryCode())) {
+                bestMatchCode = null;
+                bestMatchName = null;
+            }
             // 确定性判定：用 AI 给出的最合理标准编码与系统编码比对，而非盲信 AI 的 matched 布尔值
             CategoryEntity sysCat = stdLib.getByCode(cd.getCategoryCode());
             CategoryEntity bestCat = StrUtil.isNotBlank(bestMatchCode) ? stdLib.getByCode(bestMatchCode) : null;

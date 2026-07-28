@@ -91,7 +91,8 @@ public class HierarchicalCategoryMatcher implements CategoryMatcher {
         // 3. 在【全局】三级节点上统一打分（带祖先加分），一次定胜负。
         //    相比原“先局限子树、未命中再全局兜底”的两段式，本方案让正确子树内的三级
         //    能与其它子树的三级同场竞争，避免因错误祖先把搜索局限到错误子树而误判。
-        CategoryMatchOutcome best = bestMatchL3(normName, ctx.getCategoryCode(), ctx.getExtraValues(), l3, ancestorBoost);
+        CategoryMatchOutcome best = bestMatchL3(normName, ctx.getCategoryCode(), ctx.getExtraValues(),
+                ctx.getMaterialName(), l3, ancestorBoost);
         if (best != null && best.getConfidence() >= MIN_CONFIDENCE) {
             return best;
         }
@@ -196,8 +197,16 @@ public class HierarchicalCategoryMatcher implements CategoryMatcher {
 
     // ===================== 三级节点打分 =====================
 
+    /**
+     * 模糊/泛词匹配出现多个并列候选时，视为歧义：降级为低置信、待人工审核的来源，
+     * 不直接以高置信落库（避免把“钢带”这类宽泛名称的猜测当作确定结论导出）。
+     */
+    private static final double FUZZY_AMBIGUOUS_CONFIDENCE = 0.5;
+    private static final String SOURCE_FUZZY_AMBIGUOUS = "FUZZY_AMBIGUOUS";
+
     private CategoryMatchOutcome bestMatchL3(String normName, String categoryCode,
-                                             List<String> extraValues, List<CategoryEntity> candidates,
+                                             List<String> extraValues, String materialName,
+                                             List<CategoryEntity> candidates,
                                              Map<Long, Double> ancestorBoost) {
         if (candidates == null || candidates.isEmpty()) return null;
 
@@ -206,11 +215,12 @@ public class HierarchicalCategoryMatcher implements CategoryMatcher {
         double bestScore = 0.0;   // 上报置信度（0~1，已封顶）
         double bestRank = -1.0;    // 排序分（含名称优先带，用于跨候选比较）
         String bestSource = null;
+        int tieCount = 0;          // 与最高排序分并列的候选数（用于判定模糊歧义）
 
         for (CategoryEntity cat : candidates) {
             String catNorm = normalize(cat.getCategoryName());
 
-            // ---- 文本信号（名称 + 额外属性值）：人工分类名称更可靠，优先于编码 ----
+            // ---- 文本信号（源分类名 + 额外属性值 + 物料名）：人工分类名称更可靠，优先于编码 ----
             double textScore = 0.0;
             String textSource = null;
             // 名称：全词 / 模糊 / 语义
@@ -236,9 +246,26 @@ public class HierarchicalCategoryMatcher implements CategoryMatcher {
                     } else if (catNorm != null && (catNorm.contains(evNorm) || evNorm.contains(catNorm))) {
                         if (0.8 > textScore) { textScore = 0.8; textSource = "EXTRA_NAME"; }
                     } else if (catNorm != null) {
+                        // 放宽语义相似度阈值（0.55），让“冷轧弹簧钢带”等物料信号更易于命中正确分类
                         double sim = similarityStrategy.similarity(evNorm, catNorm);
-                        if (sim >= 0.7 && (0.6 + 0.3 * sim) > textScore) {
+                        if (sim >= 0.55 && (0.6 + 0.3 * sim) > textScore) {
                             textScore = 0.6 + 0.3 * sim; textSource = "EXTRA_NAME";
+                        }
+                    }
+                }
+            }
+            // 物料名作为更具体的文本信号：包含候选名核心词给予中等权重，语义相似度阈值放宽到 0.55
+            if (isNotBlank(materialName)) {
+                String mNorm = normalize(materialName);
+                if (catNorm != null && isNotBlank(mNorm)) {
+                    if (mNorm.equals(catNorm)) {
+                        if (0.9 > textScore) { textScore = 0.9; textSource = "MATERIAL_NAME"; }
+                    } else if (catNorm.contains(mNorm) || mNorm.contains(catNorm)) {
+                        if (0.8 > textScore) { textScore = 0.8; textSource = "MATERIAL_NAME"; }
+                    } else {
+                        double sim = similarityStrategy.similarity(mNorm, catNorm);
+                        if (sim >= 0.55 && (0.6 + 0.3 * sim) > textScore) {
+                            textScore = 0.6 + 0.3 * sim; textSource = "MATERIAL_NAME";
                         }
                     }
                 }
@@ -284,11 +311,67 @@ public class HierarchicalCategoryMatcher implements CategoryMatcher {
                 bestScore = base;
                 bestCat = cat;
                 bestSource = source;
+                tieCount = 1;
+            } else if (rankScore == bestRank) {
+                // 平局确定性裁决：避免依赖不稳定的候选列表顺序（并行分片下顺序不确定），
+                // 决胜顺序：与物料名/源名相似度更高 -> 与源编码一致 -> 编码字典序（可复现）。
+                tieCount++;
+                if (tieWins(cat, bestCat, normName, normCode, materialName)) {
+                    bestScore = base;
+                    bestCat = cat;
+                    bestSource = source;
+                }
             }
         }
 
         if (bestCat == null) return null;
+
+        // 模糊/泛词匹配且存在多个并列候选 -> 视为歧义，降级为低置信、待人工审核，不直接高置信落库
+        boolean fuzzyType = "NAME_FUZZY".equals(bestSource) || "EXTRA_NAME".equals(bestSource)
+                || "SEMANTIC".equals(bestSource) || "MATERIAL_NAME".equals(bestSource);
+        if (fuzzyType && tieCount > 1) {
+            bestSource = SOURCE_FUZZY_AMBIGUOUS;
+            bestScore = Math.min(bestScore, FUZZY_AMBIGUOUS_CONFIDENCE);
+        }
         return new CategoryMatchOutcome(bestCat, bestSource, bestScore);
+    }
+
+    /**
+     * 平局裁决：返回 true 表示 cat 应胜过当前 bestCat。
+     * 顺序：1) 与物料名/源分类名相似度更高者优先（更贴合具体物料）；
+     *      2) 与原始分类编码一致者优先；3) 编码字典序（保证可复现、不依赖列表顺序）。
+     */
+    private boolean tieWins(CategoryEntity cat, CategoryEntity bestCat,
+                            String normName, String normCode, String materialName) {
+        if (bestCat == null) return true;
+        double s1 = textSimilarity(cat, normName, materialName);
+        double s2 = textSimilarity(bestCat, normName, materialName);
+        if (s1 != s2) return s1 > s2;
+        if (normCode != null) {
+            boolean c1 = normCode.equals(cat.getCategoryCode());
+            boolean c2 = normCode.equals(bestCat.getCategoryCode());
+            if (c1 != c2) return c1;
+        }
+        if (cat.getCategoryCode() != null && bestCat.getCategoryCode() != null) {
+            return cat.getCategoryCode().compareTo(bestCat.getCategoryCode()) < 0;
+        }
+        return false;
+    }
+
+    /** 综合源分类名与物料名，计算与某候选分类名的相似度（含包含关系） */
+    private double textSimilarity(CategoryEntity cat, String normName, String materialName) {
+        String cn = normalize(cat.getCategoryName());
+        double best = 0.0;
+        for (String t : new String[]{normName, materialName}) {
+            if (isBlank(t) || cn == null) continue;
+            if (cn.equals(t)) best = Math.max(best, 1.0);
+            else if (cn.contains(t) || t.contains(cn)) best = Math.max(best, 0.85);
+            else {
+                double sim = similarityStrategy.similarity(t, cn);
+                best = Math.max(best, sim);
+            }
+        }
+        return best;
     }
 
     // ===================== 工具方法 =====================

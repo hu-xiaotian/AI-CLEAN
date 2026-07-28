@@ -30,6 +30,11 @@ public class CategoryMatchContext {
     private List<String> extraValues;
 
     /**
+     * 物料名称（如“冷轧弹簧钢带”），比宽泛的“类别名称”列更具体，作为更强的文本匹配信号参与打分
+     */
+    private String materialName;
+
+    /**
      * 全部分类（含各级节点）
      */
     private List<CategoryEntity> allCategories;
