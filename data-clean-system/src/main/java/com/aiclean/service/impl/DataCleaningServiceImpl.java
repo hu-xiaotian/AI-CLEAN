@@ -2506,13 +2506,39 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
     /**
      * 调用大模型对分类结果进行 AI 质量评分：将分类结果与 main_data_category 标准库（召回候选）对比，给出 0~100 评分。
+     * 低分自动纠偏：当 AI 评分低于 review 阈值且 AI 给出与当前不同的推荐分类时，
+     * 用推荐分类替换原分类（仅当替换后评分更高才生效），即"评分低的分类替换成 AI 辅助分类结果"。
      */
     private double aiScoreClassification(CleanedDataEntity cleanedData, CategoryEntity matchedCategory,
                                           List<CategoryStandardLibrary.Candidate> candidates) {
         AiDetectResult result = aiDetect(cleanedData, matchedCategory, candidates);
         // 记录 AI 分类的理由描述，供智能分类页展示
         cleanedData.setAiReason(result.reason);
-        return result.score;
+        double aiScore = result.score;
+
+        // AI 辅助重分类：评分过低 && AI 推荐了不同编码 && 替换后评分更高 -> 用 AI 推荐分类替换原分类
+        if (aiScore < thresholdReview
+                && StrUtil.isNotBlank(result.bestMatchCode)
+                && !result.bestMatchCode.equals(cleanedData.getCategoryCode())) {
+            CategoryEntity target = stdLib.getByCode(result.bestMatchCode);
+            if (target != null) {
+                double newScore = stdLib.ruleBasedAccuracy(cleanedData, target);
+                if (newScore > aiScore) {
+                    String oldCode = cleanedData.getCategoryCode();
+                    cleanedData.setCategoryId(target.getId());
+                    cleanedData.setCategoryCode(target.getCategoryCode());
+                    cleanedData.setCategoryName(target.getCategoryName());
+                    cleanedData.setCategoryLevel(target.getLevel());
+                    cleanedData.setCategoryFullPath(target.getFullPath());
+                    aiScore = newScore;
+                    cleanedData.setAiReason("AI 辅助重分类：" + StrUtil.nullToEmpty(target.getCategoryName())
+                            + "（原 " + StrUtil.nullToEmpty(oldCode) + "）；" + result.reason);
+                    log.info("AI 辅助重分类：tempDataId={} 原分类[{}] -> 推荐[{}]，评分 {} -> {}",
+                            cleanedData.getTempDataId(), oldCode, target.getCategoryCode(), result.score, newScore);
+                }
+            }
+        }
+        return aiScore;
     }
 
     /**

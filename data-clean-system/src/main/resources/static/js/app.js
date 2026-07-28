@@ -305,7 +305,17 @@ function ocDoCleaning(titleId, ruleId, useAi) {
             const socket = new SockJS('/ws-cleaning');
             ocStompClient = Stomp.over(socket);
             ocStompClient.debug = null;
+            let ocWsConnected = false;
+            // 已连接后若与后台 WebSocket 断开：提示切换至后台，不视为失败（轮询兜底继续）
+            socket.onclose = () => {
+                if (ocWsConnected && !settled) {
+                    showToast('清洗时间过长，已切换至后台进行', 'warning');
+                    const pct = parseInt($('#ocOverallFill').style.width) || 0;
+                    setOcOverall(pct, '清洗时间过长，已切换至后台进行');
+                }
+            };
             ocStompClient.connect({}, () => {
+                ocWsConnected = true;
                 ocStompClient.subscribe('/topic/cleaning/' + titleId, message => {
                     const msg = JSON.parse(message.body);
                     if (msg.type === 'start' || msg.type === 'progress') started = true;
@@ -385,11 +395,21 @@ async function ocDoMapFill(titleId) {
 
     // 通过 WebSocket 实时展示属性补全进度（消息格式与清洗一致）
     let stompClient = null;
+    let mapWsConnected = false;
     try {
         const socket = new SockJS('/ws-cleaning');
         stompClient = Stomp.over(socket);
         stompClient.debug = null;
+        // 已连接后若与后台 WebSocket 断开：提示切换至后台（服务端同步执行不受影响）
+        socket.onclose = () => {
+            if (mapWsConnected) {
+                showToast('清洗时间过长，已切换至后台进行', 'warning');
+                const pct = parseInt($('#ocOverallFill').style.width) || 0;
+                setOcOverall(pct, '清洗时间过长，已切换至后台进行');
+            }
+        };
         stompClient.connect({}, () => {
+            mapWsConnected = true;
             stompClient.subscribe('/topic/fill/*', message => {
                 try { ocRenderCleanStatsCard(JSON.parse(message.body)); } catch (e) {}
             });
@@ -463,7 +483,17 @@ function ocDoExtractAi(titleId) {
             const socket = new SockJS('/ws-cleaning');
             stompClient = Stomp.over(socket);
             stompClient.debug = null;
+            let aiWsConnected = false;
+            // 已连接后若与后台 WebSocket 断开：提示切换至后台，不视为失败（轮询兜底继续）
+            socket.onclose = () => {
+                if (aiWsConnected && !settled) {
+                    showToast('清洗时间过长，已切换至后台进行', 'warning');
+                    const pct = parseInt($('#ocOverallFill').style.width) || 0;
+                    setOcOverall(pct, '清洗时间过长，已切换至后台进行');
+                }
+            };
             stompClient.connect({}, () => {
+                aiWsConnected = true;
                 stompClient.subscribe('/topic/ai-extract/' + titleId, message => {
                     try { onMsg(JSON.parse(message.body)); } catch (e) {}
                 });
