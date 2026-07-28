@@ -334,6 +334,9 @@ CREATE TABLE cleaned_data (
     technical_standard VARCHAR2(500),
     grade VARCHAR2(200),
     unit VARCHAR2(50),
+    full_description CLOB,
+    source_row_hash VARCHAR2(64),
+    is_duplicate TINYINT DEFAULT 0,
     status VARCHAR2(50) DEFAULT 'draft',
     quality_score DOUBLE DEFAULT 0,
     ai_reason CLOB COMMENT 'AI 辅助分类理由描述（启用 AI 辅助评分时记录）',
@@ -411,7 +414,9 @@ CREATE TABLE title_standard_title (
     created_by VARCHAR2(50) DEFAULT 'system',
     updated_by VARCHAR2(50) DEFAULT 'system'
 );
-xian
+CREATE UNIQUE INDEX idx_tst_title_std ON title_standard_title(temp_data_title_id, standard_title_id);
+CREATE INDEX idx_tst_title_id ON title_standard_title(temp_data_title_id);
+CREATE INDEX idx_tst_std_id ON title_standard_title(standard_title_id);
 
 -- 12. 审核任务表 (review_task)
 CREATE TABLE review_task (
@@ -471,6 +476,31 @@ CREATE TABLE export_batch (
 CREATE INDEX idx_eb_status ON export_batch(status);
 CREATE INDEX idx_eb_exported_by ON export_batch(exported_by);
 CREATE INDEX idx_eb_export_type ON export_batch(export_type);
+
+-- 14. 主动学习样本表 (active_learning_sample)
+-- 沉淀"低置信/人工修正"样本，用于后续训练、微调或规则优化（自学习闭环）
+CREATE TABLE active_learning_sample (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    sample_type VARCHAR2(50) NOT NULL,
+    entity_id BIGINT,
+    source_text CLOB,
+    source_category_name VARCHAR2(500),
+    source_category_code VARCHAR2(50),
+    target_category_id BIGINT,
+    target_category_code VARCHAR2(50),
+    target_category_name VARCHAR2(500),
+    confidence DOUBLE,
+    score DOUBLE,
+    reason VARCHAR2(500),
+    status VARCHAR2(50) DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR2(50) DEFAULT 'system',
+    updated_by VARCHAR2(50) DEFAULT 'system'
+);
+CREATE INDEX idx_als_type ON active_learning_sample(sample_type);
+CREATE INDEX idx_als_entity_id ON active_learning_sample(entity_id);
+CREATE INDEX idx_als_target_code ON active_learning_sample(target_category_code);
 
 -- ============================================
 -- 插入初始数据

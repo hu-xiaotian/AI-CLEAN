@@ -708,7 +708,6 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     // ==================== 分类匹配与清洗 ====================
 
     @Override
-    @Transactional
     public CleanedDataEntity matchAndClean(Long tempDataId, Long extraDataTitleId, Long parseRuleId, Boolean useAi) {
         TempDataEntity tempData = tempDataMapper.selectById(tempDataId);
         if (tempData == null) throw new RuntimeException("原始数据不存在: " + tempDataId);
@@ -717,79 +716,16 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         ParseRuleEntity ruleEntity = parseRuleMapper.selectById(parseRuleId);
         ParseRule parseRule = ruleEntity != null ? ruleEntity.toParseRule() : getDefaultParseRule();
 
-        // 获取extra_data
-        ExtraDataEntity extraData = null;
-        if (extraDataTitleId != null) {
-            extraData = extraDataMapper.selectByTempDataId(tempDataId, extraDataTitleId);
-        }
+        // 计算阶段：纯内存计算 + 可能的 AI 网络调用，必须置于事务之外，
+        // 否则 AI 长耗时（最长约 120s/条）会让数据库连接与行锁被长时间霸占，引发 Lock wait timeout。
+        CleanedDataEntity cleanedData = matchAndCleanPrepare(tempData, extraDataTitleId, parseRule,
+                titleEntity, null, null, useAi, null, false);
 
-        // 解析全描述
-        String fullDescription = "";
-        if (titleEntity != null && StrUtil.isNotBlank(titleEntity.getFullDescCol())) {
-            int idx = findFullDescColIndex(titleEntity, titleEntity.getFullDescCol());
-            if (idx > 0) {
-                fullDescription = tempData.getColData(idx);
-            }
-        }
-        Map<String, String> extraAttrs = parseRule.parse(fullDescription);
-
-        // 分类匹配（独立匹配模块，未命中三级则不赋值）
-        CategoryMatchOutcome matchResult = matchCategory(tempData, extraAttrs);
-        CategoryEntity matchedCategory = matchResult.getCategory();
-
-        // 创建清洗数据
-        CleanedDataEntity cleanedData = new CleanedDataEntity();
-        cleanedData.setTempDataId(tempData.getId());
-        cleanedData.setMatchSource(matchResult.getSource());
-        cleanedData.setMatchConfidence(matchResult.getConfidence());
-        fillCategoryInfo(cleanedData, matchedCategory);
-
-        // 记录导入时指定的"属性拆分列"原始文本，供 AI 打分匹配使用；并计算行指纹用于数据血缘/去重
-        cleanedData.setFullDescription(fullDescription);
-        cleanedData.setSourceRowHash(computeSourceRowHash(cleanedData));
-        // 单条清洗不跨行去重，置为 0
-        cleanedData.setIsDuplicate(0);
-
-        // 提取核心字段
-        cleanedData.setMaterialCode(getColByTitle(titleEntity, "物料代码", tempData, 3));
-        cleanedData.setMaterialName(extraAttrs.getOrDefault("物资名称", extraAttrs.getOrDefault("物资简称", "")));
-        cleanedData.setSpecification(extraAttrs.getOrDefault("规格", ""));
-        cleanedData.setTechnicalStandard(extraAttrs.getOrDefault("技术标准号", ""));
-        cleanedData.setGrade(extraAttrs.getOrDefault("牌号", ""));
-        cleanedData.setUnit(extraAttrs.getOrDefault("计量单位", getColByTitle(titleEntity, "计量单位", tempData, 6)));
-
-        // 质量评分（启用 AI 辅助评分且 AI 可用时，用 AI 评分替代原有规则评分）
-        cleanedData.setCompletenessScore(cleanedData.calculateCompleteness());
-        double qualityScore = computeQualityScore(cleanedData, matchedCategory, useAi);
-        cleanedData.setQualityScore(qualityScore);
-        cleanedData.setAccuracyScore(qualityScore * 0.8);
-
-        if (qualityScore < thresholdReview) {
-            cleanedData.setStatus(DataStatus.NEEDS_REVIEW);
-        } else if (qualityScore >= thresholdExport) {
-            cleanedData.setStatus(DataStatus.EXPORT_READY);
-        } else {
-            cleanedData.setStatus(DataStatus.APPROVED);
-        }
-
-        // 分类未命中三级：不赋一/二级编码，标记为待审核（无效数据页统计）
-        if (matchedCategory == null
-                || "UNMATCHED".equals(matchResult.getSource())) {
-            cleanedData.setStatus(DataStatus.NEEDS_REVIEW);
-        }
-
-        cleanedDataMapper.insert(cleanedData);
-
-        // 入库后再创建审核任务，确保能拿到自增主键 entity_id
-        if (qualityScore < thresholdReview) {
-            createReviewTask(cleanedData, "质量评分过低: " + qualityScore);
-        }
-
-        // 更新原始数据状态
-        tempData.setStatus(DataStatus.PROCESSED);
-        tempDataMapper.updateById(tempData);
-
-        return cleanedData;
+        // 持久化阶段：在短事务内仅做 DB 写入，立即提交释放连接与行锁
+        return transactionTemplate.execute(status -> {
+            matchAndCleanPersist(cleanedData, tempData, false);
+            return cleanedData;
+        });
     }
 
     // ==================== 批量数据清洗 ====================
@@ -878,35 +814,37 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                         while (batchStart < shard.size() && !stopped.get()) {
                             int batchEnd = Math.min(batchStart + CLEAN_BATCH_SIZE, shard.size());
                             List<TempDataEntity> batch = shard.subList(batchStart, batchEnd);
-                            transactionTemplate.executeWithoutResult(s -> {
-                                for (TempDataEntity td : batch) {
-                                    if (stopped.get()) break;
-                                    try {
-                                        CleanedDataEntity cleaned = matchAndCleanInternal(td, null, parseRule,
-                                                titleEntity, allCategories, synonyms, useAi, seenHashes, true);
-                                        allCleaned.add(cleaned);
-                                        allScores.add(cleaned.getQualityScore() != null ? cleaned.getQualityScore() : 0.0);
-                                        int cur = successCount.incrementAndGet();
-                                        // WebSocket 节流：每 500ms 最多推送一次，最后一条必推
-                                        long now = System.currentTimeMillis();
-                                        Long lastPush = lastProgressPushTime.get(titleId);
-                                        if (lastPush == null || now - lastPush >= PROGRESS_THROTTLE_MS || cur == totalCount) {
-                                            sendCleaningProgress(titleId, "progress", cur, totalCount, null, cur, errorCount.get());
-                                            lastProgressPushTime.put(titleId, now);
-                                        }
-                                    } catch (Exception e) {
-                                        localErr.incrementAndGet();
-                                        int cur = errorCount.incrementAndGet();
-                                        log.error("并行清洗失败，tempDataId: {}", td.getId(), e);
-                                        sendCleaningProgress(titleId, "progress", successCount.get() + cur, totalCount, null, successCount.get(), cur);
-                                        if (localErr.get() >= 5) {
-                                            stopped.set(true);
-                                            log.error("分片内连续失败 {} 次，停止后续清洗。已成功: {}, 失败: {}", localErr.get(), successCount.get(), errorCount.get());
-                                            break;
-                                        }
+                            for (TempDataEntity td : batch) {
+                                if (stopped.get()) break;
+                                try {
+                                    // Phase 1（事务外）：纯计算 + AI 网络调用（最长约 120s/条），不持有 DB 连接/行锁，
+                                    // 避免把连接池与锁资源长时间霸占，导致删除文件等其他操作 Lock wait timeout。
+                                    CleanedDataEntity cleaned = matchAndCleanPrepare(td, null, parseRule,
+                                            titleEntity, allCategories, synonyms, useAi, seenHashes, true);
+                                    // Phase 2（短事务）：仅做 DB 写入并立即提交，快速释放连接与行锁
+                                    transactionTemplate.executeWithoutResult(s -> matchAndCleanPersist(cleaned, td, true));
+                                    allCleaned.add(cleaned);
+                                    allScores.add(cleaned.getQualityScore() != null ? cleaned.getQualityScore() : 0.0);
+                                    int cur = successCount.incrementAndGet();
+                                    // WebSocket 节流：每 500ms 最多推送一次，最后一条必推
+                                    long now = System.currentTimeMillis();
+                                    Long lastPush = lastProgressPushTime.get(titleId);
+                                    if (lastPush == null || now - lastPush >= PROGRESS_THROTTLE_MS || cur == totalCount) {
+                                        sendCleaningProgress(titleId, "progress", cur, totalCount, null, cur, errorCount.get());
+                                        lastProgressPushTime.put(titleId, now);
+                                    }
+                                } catch (Exception e) {
+                                    localErr.incrementAndGet();
+                                    int cur = errorCount.incrementAndGet();
+                                    log.error("并行清洗失败，tempDataId: {}", td.getId(), e);
+                                    sendCleaningProgress(titleId, "progress", successCount.get() + cur, totalCount, null, successCount.get(), cur);
+                                    if (localErr.get() >= 5) {
+                                        stopped.set(true);
+                                        log.error("分片内连续失败 {} 次，停止后续清洗。已成功: {}, 失败: {}", localErr.get(), successCount.get(), errorCount.get());
+                                        break;
                                     }
                                 }
-                            });
+                            }
                             batchStart = batchEnd;
                         }
                         return null;
@@ -1033,9 +971,12 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     }
 
     /**
-     * 内部清洗方法，接受预加载的缓存数据，避免循环内重复DB查询
+     * 内部清洗方法（计算阶段）：接受预加载的缓存数据，避免循环内重复 DB 查询。
+     * 注意：本方法【不写库】，且 AI 网络调用（computeQualityScore -> aiClientService.chat，最长约 120s/条）
+     * 发生在此处，因此调用方必须在【事务之外】调用本方法，避免长事务长时间持有数据库连接与行锁，
+     * 否则会与其他操作（删除导入文件、结果打标、worker 间）发生 Lock wait timeout。
      */
-    private CleanedDataEntity matchAndCleanInternal(TempDataEntity tempData, Long extraDataTitleId,
+    private CleanedDataEntity matchAndCleanPrepare(TempDataEntity tempData, Long extraDataTitleId,
                                                     ParseRule parseRule, TempDataTitleEntity titleEntity,
                                                      List<CategoryEntity> allCategories,
                                                      List<CategorySynonymEntity> synonyms, Boolean useAi,
@@ -1056,9 +997,11 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         }
         Map<String, String> extraAttrs = parseRule.parse(fullDescription);
 
-        // 分类匹配（独立匹配模块，使用预加载缓存，未命中三级则不赋值）
+        // 分类匹配（独立匹配模块，使用预加载缓存；公共单条路径未预加载时在此加载）
+        List<CategoryEntity> cats = allCategories != null ? allCategories : categoryMapper.selectList(null);
+        List<CategorySynonymEntity> syns = synonyms != null ? synonyms : categorySynonymMapper.selectList(null);
         CategoryMatchOutcome matchResult = categoryMatcher.match(
-                buildMatchContext(tempData, extraAttrs, titleEntity, allCategories, synonyms));
+                buildMatchContext(tempData, extraAttrs, titleEntity, cats, syns));
         CategoryEntity matchedCategory = matchResult.getCategory();
 
         // 创建清洗数据
@@ -1113,18 +1056,24 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             cleanedData.setStatus(DataStatus.NEEDS_REVIEW);
         }
 
+        return cleanedData;
+    }
+
+    /**
+     * 内部清洗方法（持久化阶段）：在调用方提供的事务内执行 DB 写入并立即提交，释放连接与行锁。
+     * 本方法【不包含任何网络调用】，因此事务足够短，不会引发锁等待。
+     */
+    private void matchAndCleanPersist(CleanedDataEntity cleanedData, TempDataEntity tempData, boolean deferStatus) {
         cleanedDataMapper.insert(cleanedData);
 
         // 审核任务延迟至第二阶段（仅当质量分低于自适应阈值时创建），避免延迟模式下重复创建
-        if (!deferStatus && qualityScore < thresholdReview) {
-            createReviewTask(cleanedData, "质量评分过低: " + qualityScore);
+        if (!deferStatus && cleanedData.getQualityScore() != null && cleanedData.getQualityScore() < thresholdReview) {
+            createReviewTask(cleanedData, "质量评分过低: " + cleanedData.getQualityScore());
         }
 
         // 更新原始数据状态
         tempData.setStatus(DataStatus.PROCESSED);
         tempDataMapper.updateById(tempData);
-
-        return cleanedData;
     }
 
     @Override
