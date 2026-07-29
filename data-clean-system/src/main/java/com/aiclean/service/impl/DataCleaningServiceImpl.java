@@ -238,6 +238,11 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         int mappingCount = fieldMappingAuditMapper.deleteByTitleId(titleId);
         log.info("删除字段映射: {} 条", mappingCount);
 
+        // 2.5 删除主动学习样本 (active_learning_sample)
+        // 必须在删除 cleaned_data/temp_data 之前执行，因其通过 entity_id -> cleaned_data -> temp_data 子查询定位。
+        int sampleCount = activeLearningSampleMapper.deleteByTitleId(titleId);
+        log.info("删除主动学习样本: {} 条", sampleCount);
+
         // 3. 删除清洗数据 (cleaned_data)
         int cleanedCount = cleanedDataMapper.deleteByTitleId(titleId);
         log.info("删除清洗数据: {} 条", cleanedCount);
@@ -955,6 +960,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         // 按依赖顺序清理：先清理下游数据，再清理上游数据
         int resultCount = resultDataMapper.deleteByTitleId(titleId);
         int reviewCount = reviewTaskMapper.deleteByCleanedDataTitleId(titleId);
+        // 删除主动学习样本须在 cleaned_data 之前（依赖 entity_id -> cleaned_data 子查询定位），避免重清洗后残留孤儿样本
+        int sampleCount = activeLearningSampleMapper.deleteByTitleId(titleId);
         int cleanedCount = cleanedDataMapper.deleteByTitleId(titleId);
         int extraDataCount = extraDataMapper.deleteByTempDataTitleId(titleId);
         int extraTitleCount = extraDataTitleMapper.deleteByTempDataTitleId(titleId);
@@ -2530,10 +2537,13 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         // AI 辅助重分类：评分过低 && AI 推荐了不同编码 && 替换后评分更高 -> 用 AI 推荐分类替换原分类
         // 注意：当 AI 明确判定“系统分类正确”(matched=true) 时，即便其结构化 bestMatchCode 给出了不同编码，
         // 也以自然语言判定为准，禁止覆盖——避免大模型“自相矛盾”输出（如声称正确却返回错误编码）误伤正确分类。
+        // 与智能分类检测页一致：即便 AI 判定不一致(matched=false) 并返回 bestMatchCode，若该推荐未在其 reason
+        // 中被明确认可（reason 中既未出现该编码也未出现其名称），亦视为幻觉输出，禁止自动覆盖（保守优先，交由人工裁决）。
         if (aiScore < thresholdReview
                 && !Boolean.TRUE.equals(result.matched)
                 && StrUtil.isNotBlank(result.bestMatchCode)
-                && !result.bestMatchCode.equals(cleanedData.getCategoryCode())) {
+                && !result.bestMatchCode.equals(cleanedData.getCategoryCode())
+                && !reasonNotEndorsingRecommendation(result.reason, result.bestMatchCode, result.bestMatchName)) {
             CategoryEntity target = stdLib.getByCode(result.bestMatchCode);
             if (target != null) {
                 double newScore = stdLib.ruleBasedAccuracy(cleanedData, target);
@@ -2650,6 +2660,18 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             if (best != null) r.bestMatchName = best.getCategoryName();
         }
         return r;
+    }
+
+    /**
+     * 判断 AI 的 reason 是否【未】明确认可某个推荐编码/名称。
+     * 返回 true 表示 reason 中既未出现推荐编码也未出现其名称 —— 即该推荐是 AI 自相矛盾的幻觉输出，应抑制。
+     * 返回 false 表示 reason 明确提及并推荐了该编码（如“更精确的分类应为 100110”）—— 属合理建议，应保留。
+     */
+    private static boolean reasonNotEndorsingRecommendation(String reason, String code, String name) {
+        if (StrUtil.isBlank(reason)) return true;
+        if (StrUtil.isNotBlank(code) && reason.contains(code)) return false;
+        if (StrUtil.isNotBlank(name) && reason.contains(name)) return false;
+        return true;
     }
 
     /**
@@ -3043,10 +3065,14 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             bestMatchCode = r.bestMatchCode;
             bestMatchName = r.bestMatchName;
             reason = r.reason;
-            // AI 自相矛盾保护：若 AI 明确判定“系统分类正确”(matched=true) 却又给出不同 bestMatchCode，
-            // 以自然语言判定为准，抑制该错误推荐，避免向用户展示/可被误“应用”的错误编码（如把合金结构钢带误判为焊接钢管）。
+            // AI 自相矛盾保护：若 AI 判定“系统分类正确”(matched=true) 却给出不同 bestMatchCode，
+            // 需进一步判断该推荐是否在其 reason 中被明确认可。仅当 reason 中【未出现】该编码/名称时，
+            // 才视为大模型自相矛盾的幻觉输出并抑制（避免展示/误“应用”错误编码，如声称正确却返回无关编码）。
+            // 若 reason 明确提及并推荐该编码（如“更精确的分类应为 100110”），属于合理的“精确化升级”建议，
+            // 应正常保留并展示「应用」按钮，不应被抑制。
             if (Boolean.TRUE.equals(r.matched) && StrUtil.isNotBlank(bestMatchCode)
-                    && !bestMatchCode.equals(cd.getCategoryCode())) {
+                    && !bestMatchCode.equals(cd.getCategoryCode())
+                    && reasonNotEndorsingRecommendation(reason, bestMatchCode, bestMatchName)) {
                 bestMatchCode = null;
                 bestMatchName = null;
             }
