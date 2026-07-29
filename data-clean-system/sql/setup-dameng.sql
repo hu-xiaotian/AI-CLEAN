@@ -406,7 +406,7 @@ CREATE INDEX idx_fma_standard_title_id ON field_mapping_audit(standard_title_id)
 -- 11.x 数据文件-标准字段表头关联表 (title_standard_title)
 -- 在数据清洗/结果填充时记录每个数据文件关联的标准字段表头，供结果数据下拉框按文件快速查询
 CREATE TABLE title_standard_title (
-    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    id BIGINT NOT NULL PRIMARY KEY,
     temp_data_title_id BIGINT NOT NULL,
     standard_title_id BIGINT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

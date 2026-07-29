@@ -1,5 +1,7 @@
 package com.aiclean.entity;
 
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -13,6 +15,13 @@ import lombok.EqualsAndHashCode;
 @EqualsAndHashCode(callSuper = true)
 @TableName("title_standard_title")
 public class TitleStandardTitleEntity extends BaseEntity {
+
+    /**
+     * 主键ID（由 MyBatis-Plus 雪花算法生成，避免依赖数据库自增/IDENTITY，
+     * 解决达梦等数据库中该列未配置自增时的非空约束报错）
+     */
+    @TableId(type = IdType.ASSIGN_ID)
+    private Long id;
 
     /**
      * 数据文件ID（temp_data_title.id）

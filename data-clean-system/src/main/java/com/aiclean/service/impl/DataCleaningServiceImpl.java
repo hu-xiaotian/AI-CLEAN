@@ -328,16 +328,30 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         // 收集所有key作为extra_data_title的列
         Set<String> allKeys = new LinkedHashSet<>();
         List<Map<String, String>> allParsed = new ArrayList<>();
+        int skipCount = 0;
 
         for (TempDataEntity tempData : tempDataList) {
             String fullDesc = tempData.getColData(fullDescIndex);
             if (StrUtil.isNotBlank(fullDesc)) {
-                Map<String, String> parsed = parseRule.parse(fullDesc);
+                Map<String, String> parsed;
+                try {
+                    parsed = parseRule.parse(fullDesc);
+                } catch (Exception e) {
+                    // 该属性不可拆分（如分隔符无法解析），跳过此条，不影响整体提取
+                    log.warn("属性不可拆分，已跳过 tempDataId: {}，原因: {}", tempData.getId(), e.getMessage());
+                    skipCount++;
+                    allParsed.add(new LinkedHashMap<>());
+                    continue;
+                }
                 allParsed.add(parsed);
                 allKeys.addAll(parsed.keySet());
             } else {
                 allParsed.add(new LinkedHashMap<>());
             }
+        }
+
+        if (skipCount > 0) {
+            log.info("全描述属性提取：共跳过不可拆分记录 {} 条（文件 {}）", skipCount, titleId);
         }
 
         // 限制最多20个属性

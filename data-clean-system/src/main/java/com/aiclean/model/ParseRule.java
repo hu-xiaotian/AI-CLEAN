@@ -1,6 +1,7 @@
 package com.aiclean.model;
 
 import lombok.Data;
+import java.util.regex.Pattern;
 
 /**
  * 解析规则配置
@@ -70,8 +71,8 @@ public class ParseRule {
             return result;
         }
         
-        // 分割条目
-        String[] items = fullDesc.split(itemSeparator);
+        // 分割条目（分隔符按字面量处理，避免正则元字符导致的解析异常）
+        String[] items = fullDesc.split(Pattern.quote(itemSeparator));
         
         for (String item : items) {
             // 去除首尾空格
@@ -92,7 +93,7 @@ public class ParseRule {
             
             // 分割键值
             if (item.contains(keyValueSeparator)) {
-                String[] parts = item.split(keyValueSeparator, 2);
+                String[] parts = item.split(Pattern.quote(keyValueSeparator), 2);
                 String key = parts[0].trim();
                 String value = parts.length > 1 ? parts[1].trim() : "";
                 result.put(key, value);
