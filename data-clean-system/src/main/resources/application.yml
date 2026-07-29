@@ -316,6 +316,13 @@ app:
     category-top-k: 15
     # 注入上下文的最大标准分类条数（控制 token 与成本）
     category-max-context: 40
+    # ===== AI 相似物料推荐（基于 cleaned_data 物料数据召回相似物料）=====
+    # 从 cleaned_data 召回的候选上限（再在内存中按相似度排序裁剪）
+    similar-limit: 200
+    # 最终返回给前端的相似物料条数上限
+    similar-top-n: 10
+    # 用于检索的关键词（分词）数量上限，避免单字/常见词拉回过多噪声
+    similar-max-tokens: 6
 
   # 文件处理配置
   file-processing:

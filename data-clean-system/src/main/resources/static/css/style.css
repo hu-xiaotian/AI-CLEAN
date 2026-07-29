@@ -1210,6 +1210,17 @@ select.form-input { cursor: pointer; appearance: none; background-image: url("da
 .ai-source-name { font-size: 12px; color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ai-source-path { font-size: 10px; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* AI 对话框触发示例提示（可折叠） */
+.ai-tips { align-self: stretch; max-width: 100%; background: transparent; padding: 2px 0; }
+.ai-tips-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); padding: 7px 9px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; user-select: none; transition: border-color .15s ease, color .15s ease; }
+.ai-tips-head:hover { border-color: var(--accent); color: var(--text); }
+.ai-tips-chevron { font-size: 11px; transition: transform .15s ease; }
+.ai-tips-list { margin-top: 7px; }
+.ai-tips-item { display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px; margin-bottom: 7px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.ai-tips-tag { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: #fff; background: var(--accent); padding: 2px 7px; border-radius: 10px; white-space: nowrap; margin-top: 1px; }
+.ai-tips-body { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+.ai-tips-ex { color: var(--text); background: var(--bg); border: 1px dashed var(--border); border-radius: var(--radius-sm); padding: 0 5px; font-size: 11.5px; }
+
 /* ============================================================
    动态 AI 特效 —— 仅在 AI 介入运行时呈现，提升页面高级感
    ============================================================ */

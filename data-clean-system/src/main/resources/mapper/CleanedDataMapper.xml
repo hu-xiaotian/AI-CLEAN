@@ -144,6 +144,27 @@
         </if>
     </sql>
 
+    <select id="searchSimilarMaterials" resultMap="BaseResultMap">
+        SELECT cd.*, mdc.category_name
+        FROM cleaned_data cd
+        LEFT JOIN main_data_category mdc ON cd.category_id = mdc.id
+        WHERE 1=1
+        <if test="keywords != null and keywords.size() > 0">
+            AND
+            <foreach collection="keywords" item="kw" open="(" separator=" OR " close=")">
+                (cd.material_name LIKE CONCAT('%', #{kw}, '%')
+                 OR cd.specification LIKE CONCAT('%', #{kw}, '%')
+                 OR cd.full_description LIKE CONCAT('%', #{kw}, '%')
+                 OR cd.grade LIKE CONCAT('%', #{kw}, '%'))
+            </foreach>
+        </if>
+        <if test="keywords == null or keywords.size() == 0">
+            AND 1 = 0
+        </if>
+        ORDER BY cd.id DESC
+        LIMIT #{limit}
+    </select>
+
     <select id="searchByConditions" resultMap="BaseResultMap">
         SELECT cd.*, mdc.category_name
         FROM cleaned_data cd

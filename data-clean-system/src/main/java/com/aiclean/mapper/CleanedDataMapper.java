@@ -153,6 +153,12 @@ public interface CleanedDataMapper extends BaseMapper<CleanedDataEntity> {
     List<CleanedDataEntity> selectByIds(@Param("ids") List<Long> ids);
 
     /**
+     * 相似物料检索：按多个关键词在 物料名称/规格/全描述/牌号 上做 OR 模糊匹配。
+     * 用于 AI 对话框「相似物料推荐」能力，召回候选集合后由服务层按相似度排序。
+     */
+    List<CleanedDataEntity> searchSimilarMaterials(@Param("keywords") List<String> keywords, @Param("limit") int limit);
+
+    /**
      * 根据表头ID物理删除所有关联的清洗数据
      */
     @org.apache.ibatis.annotations.Delete("DELETE FROM cleaned_data WHERE temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")

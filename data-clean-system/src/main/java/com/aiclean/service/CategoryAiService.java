@@ -2,7 +2,10 @@ package com.aiclean.service;
 
 import cn.hutool.core.util.StrUtil;
 import com.aiclean.ai.AiClientService;
+import com.aiclean.dto.SimilarMaterialDTO;
 import com.aiclean.entity.CategoryEntity;
+import com.aiclean.entity.CleanedDataEntity;
+import com.aiclean.mapper.CleanedDataMapper;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,6 +34,7 @@ public class CategoryAiService {
 
     private final CategoryStandardLibrary library;
     private final AiClientService aiClientService;
+    private final CleanedDataMapper cleanedDataMapper;
 
     @Value("${app.ai.category-top-k:15}")
     private int topK;
@@ -41,6 +45,17 @@ public class CategoryAiService {
     @Value("${app.ai.category-system-prompt:}")
     private String categorySystemPrompt;
 
+    // ===== 相似物料推荐配置 =====
+    /** 从 cleaned_data 召回的候选上限（再在内存中按相似度排序裁剪） */
+    @Value("${app.ai.similar-limit:200}")
+    private int similarLimit;
+    /** 最终返回给前端的相似物料条数上限 */
+    @Value("${app.ai.similar-top-n:10}")
+    private int similarTopN;
+    /** 用于检索的关键词（分词）数量上限，避免单字/常见词拉回过多噪声 */
+    @Value("${app.ai.similar-max-tokens:6}")
+    private int similarMaxTokens;
+
     private static final String DEFAULT_SYSTEM_PROMPT =
             "你是一名“标准分类代码查询助手”，专门基于下方提供的【标准分类库（main_data_category）】数据回答用户关于标准分类的问题。\n" +
             "规则：\n" +
@@ -50,9 +65,10 @@ public class CategoryAiService {
             "4. 回答使用简洁中文；涉及分类时附上分类编码（如 100101）与完整路径（full_path）。\n" +
             "5. 可以列举、对比、解释分类的层级关系、计量单位、说明等字段。";
 
-    public CategoryAiService(CategoryStandardLibrary library, AiClientService aiClientService) {
+    public CategoryAiService(CategoryStandardLibrary library, AiClientService aiClientService, CleanedDataMapper cleanedDataMapper) {
         this.library = library;
         this.aiClientService = aiClientService;
+        this.cleanedDataMapper = cleanedDataMapper;
     }
 
     /**
@@ -73,6 +89,168 @@ public class CategoryAiService {
         result.setReply(reply);
         result.setSources(context);
         return result;
+    }
+
+    // ===================== 相似物料推荐 =====================
+
+    private static final String SIMILAR_SYSTEM_PROMPT =
+            "你是一名“相似物料推荐助手”，基于下方【检索到的相似物料】列表，回答用户关于“哪些物料与给定物料相似”的问题。\n" +
+            "规则：\n" +
+            "1. 只能依据【检索到的相似物料】列表作答，不得编造列表中不存在的物料。\n" +
+            "2. 优先说明检索依据：这些物料与用户给定的物料在名称/规格/牌号/描述上存在哪些共同关键词，因此被判为相似。\n" +
+            "3. 可按相似度由高到低简要列举若干条，并标注其分类与编码，帮助用户快速定位。\n" +
+            "4. 若列表为空，礼貌说明“未检索到相似物料”，并建议用户更换或补充物料描述。\n" +
+            "5. 回答使用简洁中文。";
+
+    /**
+     * 相似物料推荐。
+     * 思路：先从用户问题中抽取“目标物料描述”，对其分词后在 cleaned_data 中做多关键词 OR 模糊召回，
+     * 再按“查询词命中覆盖率”在内存中排序裁剪，最后交由大模型基于召回结果做自然语言综述。
+     *
+     * @param messages 完整对话历史（最后一条应为 user）
+     * @param question 用户当前问题（用于抽取目标物料与检索）
+     * @return 含 AI 综述回复与召回的相似物料来源
+     */
+    public SimilarMaterialResult recommendSimilarMaterials(List<Map<String, String>> messages, String question) {
+        if (!aiClientService.isEnabled()) {
+            throw new RuntimeException("AI 对话功能未启用，请在 application.yml 中配置 app.ai（base-url / api-key / model）");
+        }
+        String query = extractSimilarQuery(question);
+        List<SimilarMaterialDTO> materials;
+        if (StrUtil.isBlank(query)) {
+            materials = new ArrayList<>();
+        } else {
+            List<String> tokens = tokenize(query);
+            if (tokens.size() > similarMaxTokens) tokens = tokens.subList(0, similarMaxTokens);
+            List<CleanedDataEntity> candidates = cleanedDataMapper.searchSimilarMaterials(tokens, similarLimit);
+            materials = rankMaterials(tokens, candidates);
+            log.info("相似物料推荐：问题=[{}]，抽取查询=[{}]，召回候选 {} 条，命中相似 {} 条",
+                    question, query, candidates.size(), materials.size());
+        }
+
+        String reply;
+        try {
+            String systemPrompt = SIMILAR_SYSTEM_PROMPT + "\n\n【检索到的相似物料（已按相似度排序，共 "
+                    + materials.size() + " 条）】\n" + formatMaterials(materials);
+            reply = aiClientService.chatWithHistory(systemPrompt, messages);
+        } catch (Exception e) {
+            log.warn("相似物料推荐 AI 综述失败，回退为本地生成文本", e);
+            reply = buildFallbackReply(materials, query);
+        }
+
+        SimilarMaterialResult result = new SimilarMaterialResult();
+        result.setReply(reply);
+        result.setMaterials(materials);
+        return result;
+    }
+
+    /** 在召回候选中按“查询词命中覆盖率”排序，裁剪为 Top-N 相似物料 */
+    private List<SimilarMaterialDTO> rankMaterials(List<String> queryTokens, List<CleanedDataEntity> candidates) {
+        if (queryTokens.isEmpty() || candidates == null || candidates.isEmpty()) return new ArrayList<>();
+        Set<String> qTokens = new LinkedHashSet<>(queryTokens);
+        List<SimilarMaterialDTO> out = new ArrayList<>();
+        for (CleanedDataEntity m : candidates) {
+            String hay = String.join(" ",
+                    nvl(m.getMaterialName()), nvl(m.getSpecification()),
+                    nvl(m.getFullDescription()), nvl(m.getGrade()));
+            Set<String> mTokens = new HashSet<>(tokenize(hay));
+            Set<String> hit = new LinkedHashSet<>();
+            for (String t : qTokens) {
+                if (mTokens.contains(t)) hit.add(t);
+            }
+            if (hit.isEmpty()) continue;
+            SimilarMaterialDTO dto = toDto(m);
+            dto.setSimilarityScore(Math.round((double) hit.size() / qTokens.size() * 100.0) / 100.0);
+            dto.setMatchedTokens(String.join("、", hit));
+            dto.setReason("与查询词「" + String.join("、", hit) + "」匹配");
+            out.add(dto);
+        }
+        out.sort((a, b) -> Double.compare(b.getSimilarityScore(), a.getSimilarityScore()));
+        if (out.size() > similarTopN) out = out.subList(0, similarTopN);
+        return out;
+    }
+
+    private SimilarMaterialDTO toDto(CleanedDataEntity m) {
+        SimilarMaterialDTO d = new SimilarMaterialDTO();
+        d.setId(m.getId());
+        d.setMaterialCode(m.getMaterialCode());
+        d.setMaterialName(m.getMaterialName());
+        d.setSpecification(m.getSpecification());
+        d.setGrade(m.getGrade());
+        d.setUnit(m.getUnit());
+        d.setCategoryCode(m.getCategoryCode());
+        d.setCategoryName(m.getCategoryName());
+        d.setCategoryFullPath(m.getCategoryFullPath());
+        return d;
+    }
+
+    private String nvl(String s) {
+        return s == null ? "" : s;
+    }
+
+    /** 将相似物料列表格式化为可供大模型阅读的文本 */
+    private String formatMaterials(List<SimilarMaterialDTO> list) {
+        if (list == null || list.isEmpty()) return "（未检索到相似物料）\n";
+        StringBuilder sb = new StringBuilder();
+        int i = 1;
+        for (SimilarMaterialDTO m : list) {
+            sb.append(i++).append(". ")
+                    .append("[物料代码 ").append(m.getMaterialCode() == null ? "-" : m.getMaterialCode()).append("] ")
+                    .append(m.getMaterialName() == null ? "-" : m.getMaterialName());
+            if (StrUtil.isNotBlank(m.getSpecification())) sb.append(" 规格=").append(m.getSpecification());
+            if (StrUtil.isNotBlank(m.getGrade())) sb.append(" 牌号=").append(m.getGrade());
+            sb.append(" | 分类=").append(m.getCategoryName() == null ? "-" : m.getCategoryName())
+                    .append("(").append(m.getCategoryCode() == null ? "-" : m.getCategoryCode()).append(")");
+            sb.append(" | 相似度=").append(m.getSimilarityScore() == null ? "-" : (Math.round(m.getSimilarityScore() * 100) + "%"));
+            sb.append(" | 命中词=").append(m.getMatchedTokens() == null ? "-" : m.getMatchedTokens());
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+
+    /** AI 综述失败时的本地回退文本 */
+    private String buildFallbackReply(List<SimilarMaterialDTO> list, String query) {
+        if (list == null || list.isEmpty()) {
+            return "未检索到" + (StrUtil.isBlank(query) ? "相似物料" : "与「" + query + "」相似的物料")
+                    + "。建议更换或更具体地描述物料名称/规格/牌号。";
+        }
+        StringBuilder sb = new StringBuilder("为你找到 ").append(list.size()).append(" 条相似物料（按相似度排序）：\n");
+        for (SimilarMaterialDTO m : list) {
+            sb.append("- ").append(m.getMaterialName())
+                    .append("（").append(m.getCategoryName()).append("，分类编码 ").append(m.getCategoryCode())
+                    .append("，相似度 ").append(Math.round(m.getSimilarityScore() * 100)).append("%）\n");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 从用户问题中抽取“目标物料描述”。
+     * 支持：① “相似物料：XXX”；② “和XXX相似的物料”；③ 去除引导词后的主体。
+     */
+    private String extractSimilarQuery(String q) {
+        if (StrUtil.isBlank(q)) return "";
+        String t = q.trim();
+        // 模式①：推荐/找/查询 + 相似/类似/相近 + 物料/材料/产品 + 冒号 + 内容
+        Matcher m1 = Pattern.compile("(?:推荐|找|查询|查|给?我?)?\\s*(?:相似|类似|相近|差不多)\\s*(?:物料|材料|产品)\\s*[:：]\\s*(.+)").matcher(t);
+        if (m1.find()) return m1.group(1).trim();
+        // 模式②：和/跟/与/同 + 主体 + 相似/类似/相近 + （物料）
+        Matcher m2 = Pattern.compile("(?:和|跟|与|同)\\s*(.+?)\\s*(?:相似|类似|相近|差不多)\\s*(?:的)?\\s*(?:物料|材料|产品)?").matcher(t);
+        if (m2.find()) return m2.group(1).trim();
+        // 模式③：去除引导词，取主体
+        String cleaned = t.replaceAll(
+                "(?:请|帮(?:我)?|麻烦|我想|我想问|请问|推荐|找|查询|查|给我|列举|列出|有哪些|有啥|啥|哪些|相似|类似|相近|差不多|物料|材料|产品|推荐相似|类似)", " ")
+                .trim();
+        cleaned = cleaned.replaceAll("^(.*?)(?:相似|类似|相近).*$", "$1").trim();
+        return cleaned;
+    }
+
+    /** 相似物料推荐结果 */
+    @Data
+    public static class SimilarMaterialResult {
+        /** AI 综述回复文本 */
+        private String reply;
+        /** 召回的相似物料（供前端展示来源卡片） */
+        private List<SimilarMaterialDTO> materials;
     }
 
     // ===================== 检索 =====================

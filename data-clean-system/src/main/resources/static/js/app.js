@@ -4678,6 +4678,65 @@ async function initAiChat() {
     } catch (e) {
         console.warn('查询 AI 对话状态失败:', e.message);
     }
+    if (aiChatReady) renderAiChatTips();
+}
+
+// 渲染 AI 对话框的触发示例提示（初始/清空对话时展示，默认折叠，点击展开，引导用户如何触发各类能力）
+function renderAiChatTips() {
+    const box = $('#aiChatMessages');
+    if (!box) return;
+    box.innerHTML = '';
+    const tips = [
+        { tag: '标准分类问答', desc: '切到「标准分类」模式，或问', ex: '分类编码100101是什么 / 有哪些一级分类 / 铸钢件的标准编码' },
+        { tag: '相似物料推荐', desc: '切到「相似物料」模式，或问', ex: '推荐相似物料：碳素铸钢件 规格Q235 / 和螺纹钢类似的物料有哪些' },
+        { tag: '单条文字分类', desc: '输入', ex: '请分类：碳素铸钢件 规格Q235 / 碳素铸钢件属于哪类' },
+        { tag: '数据文件分类检测', desc: '在「智能分类」页选中文件后，问含“分类”的问题，如', ex: '这批数据分类情况如何' }
+    ];
+    const wrap = document.createElement('div');
+    wrap.className = 'ai-tips';
+
+    const head = document.createElement('div');
+    head.className = 'ai-tips-head';
+    const chevron = document.createElement('span');
+    chevron.className = 'ai-tips-chevron';
+    chevron.textContent = '▸';
+    const headText = document.createElement('span');
+    headText.textContent = '使用提示 / 触发示例（点击展开）';
+    head.appendChild(chevron);
+    head.appendChild(headText);
+
+    const list = document.createElement('div');
+    list.className = 'ai-tips-list';
+    list.style.display = 'none';
+    tips.forEach(t => {
+        const item = document.createElement('div');
+        item.className = 'ai-tips-item';
+        const tag = document.createElement('span');
+        tag.className = 'ai-tips-tag';
+        tag.textContent = t.tag;
+        const body = document.createElement('div');
+        body.className = 'ai-tips-body';
+        body.appendChild(document.createTextNode(t.desc + ' '));
+        const ex = document.createElement('span');
+        ex.className = 'ai-tips-ex';
+        ex.textContent = t.ex;
+        body.appendChild(ex);
+        item.appendChild(tag);
+        item.appendChild(body);
+        list.appendChild(item);
+    });
+
+    head.addEventListener('click', () => {
+        const open = list.style.display !== 'none';
+        list.style.display = open ? 'none' : 'block';
+        chevron.textContent = open ? '▸' : '▾';
+        headText.textContent = open ? '使用提示 / 触发示例（点击展开）' : '使用提示 / 触发示例（点击收起）';
+    });
+
+    wrap.appendChild(head);
+    wrap.appendChild(list);
+    box.appendChild(wrap);
+    box.scrollTop = box.scrollHeight;
 }
 
 function toggleAiChat() {
@@ -4700,6 +4759,9 @@ async function sendAiMessage() {
     const input = $('#aiChatInput');
     const text = input.value.trim();
     if (!text) return;
+    // 发送首条消息时移除提示卡片
+    const tipsEl = $('#aiChatMessages .ai-tips');
+    if (tipsEl) tipsEl.remove();
     appendChatMessage('user', text);
     chatHistory.push({ role: 'user', content: text });
     input.value = '';
@@ -4716,6 +4778,12 @@ async function sendAiMessage() {
     // 标准分类问答模式（或问题被识别为标准分类查询）：基于 main_data_category 检索并回答
     if (aiChatMode === 'category' || isCategoryQuestion(text)) {
         await runCategoryChat(box, thinking, text);
+        return;
+    }
+
+    // 相似物料推荐模式（或问题被识别为相似物料查询）：基于 cleaned_data 召回相似物料并综述
+    if (aiChatMode === 'similar' || isSimilarMaterialQuestion(text)) {
+        await runSimilarMaterialChat(box, thinking, text);
         return;
     }
 
@@ -4894,7 +4962,7 @@ async function classifyTextWithTimeout(text, timeoutMs = 180000) {
 
 function clearChat() {
     chatHistory = [];
-    $('#aiChatMessages').innerHTML = '';
+    renderAiChatTips();
 }
 
 // 切换 AI 对话模式（通用问答 / 标准分类查询）
@@ -4905,6 +4973,8 @@ function setAiChatMode(mode) {
     if (input) {
         input.placeholder = mode === 'category'
             ? '例如：分类编码100101是什么？/ 有哪些一级分类？/ 铸钢件的标准编码是多少？'
+            : mode === 'similar'
+            ? '例如：推荐相似物料：碳素铸钢件 规格Q235 / 和螺纹钢类似的物料有哪些？'
             : '输入消息，或点击看板中的「问AI」把内容带过来…';
     }
 }
@@ -4919,6 +4989,80 @@ function isCategoryQuestion(text) {
         '有哪些一级', '有哪些二级', '有哪些三级', '分类有哪些'];
     return keys.some(k => t.includes(k.toLowerCase()));
 }
+
+// 识别用户问题是否为"相似物料推荐"（即使处于通用模式也路由到相似物料推荐）
+function isSimilarMaterialQuestion(text) {
+    const t = (text || '').toLowerCase();
+    const keys = ['相似物料', '类似物料', '相近物料', '推荐物料', '相似材料', '类似材料',
+        '找相似', '找类似', '类似的物料', '相似的物料', '推荐类似', '相似产品', '类似产品',
+        '相似的产品', '类似的'];
+    if (keys.some(k => t.includes(k))) return true;
+    // 模式：和/跟/与/同 X 相似/类似/相近 （的）物料/材料/产品
+    if (/(和|跟|与|同)\s*.{1,20}?\s*(相似|类似|相近|差不多)\s*(的)?\s*(物料|材料|产品)?/.test(text)) return true;
+    return false;
+}
+
+// 相似物料推荐：基于 cleaned_data 召回相似物料并交由 AI 综述，展示命中来源
+async function runSimilarMaterialChat(box, thinking, text) {
+    thinking.textContent = '正在检索相似物料并生成推荐…';
+    try {
+        const res = await api('/ai/similar-materials', {
+            method: 'POST',
+            body: JSON.stringify({ messages: chatHistory })
+        });
+        if (box.contains(thinking)) box.removeChild(thinking);
+        const reply = (res && res.reply) ? res.reply : '(无回复)';
+        appendChatMessage('assistant', reply);
+        chatHistory.push({ role: 'assistant', content: reply });
+        if (res && res.materials && res.materials.length) {
+            appendSimilarMaterials(res.materials);
+        }
+    } catch (e) {
+        if (box.contains(thinking)) box.removeChild(thinking);
+        appendChatMessage('assistant', '相似物料推荐失败：' + e.message);
+    }
+}
+
+// 渲染召回的相似物料来源卡片
+function appendSimilarMaterials(materials) {
+    const box = $('#aiChatMessages');
+    const wrap = document.createElement('div');
+    wrap.className = 'ai-msg ai-msg-source';
+
+    const title = document.createElement('div');
+    title.className = 'ai-source-title';
+    title.textContent = '相似物料推荐（' + materials.length + ' 条）';
+    wrap.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.className = 'ai-source-grid';
+    materials.slice(0, 8).forEach(m => {
+        const card = document.createElement('div');
+        card.className = 'ai-source-card';
+
+        const code = document.createElement('div');
+        code.className = 'ai-source-code';
+        code.textContent = m.materialCode || (m.materialName || '-');
+
+        const name = document.createElement('div');
+        name.className = 'ai-source-name';
+        name.textContent = m.materialName || '-';
+
+        const path = document.createElement('div');
+        path.className = 'ai-source-path';
+        const sim = m.similarityScore != null ? (' · 相似度' + Math.round(m.similarityScore * 100) + '%') : '';
+        path.textContent = (m.categoryName || '') + (m.categoryCode ? (' · ' + m.categoryCode) : '') + sim;
+
+        card.appendChild(code);
+        card.appendChild(name);
+        card.appendChild(path);
+        grid.appendChild(card);
+    });
+    wrap.appendChild(grid);
+    box.appendChild(wrap);
+    box.scrollTop = box.scrollHeight;
+}
+
 
 // 标准分类问答：基于 main_data_category 检索相关记录并交由 AI 回答，展示命中来源
 async function runCategoryChat(box, thinking, text) {
