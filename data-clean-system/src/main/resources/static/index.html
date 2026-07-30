@@ -20,7 +20,7 @@
             </svg>
             <div class="logo-text">
                 <h1>AI Data Clean</h1>
-                <small>AI辅助数据清洗工作台</small>
+                <small>AI辅助数据清洗工具</small>
             </div>
         </div>
         <nav class="nav-menu">
@@ -39,6 +39,10 @@
             <a class="nav-item" data-page="search" onclick="switchPage('search')">
                 <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <span class="nav-label">数据检索</span>
+            </a>
+            <a class="nav-item" data-page="externalclean" onclick="switchPage('externalclean')">
+                <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v4H4z"/><path d="M4 10h16v10H4z"/><path d="M8 14h8"/></svg>
+                <span class="nav-label">外部清洗</span>
             </a>
 
             <div class="nav-group">
@@ -665,6 +669,76 @@
         </section>
 
 
+
+        <!-- ===== 外部数据清洗 ===== -->
+        <section id="page-externalclean" class="page">
+            <h2>外部数据清洗</h2>
+            <p class="desc">选择已导入的数据文件，提交至外部清洗服务；清洗完成后通过回调接收结果，可采纳或修正</p>
+            <div class="card">
+                <div class="form-grid">
+                    <div class="form-group"><label>数据文件</label><select id="ecTitleId" class="form-input"></select></div>
+                    <div class="form-group"><label>置信度阈值</label><input id="ecThreshold" class="form-input" type="number" min="0" max="1" step="0.05" value="0.7"></div>
+                    <div class="form-group"><label>候选分类数</label><input id="ecMaxCandidates" class="form-input" type="number" min="1" max="50" step="1" value="10"></div>
+                    <div class="form-group"><label>模型</label><input id="ecModel" class="form-input" value="default"></div>
+                    <div class="form-group"><button class="btn btn-primary" id="ecSubmitBtn" onclick="ecSubmitTask()">提交清洗任务</button></div>
+                </div>
+            </div>
+            <div class="card">
+                <h3 style="display:flex;justify-content:space-between;align-items:center">
+                    <span>清洗任务列表</span>
+                    <span style="display:flex;gap:8px;align-items:center">
+                        <select id="ecStatusFilter" class="form-input" style="min-width:140px" onchange="ecLoadTasks(1)">
+                            <option value="">全部状态</option>
+                            <option value="processing">处理中</option>
+                            <option value="completed">已完成</option>
+                            <option value="failed">失败</option>
+                            <option value="cancelled">已取消</option>
+                            <option value="callback_timeout">回调超时</option>
+                        </select>
+                        <button class="btn btn-default" onclick="ecLoadTasks(1)">刷新</button>
+                    </span>
+                </h3>
+                <table class="data-table" id="ecTaskTable">
+                    <thead><tr><th>任务号</th><th>文件</th><th>模式</th><th>状态</th><th>进度</th><th>预估准确率</th><th>提交时间</th><th>操作</th></tr></thead>
+                    <tbody id="ecTaskTbody"><tr><td colspan="8" class="empty-hint">暂无任务</td></tr></tbody>
+                </table>
+                <div class="pagination" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
+                    <div class="pagination-info"><span id="ecTaskPageInfo">共 0 条</span></div>
+                    <div class="pagination-btns" id="ecTaskPageBtns"></div>
+                </div>
+            </div>
+            <div class="card" id="ecRowsCard" style="display:none">
+                <h3 style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+                    <span>任务结果 <span id="ecRowsTaskId" style="font-size:12px;color:var(--text-secondary);font-weight:400"></span></span>
+                    <span style="display:flex;gap:8px;align-items:center">
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:400;cursor:pointer">
+                            <input type="checkbox" id="ecOnlyReview" onchange="ecLoadRows(1)"> 仅看待复核
+                        </label>
+                        <button class="btn btn-success" onclick="ecAdoptAll()">采纳全部</button>
+                    </span>
+                </h3>
+                <div class="table-scroll" style="max-height:560px;overflow-y:auto">
+                    <table class="data-table" id="ecRowTable">
+                        <thead><tr>
+                            <th style="width:44px">#</th>
+                            <th>原始数据</th>
+                            <th>分类编码</th>
+                            <th>分类名称</th>
+                            <th>置信度</th>
+                            <th>提取属性</th>
+                            <th>复核</th>
+                            <th>行状态</th>
+                            <th style="width:200px">操作</th>
+                        </tr></thead>
+                        <tbody id="ecRowTbody"><tr><td colspan="9" class="empty-hint">请选择任务查看结果</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="pagination" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
+                    <div class="pagination-info"><span id="ecRowPageInfo">共 0 条</span></div>
+                    <div class="pagination-btns" id="ecRowPageBtns"></div>
+                </div>
+            </div>
+        </section>
 
         <!-- ===== 数据统计看板 ===== -->
         <section id="page-dashboard" class="page">

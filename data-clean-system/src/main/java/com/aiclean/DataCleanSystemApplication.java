@@ -14,7 +14,7 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 @EnableTransactionManagement
 @EnableCaching
 @EnableAsync
-@MapperScan("com.aiclean.mapper")
+@MapperScan({"com.aiclean.mapper", "com.aiclean.externalclean.mapper"})
 public class DataCleanSystemApplication {
 
     public static void main(String[] args) {

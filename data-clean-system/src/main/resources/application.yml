@@ -324,6 +324,25 @@ app:
     # 用于检索的关键词（分词）数量上限，避免单字/常见词拉回过多噪声
     similar-max-tokens: 6
 
+  # 外部数据清洗对接模块（调用外部清洗服务，接收其回调；与系统其他功能完全独立）
+  external-clean:
+    # 是否启用，false 时模块不参与任何系统流程
+    enabled: ${EXTERNAL_CLEAN_ENABLED:true}
+    # 外部清洗服务地址，如 http://clean-service:8000
+    base-url: ${EXTERNAL_CLEAN_BASE_URL:}
+    # 调用外部服务的 API Key（Bearer Token）
+    api-key: ${EXTERNAL_CLEAN_API_KEY:123}
+    # 本系统对外暴露的回调基础地址，如 http://java-service:8080
+    callback-base-url: ${EXTERNAL_CLEAN_CALLBACK_BASE_URL:127.0.0.1:8080}
+    # 回调接口校验令牌（请求头 X-Callback-Token）
+    callback-token: ${EXTERNAL_CLEAN_CALLBACK_TOKEN:123}
+    # 调用外部服务超时（秒）
+    timeout-seconds: 5
+    # 兜底轮询间隔（分钟）
+    poll-interval-minutes: 3
+    # 提交后超过该分钟数未收到回调则标记 callback_timeout
+    callback-timeout-minutes: 30
+
   # 文件处理配置
   file-processing:
     # Excel解析配置

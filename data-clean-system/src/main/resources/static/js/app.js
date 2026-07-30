@@ -220,6 +220,7 @@ function switchPage(name) {
         'unmapped': () => { loadTitlesForUnmapped(); },
         'oneclick': () => { loadOneClickPage(); },
         'dashboard': () => { loadDashboardPage(); },
+        'externalclean': () => { loadTitlesForSelect('ecTitleId'); ecLoadTasks(1); ecStartAutoRefresh(); },
     };
     if (loaders[name]) loaders[name]();
 }
@@ -5612,3 +5613,325 @@ const AiCleanOverlay = {
         ctx.fillText(Math.round(this.pct) + '%', cx, cy);
     }
 };
+
+// ==================== 外部数据清洗 ====================
+let ecTaskPage = 1;
+const EC_TASK_SIZE = 10;
+let ecCurrentTaskId = null;
+let ecRowPage = 1;
+const EC_ROW_SIZE = 20;
+let ecOnlyReview = false;
+let ecRowsData = [];
+let ecAutoTimer = null;
+let ecCorrectRowIndex = null;
+
+// 提交外部清洗任务
+async function ecSubmitTask() {
+    const titleId = $('#ecTitleId').value;
+    if (!titleId) { showToast('请先选择数据文件', 'error'); return; }
+    const options = {
+        threshold: parseFloat($('#ecThreshold').value) || 0.7,
+        maxCandidates: parseInt($('#ecMaxCandidates').value, 10) || 10,
+        model: $('#ecModel').value || 'default'
+    };
+    const body = { tempDataTitleId: Number(titleId), options: options };
+    try {
+        const task = await api('/external-clean/tasks', { method: 'POST', body: body });
+        showToast('任务已提交：' + task.taskId, 'success');
+        ecLoadTasks(1);
+    } catch (e) {
+        showToast('提交失败：' + e.message, 'error');
+    }
+}
+
+// 任务列表分页
+async function ecLoadTasks(page) {
+    if (page) ecTaskPage = page;
+    const statusSel = $('#ecStatusFilter');
+    const status = statusSel ? statusSel.value : '';
+    let url = '/external-clean/tasks?page=' + ecTaskPage + '&size=' + EC_TASK_SIZE;
+    if (status) url += '&status=' + encodeURIComponent(status);
+    try {
+        const data = await api(url);
+        const records = data.records || [];
+        const total = data.total || 0;
+        const pages = data.pages || 1;
+        const tbody = $('#ecTaskTbody');
+        if (records.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无任务</td></tr>';
+        } else {
+            tbody.innerHTML = records.map(function (t) {
+                return '<tr>' +
+                    '<td>' + esc(t.taskId) + '</td>' +
+                    '<td>' + esc(t.fileName || '-') + '</td>' +
+                    '<td>' + (t.mode === 'sync' ? '同步' : '异步') + '</td>' +
+                    '<td>' + ecTaskStatusBadge(t.status) + '</td>' +
+                    '<td>' + ecProgressText(t) + '</td>' +
+                    '<td>' + ecAccText(t.estimatedAccuracy) + '</td>' +
+                    '<td>' + formatDate(t.submittedAt) + '</td>' +
+                    '<td>' + ecTaskActions(t) + '</td>' +
+                    '</tr>';
+            }).join('');
+        }
+        $('#ecTaskPageInfo').textContent = '共 ' + total + ' 条';
+        ecRenderTaskPager(pages);
+    } catch (e) {
+        console.error('加载外部清洗任务失败', e);
+    }
+}
+
+function ecRenderTaskPager(pages) {
+    let html = '';
+    html += '<button class="btn btn-sm" ' + (ecTaskPage <= 1 ? 'disabled' : '') + ' onclick="ecLoadTasks(1)">首页</button>';
+    html += '<button class="btn btn-sm" ' + (ecTaskPage <= 1 ? 'disabled' : '') + ' onclick="ecLoadTasks(' + (ecTaskPage - 1) + ')">上一页</button>';
+    const maxBtns = 5;
+    let sp = Math.max(1, ecTaskPage - Math.floor(maxBtns / 2));
+    let ep = Math.min(pages, sp + maxBtns - 1);
+    if (ep - sp < maxBtns - 1) sp = Math.max(1, ep - maxBtns + 1);
+    for (let i = sp; i <= ep; i++) {
+        html += '<button class="btn btn-sm ' + (i === ecTaskPage ? 'btn-primary' : '') + '" onclick="ecLoadTasks(' + i + ')">' + i + '</button>';
+    }
+    html += '<button class="btn btn-sm" ' + (ecTaskPage >= pages ? 'disabled' : '') + ' onclick="ecLoadTasks(' + (ecTaskPage + 1) + ')">下一页</button>';
+    html += '<button class="btn btn-sm" ' + (ecTaskPage >= pages ? 'disabled' : '') + ' onclick="ecLoadTasks(' + pages + ')">末页</button>';
+    html += ' <span style="font-size:12px;margin-left:8px">每页 ' + EC_TASK_SIZE + ' 条</span>';
+    $('#ecTaskPageBtns').innerHTML = html;
+}
+
+function ecTaskActions(t) {
+    let h = '<button class="btn btn-sm btn-info" onclick="ecViewRows(\'' + t.taskId + '\')">查看结果</button> ';
+    if (t.status === 'processing' || t.status === 'submitting' || t.status === 'pending') {
+        h += '<button class="btn btn-sm btn-default" onclick="ecCancelTask(\'' + t.taskId + '\')">取消</button> ';
+    }
+    if (t.status === 'failed' || t.status === 'callback_timeout') {
+        h += '<button class="btn btn-sm btn-warning" onclick="ecRetryTask(\'' + t.taskId + '\')">重试</button> ';
+    }
+    return h;
+}
+
+// 查看任务结果（展开行卡片）
+async function ecViewRows(taskId) {
+    ecCurrentTaskId = taskId;
+    $('#ecRowsTaskId').textContent = '（' + taskId + '）';
+    $('#ecRowsCard').style.display = 'block';
+    const only = $('#ecOnlyReview');
+    if (only) only.checked = false;
+    ecOnlyReview = false;
+    ecRowPage = 1;
+    await ecLoadRows(1);
+}
+
+// 结果行分页
+async function ecLoadRows(page) {
+    if (!ecCurrentTaskId) return;
+    if (page) ecRowPage = page;
+    const onlyEl = $('#ecOnlyReview');
+    ecOnlyReview = (onlyEl && onlyEl.checked) ? true : false;
+    let url = '/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows?page=' + ecRowPage + '&size=' + EC_ROW_SIZE;
+    if (ecOnlyReview) url += '&needsReview=1';
+    try {
+        const data = await api(url);
+        const records = data.records || [];
+        ecRowsData = records;
+        const total = data.total || 0;
+        const pages = data.pages || 1;
+        const tbody = $('#ecRowTbody');
+        if (records.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="empty-hint">暂无结果数据</td></tr>';
+        } else {
+            tbody.innerHTML = records.map(function (r, idx) {
+                const seq = (ecRowPage - 1) * EC_ROW_SIZE + idx + 1;
+                return '<tr>' +
+                    '<td>' + seq + '</td>' +
+                    '<td title="' + esc(ecRawColumns(r)) + '">' + esc(ecRawColumnsPreview(r)) + '</td>' +
+                    '<td>' + esc(r.categoryCode || '-') + '</td>' +
+                    '<td>' + esc(r.categoryName || '-') + '</td>' +
+                    '<td>' + confidenceHtml(r.confidence) + '</td>' +
+                    '<td title="' + esc(ecAttrsText(r.extractedAttrsJson)) + '">' + esc(ecAttrsPreview(r.extractedAttrsJson)) + '</td>' +
+                    '<td>' + (r.needsReview === 1 ? '<span class="badge badge-warning">待复核</span>' : '<span class="badge badge-default">无需</span>') + '</td>' +
+                    '<td>' + ecRowStatusBadge(r.rowStatus) + '</td>' +
+                    '<td>' + ecRowActions(r) + '</td>' +
+                    '</tr>';
+            }).join('');
+        }
+        $('#ecRowPageInfo').textContent = '共 ' + total + ' 条';
+        ecRenderRowPager(pages);
+    } catch (e) {
+        console.error('加载外部清洗结果失败', e);
+    }
+}
+
+function ecRenderRowPager(pages) {
+    let html = '';
+    html += '<button class="btn btn-sm" ' + (ecRowPage <= 1 ? 'disabled' : '') + ' onclick="ecLoadRows(1)">首页</button>';
+    html += '<button class="btn btn-sm" ' + (ecRowPage <= 1 ? 'disabled' : '') + ' onclick="ecLoadRows(' + (ecRowPage - 1) + ')">上一页</button>';
+    const maxBtns = 5;
+    let sp = Math.max(1, ecRowPage - Math.floor(maxBtns / 2));
+    let ep = Math.min(pages, sp + maxBtns - 1);
+    if (ep - sp < maxBtns - 1) sp = Math.max(1, ep - maxBtns + 1);
+    for (let i = sp; i <= ep; i++) {
+        html += '<button class="btn btn-sm ' + (i === ecRowPage ? 'btn-primary' : '') + '" onclick="ecLoadRows(' + i + ')">' + i + '</button>';
+    }
+    html += '<button class="btn btn-sm" ' + (ecRowPage >= pages ? 'disabled' : '') + ' onclick="ecLoadRows(' + (ecRowPage + 1) + ')">下一页</button>';
+    html += '<button class="btn btn-sm" ' + (ecRowPage >= pages ? 'disabled' : '') + ' onclick="ecLoadRows(' + pages + ')">末页</button>';
+    html += ' <span style="font-size:12px;margin-left:8px">每页 ' + EC_ROW_SIZE + ' 条</span>';
+    $('#ecRowPageBtns').innerHTML = html;
+}
+
+function ecRowActions(r) {
+    const idx = r.rowIndex;
+    let h = '';
+    if (r.rowStatus === 'pending' || r.rowStatus === 'completed') {
+        h += '<button class="btn btn-sm btn-success" onclick="ecAdoptRow(' + idx + ')">采纳</button> ';
+        h += '<button class="btn btn-sm btn-default" onclick="ecRejectRow(' + idx + ')">驳回</button> ';
+        h += '<button class="btn btn-sm btn-primary" onclick="ecOpenCorrect(' + idx + ')">修正</button>';
+    } else {
+        h += '<span style="font-size:12px;color:var(--text-tertiary)">' + esc(r.operatedBy || '') + '</span>';
+    }
+    return h;
+}
+
+async function ecAdoptRow(idx) {
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows/' + idx + '/adopt', { method: 'POST' });
+        showToast('已采纳该行', 'success');
+        ecLoadRows(ecRowPage);
+    } catch (e) { showToast('采纳失败：' + e.message, 'error'); }
+}
+
+async function ecAdoptAll() {
+    if (!ecCurrentTaskId) return;
+    if (!confirm('确认采纳当前任务全部可采纳行？')) return;
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/adopt-all', { method: 'POST' });
+        showToast('已采纳全部', 'success');
+        ecLoadRows(ecRowPage);
+    } catch (e) { showToast('采纳失败：' + e.message, 'error'); }
+}
+
+async function ecRejectRow(idx) {
+    const comment = prompt('请输入驳回原因（可选）：');
+    if (comment === null) return;
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows/' + idx + '/reject?comment=' + encodeURIComponent(comment), { method: 'POST' });
+        showToast('已驳回', 'success');
+        ecLoadRows(ecRowPage);
+    } catch (e) { showToast('驳回失败：' + e.message, 'error'); }
+}
+
+function ecOpenCorrect(idx) {
+    ecCorrectRowIndex = idx;
+    const r = (ecRowsData || []).find(function (x) { return x.rowIndex === idx; }) || {};
+    const code = r.correctedCategoryCode || r.categoryCode || '';
+    const name = r.correctedCategoryName || r.categoryName || '';
+    const path = r.correctedCategoryPath || '';
+    const attrs = r.correctedAttrsJson || r.extractedAttrsJson || '';
+    const comment = r.correctComment || '';
+    const body = '' +
+        '<div class="form-group" style="margin-bottom:12px"><label>修正分类编码</label><input id="ecCorrectCode" class="form-input" value="' + esc(code) + '"></div>' +
+        '<div class="form-group" style="margin-bottom:12px"><label>修正分类名称</label><input id="ecCorrectName" class="form-input" value="' + esc(name) + '"></div>' +
+        '<div class="form-group" style="margin-bottom:12px"><label>修正分类路径</label><input id="ecCorrectPath" class="form-input" value="' + esc(path) + '"></div>' +
+        '<div class="form-group" style="margin-bottom:12px"><label>修正属性（JSON 对象）</label><textarea id="ecCorrectAttrs" class="cell-edit-input" rows="6" placeholder=\'{"key":"value"}\'>' + esc(attrs) + '</textarea></div>' +
+        '<div class="form-group" style="margin-bottom:12px"><label>修正备注</label><input id="ecCorrectComment" class="form-input" value="' + esc(comment) + '"></div>' +
+        '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button class="btn btn-default" onclick="closeModal()">取消</button>' +
+        '<button class="btn btn-primary" onclick="ecSubmitCorrect()">保存修正</button>' +
+        '</div>';
+    showModal('修正结果 - 行 #' + idx, body);
+}
+
+async function ecSubmitCorrect() {
+    const code = $('#ecCorrectCode').value.trim();
+    const name = $('#ecCorrectName').value.trim();
+    const path = $('#ecCorrectPath').value.trim();
+    const attrsText = $('#ecCorrectAttrs').value.trim();
+    const comment = $('#ecCorrectComment').value.trim();
+    let attrs = null;
+    if (attrsText) {
+        try { attrs = JSON.parse(attrsText); }
+        catch (e) { showToast('属性 JSON 解析失败：' + e.message, 'error'); return; }
+    }
+    const body = {
+        correctedCategoryCode: code || null,
+        correctedCategoryName: name || null,
+        correctedCategoryPath: path || null,
+        correctedAttrs: attrs,
+        comment: comment || null
+    };
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows/' + ecCorrectRowIndex + '/correct', { method: 'POST', body: body });
+        showToast('已修正', 'success');
+        closeModal();
+        ecLoadRows(ecRowPage);
+    } catch (e) { showToast('修正失败：' + e.message, 'error'); }
+}
+
+async function ecCancelTask(taskId) {
+    if (!confirm('确认取消任务 ' + taskId + '？')) return;
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(taskId) + '/cancel', { method: 'POST' });
+        showToast('已取消', 'success');
+        ecLoadTasks(ecTaskPage);
+    } catch (e) { showToast('取消失败：' + e.message, 'error'); }
+}
+
+async function ecRetryTask(taskId) {
+    if (!confirm('确认重试任务 ' + taskId + '？')) return;
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(taskId) + '/retry', { method: 'POST' });
+        showToast('已重新提交', 'success');
+        ecLoadTasks(ecTaskPage);
+    } catch (e) { showToast('重试失败：' + e.message, 'error'); }
+}
+
+function ecStartAutoRefresh() {
+    if (ecAutoTimer) clearInterval(ecAutoTimer);
+    ecAutoTimer = setInterval(function () {
+        const page = $('#page-externalclean');
+        if (!page || !page.classList.contains('active')) return;
+        ecLoadTasks(ecTaskPage);
+        const modalOpen = $('#modal') && $('#modal').classList.contains('show');
+        if (ecCurrentTaskId && !modalOpen) ecLoadRows(ecRowPage);
+    }, 5000);
+}
+
+// ===== 展示辅助 =====
+function ecTaskStatusBadge(s) {
+    const map = { pending: 'badge-default', submitting: 'badge-info', processing: 'badge-info', completed: 'badge-success', failed: 'badge-danger', cancelled: 'badge-default', callback_timeout: 'badge-warning' };
+    const label = { pending: '待提交', submitting: '提交中', processing: '处理中', completed: '已完成', failed: '失败', cancelled: '已取消', callback_timeout: '回调超时' };
+    return '<span class="badge ' + (map[s] || 'badge-default') + '">' + (label[s] || s) + '</span>';
+}
+function ecRowStatusBadge(s) {
+    const map = { pending: 'badge-default', completed: 'badge-success', accepted: 'badge-success', corrected: 'badge-info', rejected: 'badge-danger', skipped: 'badge-default' };
+    const label = { pending: '待处理', completed: '已完成', accepted: '已采纳', corrected: '已修正', rejected: '已驳回', skipped: '已跳过' };
+    return '<span class="badge ' + (map[s] || 'badge-default') + '">' + (label[s] || s) + '</span>';
+}
+function ecProgressText(t) {
+    if (t.totalRows == null) return '-';
+    const done = t.processedRows == null ? 0 : t.processedRows;
+    return done + ' / ' + t.totalRows;
+}
+function ecAccText(v) {
+    if (v == null) return '-';
+    if (v <= 1) return Math.round(v * 100) + '%';
+    return v + '%';
+}
+function ecRawColumns(r) {
+    try {
+        const m = JSON.parse(r.requestColumnsJson || '{}');
+        return Object.keys(m).map(function (k) { return k + ': ' + m[k]; }).join('；');
+    } catch (e) { return r.requestColumnsJson || '-'; }
+}
+function ecRawColumnsPreview(r) {
+    const s = ecRawColumns(r);
+    return s.length > 60 ? s.substring(0, 60) + '…' : s;
+}
+function ecAttrsText(json) {
+    try {
+        const m = JSON.parse(json || '{}');
+        return Object.keys(m).map(function (k) { return k + '=' + m[k]; }).join('；');
+    } catch (e) { return json || '-'; }
+}
+function ecAttrsPreview(json) {
+    const s = ecAttrsText(json);
+    return s.length > 50 ? s.substring(0, 50) + '…' : s;
+}
