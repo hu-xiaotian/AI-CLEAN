@@ -122,12 +122,12 @@
         <!-- ===== 数据导入 ===== -->
         <section id="page-import" class="page active">
             <h2>数据导入</h2>
-            <p class="desc">上传 Excel (.xlsx/.xls)，最大 10MB</p>
+            <p class="desc">上传 Excel (.xlsx/.xls) 或 CSV (.csv)，不限制文件大小</p>
             <div class="card">
                 <div class="upload-area" id="uploadArea">
                     <p>将 Excel 文件拖拽到此处，或点击选择文件</p>
-                    <small>支持 .xlsx / .xls，单文件最大 10MB</small>
-                    <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none" onchange="handleFileSelect(event)">
+                    <small>支持 .xlsx / .xls / .csv</small>
+                    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleFileSelect(event)">
                     <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">选择文件</button>
                 </div>
                 <div id="uploadProgress" style="display:none" class="mt-3">

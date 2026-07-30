@@ -45,11 +45,11 @@ public class DataImportController {
      * 上传Excel文件并解析为临时数据
      */
     @PostMapping("/upload")
-    @Operation(summary = "上传Excel文件", description = "上传Excel文件并解析为临时数据")
+    @Operation(summary = "上传文件", description = "上传 Excel 或 CSV 文件并解析为临时数据")
     public R<TempDataTitleEntity> uploadExcel(
             @RequestParam("file") MultipartFile file) {
         try {
-            log.info("开始上传Excel文件: {}", file.getOriginalFilename());
+            log.info("开始上传文件: {}", file.getOriginalFilename());
             TempDataTitleEntity result = dataCleaningService.importExcel(file);
             return R.success("文件上传解析成功", result);
         } catch (Exception e) {

@@ -144,7 +144,10 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Override
     @Transactional
     public TempDataTitleEntity importExcel(MultipartFile file) {
-        log.info("开始导入Excel文件: {}", file.getOriginalFilename());
+        String originalFilename = file.getOriginalFilename();
+        log.info("开始导入文件: {}", originalFilename);
+        String ext = FileUtil.extName(originalFilename);
+        boolean isCsv = "csv".equalsIgnoreCase(ext);
         try {
             String fileName = saveUploadFile(file);
             TempDataTitleEntity titleEntity = new TempDataTitleEntity();
@@ -153,7 +156,10 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             titleEntity.setStatus(DataStatus.DRAFT);
             titleEntity.setTotalRows(0);
 
-            Workbook workbook = WorkbookFactory.create(file.getInputStream());
+            // CSV 由 POI 依据文件扩展名识别，需以带 .csv 后缀的文件打开；Excel 仍走输入流
+            Workbook workbook = isCsv
+                    ? WorkbookFactory.create(new java.io.File(fileName))
+                    : WorkbookFactory.create(file.getInputStream());
             Sheet sheet = workbook.getSheetAt(0);
 
             Row headerRow = sheet.getRow(0);
@@ -189,11 +195,15 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 tempData.setRowIndex(rowIndex + 1);
                 tempData.setStatus(DataStatus.DRAFT);
 
+                boolean rowHasData = false;
                 for (int colIndex = 0; colIndex < colCount && colIndex < 10; colIndex++) {
                     Cell cell = dataRow.getCell(colIndex);
                     String cellValue = getCellValue(cell);
+                    if (StrUtil.isNotBlank(cellValue)) rowHasData = true;
                     tempData.setColData(colIndex + 1, cellValue);
                 }
+                // 空行（所有列均为空）不保留
+                if (!rowHasData) continue;
 
                 dataList.add(tempData);
                 rowCount++;
