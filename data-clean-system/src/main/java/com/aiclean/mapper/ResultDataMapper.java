@@ -70,4 +70,14 @@ public interface ResultDataMapper extends BaseMapper<ResultDataEntity> {
      */
     @org.apache.ibatis.annotations.Delete("DELETE FROM result_data WHERE standard_title_id IS NULL AND temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")
     int deleteByTitleIdAndNullStandard(@Param("titleId") Long titleId);
+
+    /**
+     * 将某标准字段表头+数据文件下结果数据的指定列置空（用于"不映射"时清除已填充值）。
+     * column 为内部受控的列名（col1..col20），非外部输入，可安全使用 ${}。
+     */
+    @org.apache.ibatis.annotations.Update("UPDATE result_data SET ${column} = NULL " +
+            "WHERE standard_title_id = #{standardTitleId} AND temp_data_id IN (SELECT id FROM temp_data WHERE temp_data_title_id = #{titleId})")
+    int clearColumnByStandardAndTitle(@Param("standardTitleId") Long standardTitleId,
+                                      @Param("titleId") Long titleId,
+                                      @Param("column") String column);
 }

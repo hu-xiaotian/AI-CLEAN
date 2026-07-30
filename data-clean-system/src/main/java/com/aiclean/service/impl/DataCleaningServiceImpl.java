@@ -1304,35 +1304,51 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             return result;
         }
 
-        // 收集本次映射的 (targetField, sourceType) 组合，精确匹配删除旧记录
+        // 区分"已映射"与"显式不映射"的目标字段：
+        // - 已映射：targetField + 非空 sourceField，需删除同名旧映射后插入新映射
+        // - 显式不映射：sourceField 为空，需删除该字段的全部旧映射，并清空结果数据对应列
         // 关键：弹窗中每个标准字段只有一行下拉，无法表示"多个 sourceType 同映射到一个 target"
         // 所以只删除有相同 (targetField + sourceType) 的旧记录，不同 sourceType 的旧映射保留
-        Set<String> targetSourcePairsInNew = mappings.stream()
-                .filter(m -> StrUtil.isNotBlank((String) m.get("targetField")))
-                .map(m -> {
-                    String tf = (String) m.get("targetField");
-                    String st = (String) m.get("sourceType");
-                    return tf + "||" + (StrUtil.isNotBlank(st) ? st : "temp_data");
-                })
-                .collect(Collectors.toSet());
+        Set<String> newPairs = new HashSet<>();
+        Set<String> unmappedTargets = new LinkedHashSet<>();
+        List<Map<String, Object>> toInsert = new ArrayList<>();
 
-        int deletedCount = 0;
-        if (!targetSourcePairsInNew.isEmpty()) {
-            // 先查询已有的映射关系
-            List<FieldMappingAuditEntity> existingMappings =
-                    fieldMappingAuditMapper.selectByStandardAndTitle(standardTitleId, tempDataTitleId);
-            for (FieldMappingAuditEntity old : existingMappings) {
-                if (old.getTargetField() == null) continue;
-                String pair = old.getTargetField() + "||" + (old.getSourceType() != null ? old.getSourceType() : "temp_data");
-                if (targetSourcePairsInNew.contains(pair)) {
-                    // 仅删除 (targetField + sourceType) 精确匹配的旧记录
-                    fieldMappingAuditMapper.deleteById(old.getId());
-                    deletedCount++;
-                }
+        for (Map<String, Object> m : mappings) {
+            String targetField = (String) m.get("targetField");
+            if (StrUtil.isBlank(targetField)) continue;
+            String sourceField = (String) m.get("sourceField");
+            String sourceType = (String) m.get("sourceType");
+            if (StrUtil.isBlank(sourceField)) {
+                // 显式"不映射"
+                unmappedTargets.add(targetField);
+            } else {
+                newPairs.add(targetField + "||" + (StrUtil.isNotBlank(sourceType) ? sourceType : "temp_data"));
+                toInsert.add(m);
             }
         }
 
-        for (Map<String, Object> m : mappings) {
+        // 先查询已有的映射关系，统一处理旧记录删除
+        List<FieldMappingAuditEntity> existingMappings =
+                fieldMappingAuditMapper.selectByStandardAndTitle(standardTitleId, tempDataTitleId);
+        int deletedCount = 0;
+        for (FieldMappingAuditEntity old : existingMappings) {
+            if (old.getTargetField() == null) continue;
+            String tf = old.getTargetField();
+            // 显式"不映射"的字段：删除其全部旧映射（无论 sourceType），确保不再填充
+            if (unmappedTargets.contains(tf)) {
+                fieldMappingAuditMapper.deleteById(old.getId());
+                deletedCount++;
+                continue;
+            }
+            // 已映射字段：仅删除 (targetField + sourceType) 精确匹配的旧记录
+            String pair = tf + "||" + (old.getSourceType() != null ? old.getSourceType() : "temp_data");
+            if (newPairs.contains(pair)) {
+                fieldMappingAuditMapper.deleteById(old.getId());
+                deletedCount++;
+            }
+        }
+
+        for (Map<String, Object> m : toInsert) {
             String sourceField = (String) m.get("sourceField");
             String sourceType = (String) m.get("sourceType");
             String targetField = (String) m.get("targetField");
@@ -1354,9 +1370,33 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             result.add(entity);
         }
 
-        log.info("手动字段映射保存完成（合并），新增/更新 {} 条，移除被覆盖的旧记录 {} 条",
-                result.size(), deletedCount);
+        // 显式"不映射"的字段：直接清空结果数据中对应的列，使"仅保存映射"后立即生效，
+        // 无需等待重新填充；再执行填充时也会因旧映射已删除而保持为空
+        if (!unmappedTargets.isEmpty()) {
+            clearResultColumnsForUnmapped(standardTitleId, tempDataTitleId, unmappedTargets);
+        }
+
+        log.info("手动字段映射保存完成（合并），新增/更新 {} 条，移除被覆盖的旧记录 {} 条，显式不映射 {} 条",
+                result.size(), deletedCount, unmappedTargets.size());
         return result;
+    }
+
+    /**
+     * 将"不映射"字段对应的结果数据列置空。
+     * 依据标准字段表头中各标准列标题定位结果数据表 (col1..col20) 的列下标，
+     * 仅清空该标准字段表头 + 数据文件下相关结果行的对应列，不影响其它字段。
+     */
+    private void clearResultColumnsForUnmapped(Long standardTitleId, Long tempDataTitleId, Set<String> unmappedTargets) {
+        StandardTitleEntity st = standardTitleMapper.selectById(standardTitleId);
+        if (st == null) return;
+        for (String targetField : unmappedTargets) {
+            for (int i = 1; i <= 20; i++) {
+                if (targetField.equals(st.getColTitle(i))) {
+                    resultDataMapper.clearColumnByStandardAndTitle(standardTitleId, tempDataTitleId, "col" + i);
+                    break;
+                }
+            }
+        }
     }
 
     // ==================== 结果数据填充 ====================

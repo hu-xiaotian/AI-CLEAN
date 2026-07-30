@@ -3116,6 +3116,14 @@ function collectMappingsFromSelects() {
                 sourceField: parts.slice(1).join('|'),
                 targetField: targetField,
             });
+        } else {
+            // 显式"不映射"：保留 targetField，sourceField 留空，
+            // 后端据此删除该字段的旧映射并清空结果数据中已填充的值
+            mappings.push({
+                sourceType: '',
+                sourceField: '',
+                targetField: targetField,
+            });
         }
     });
     return mappings;
@@ -3150,7 +3158,9 @@ async function executeManualFill() {
     const { standardTitleId, titleId, extraTitleId } = manualFillState;
     const mappings = collectMappingsFromSelects();
 
-    if (mappings.length === 0) {
+    // 统计真正配置了来源的字段（"不映射"的 sourceField 为空，不计入）
+    const mappedList = mappings.filter(m => m.sourceField);
+    if (mappedList.length === 0) {
         showToast('请至少配置一个字段映射', 'warning');
         return;
     }
