@@ -1294,6 +1294,15 @@ async function loadTitlesForExtract() {
     await loadTitlesForSelect('aiExtractTitleId');
 }
 
+// 数据文件列表缓存：用于把关联数据ID映射为中文文件名
+let _titlesCache = null;
+async function getTitles(force = false) {
+    if (!_titlesCache || force) {
+        _titlesCache = await api('/import/titles') || [];
+    }
+    return _titlesCache;
+}
+
 async function loadExtraTitles() {
     try {
         const extraTitles = await api('/cleaning/extra-titles');
@@ -1302,11 +1311,19 @@ async function loadExtraTitles() {
             tbody.innerHTML = '<tr><td colspan="5" class="empty-hint">暂无提取结果，请先进行全描述属性提取</td></tr>';
             return;
         }
+        // 解析关联数据中文名（文件名）与解析规则中文名（规则名）
+        const titles = await getTitles();
+        const titleMap = {};
+        (titles || []).forEach(t => { titleMap[t.id] = t.fileName || ('数据#' + t.id); });
+        const rules = _rulesCache || await api('/cleaning/parse-rules/active') || [];
+        const ruleMap = {};
+        (rules || []).forEach(r => { ruleMap[r.id] = r.ruleName || ('规则#' + r.id); });
+
         tbody.innerHTML = extraTitles.map(et => `
             <tr>
                 <td>${et.id}</td>
-                <td>${et.tempDataTitleId || '-'}</td>
-                <td>${et.parseRuleId || '-'}</td>
+                <td>${et.tempDataTitleId != null ? (titleMap[et.tempDataTitleId] || et.tempDataTitleId) : '-'}</td>
+                <td>${et.parseRuleId != null ? (ruleMap[et.parseRuleId] || et.parseRuleId) : '-'}</td>
                 <td>${buildExtraColSummary(et)}</td>
                 <td><button class="btn btn-sm btn-primary" onclick="viewExtraData(${et.id})">查看</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteExtraTitle(${et.id})">删除</button></td>
