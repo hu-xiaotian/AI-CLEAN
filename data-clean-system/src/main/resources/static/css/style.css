@@ -395,6 +395,17 @@ a:hover { text-decoration: underline; }
     letter-spacing: 0;
 }
 
+/* 卡片折叠/展开（如清洗结果记录） */
+.card-collapse-title { cursor: pointer; user-select: none; }
+.card-collapse-title:hover { color: var(--accent); }
+.card-collapse-arrow {
+    font-size: 10px;
+    color: var(--text-secondary);
+    transition: transform .2s ease;
+}
+.card.collapsed .card-collapse-arrow { transform: rotate(-90deg); }
+.card.collapsed .card-collapse-body { display: none; }
+
 /* -------- Form -------- */
 .form-grid {
     display: grid;

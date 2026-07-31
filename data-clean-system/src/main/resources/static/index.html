@@ -372,27 +372,32 @@
                 </div>
             </div>
             <div class="card" id="cleanedRecordsCard" style="display:none">
-                <h3 style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-                    <span>清洗结果记录</span>
+                <h3 class="card-collapse-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px" onclick="toggleCardCollapse(this)">
+                    <span style="display:flex;align-items:center;gap:8px">
+                        <span class="card-collapse-arrow">&#9662;</span>
+                        <span>清洗结果记录</span>
+                    </span>
                     <span id="cleanedRecordsSummary" class="record-count"></span>
                 </h3>
-                <p class="desc">已清洗完成的数据记录，AI 辅助评分（质量评分）越高表示越符合标准分类体系。</p>
-                <div class="table-scroll mt-2" style="max-height:560px;overflow-y:auto">
-                    <table class="data-table" id="cleanedRecordsTable">
-                        <thead><tr>
-                            <th style="width:40px">#</th>
-                            <th>物料代码</th>
-                            <th>物料名称</th>
-                            <th>分类名称</th>
-                            <th>分类编码</th>
-                            <th>AI辅助评分</th>
-                            <th style="min-width:220px">AI分类理由</th>
-                            <th>状态</th>
-                        </tr></thead>
-                        <tbody id="cleanedRecordsTbody">
-                            <tr><td colspan="8" class="empty-hint">请选择数据文件并点击「开始清洗」，或执行一键清洗后查看</td></tr>
-                        </tbody>
-                    </table>
+                <div class="card-collapse-body">
+                    <p class="desc">已清洗完成的数据记录，AI 辅助评分（质量评分）越高表示越符合标准分类体系。</p>
+                    <div class="table-scroll mt-2" style="max-height:560px;overflow-y:auto">
+                        <table class="data-table" id="cleanedRecordsTable">
+                            <thead><tr>
+                                <th style="width:40px">#</th>
+                                <th>物料代码</th>
+                                <th>物料名称</th>
+                                <th>分类名称</th>
+                                <th>分类编码</th>
+                                <th>AI辅助评分</th>
+                                <th style="min-width:220px">AI分类理由</th>
+                                <th>状态</th>
+                            </tr></thead>
+                            <tbody id="cleanedRecordsTbody">
+                                <tr><td colspan="8" class="empty-hint">请选择数据文件并点击「开始清洗」，或执行一键清洗后查看</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
             <div class="card">

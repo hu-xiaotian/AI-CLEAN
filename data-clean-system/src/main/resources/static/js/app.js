@@ -231,6 +231,12 @@ function toggleNavGroup(titleEl) {
     if (group) group.classList.toggle('collapsed');
 }
 
+// 折叠/展开卡片内容（如清洗结果记录）
+function toggleCardCollapse(titleEl) {
+    const card = titleEl.closest('.card');
+    if (card) card.classList.toggle('collapsed');
+}
+
 // ==================== 一键数据清洗 ====================
 let ocRunning = false;
 let ocStompClient = null;
