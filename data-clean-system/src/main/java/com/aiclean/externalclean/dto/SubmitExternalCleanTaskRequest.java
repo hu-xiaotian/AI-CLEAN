@@ -18,4 +18,9 @@ public class SubmitExternalCleanTaskRequest {
 
     /** 清洗选项（对应 api-design.md 的 CleanOptions） */
     private CleanOptions options;
+
+    /**
+     * 提交模式：sync 同步 / async 异步 / 不传则由服务端按行数自动判定
+     */
+    private String mode;
 }

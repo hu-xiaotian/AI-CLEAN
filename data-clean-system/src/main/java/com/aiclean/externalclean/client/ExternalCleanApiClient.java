@@ -66,18 +66,15 @@ public class ExternalCleanApiClient {
             body.put("callback_url", callbackUrl);
         }
         JSONArray rowsArr = new JSONArray();
+        int idx = 1;
         for (Map<String, String> columns : rows) {
             JSONObject row = new JSONObject();
-            // index 由外部服务按数组下标+1 推断，这里显式提供
+            // 显式提供行号，与对方契约（api-design 示例）对齐
+            row.put("index", idx++);
             row.put("columns", columns);
             rowsArr.add(row);
         }
         body.put("rows", rowsArr);
-        JSONObject opt = new JSONObject();
-        opt.put("threshold", options.getThreshold());
-        opt.put("max_candidates", options.getMaxCandidates());
-        opt.put("model", options.getModel());
-        body.put("options", opt);
         return body;
     }
 

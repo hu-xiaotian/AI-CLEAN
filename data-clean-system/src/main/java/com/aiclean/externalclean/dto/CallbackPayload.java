@@ -1,5 +1,8 @@
 package com.aiclean.externalclean.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import lombok.Data;
 
 import java.util.List;
@@ -7,8 +10,11 @@ import java.util.Map;
 
 /**
  * 外部服务回调载荷（与 api-design.md 第5.1节回调协议对齐）
+ * 上游回调使用 snake_case 字段名（如 task_id），故声明 SnakeCase 命名策略。
  */
 @Data
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class CallbackPayload {
 
     private String taskId;
@@ -20,6 +26,8 @@ public class CallbackPayload {
     private List<CleanResultItem> results;
 
     @Data
+    @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Stats {
         private Integer totalRows;
         private Integer processedRows;
@@ -30,6 +38,8 @@ public class CallbackPayload {
     }
 
     @Data
+    @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class CleanResultItem {
         private Integer index;
         private String categoryCode;

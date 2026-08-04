@@ -731,6 +731,10 @@ select.form-input { cursor: pointer; appearance: none; background-image: url("da
 
 .modal-overlay.show { display: block; }
 
+/* 通用弹窗需高于其他（如外部清洗结果）弹窗，避免嵌套时被覆盖 */
+#modalOverlay { z-index: 1200; }
+#modal { z-index: 1201; }
+
 .modal {
     display: none;
     position: fixed;

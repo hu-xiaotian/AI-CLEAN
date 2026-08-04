@@ -12,6 +12,13 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
+import javax.servlet.http.HttpServletResponse;
+
 /**
  * 外部清洗任务管理接口（面向前端）
  */
@@ -132,6 +139,44 @@ public class ExternalCleanTaskController {
         try {
             taskService.correctRow(taskId, rowIndex, request);
             return R.success("已修正");
+        } catch (IllegalArgumentException e) {
+            return R.notFound(e.getMessage());
+        }
+    }
+
+    @GetMapping("/tasks/{taskId}/export")
+    @Operation(summary = "按分类导出结果 Excel", description = "按分类分 Sheet，每个 Sheet 表头为 extractedAttrsJson 属性列（缺失属性补空列），内容为扁平化列表")
+    public void exportTaskRows(@PathVariable String taskId, HttpServletResponse response) {
+        try {
+            byte[] data = taskService.exportRowsByCategory(taskId);
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            String fileName = "external_clean_result_" + taskId + "_" + timestamp + ".xlsx";
+            String encodedName = URLEncoder.encode(fileName, "UTF-8").replaceAll("\\+", "%20");
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=\"" + encodedName + "\"; filename*=UTF-8''" + encodedName);
+            response.setContentLength(data.length);
+            response.getOutputStream().write(data);
+            response.getOutputStream().flush();
+        } catch (IOException e) {
+            log.error("导出外部清洗结果失败", e);
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            try {
+                response.setContentType("application/json;charset=UTF-8");
+                response.getWriter().write("{\"code\":500,\"msg\":\"" + e.getMessage() + "\"}");
+            } catch (IOException ignored) { }
+        } catch (Exception e) {
+            log.error("导出外部清洗结果失败", e);
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    @PostMapping("/tasks/{taskId}/rows/{rowIndex}/fill-missing")
+    @Operation(summary = "填充缺失属性", description = "将手工填入的缺失属性合并进 extractedAttrsJson，并从 missingAttrsJson 移除已填充项")
+    public R<Void> fillMissing(@PathVariable String taskId, @PathVariable int rowIndex,
+                              @RequestBody Map<String, String> filled) {
+        try {
+            taskService.fillMissing(taskId, rowIndex, filled);
+            return R.success("已填充缺失属性");
         } catch (IllegalArgumentException e) {
             return R.notFound(e.getMessage());
         }

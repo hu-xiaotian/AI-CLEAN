@@ -5654,26 +5654,40 @@ let ecCurrentTaskId = null;
 let ecRowPage = 1;
 const EC_ROW_SIZE = 20;
 let ecOnlyReview = false;
+let ecResultOpen = false;
 let ecRowsData = [];
 let ecAutoTimer = null;
 let ecCorrectRowIndex = null;
 
 // 提交外部清洗任务
-async function ecSubmitTask() {
+// mode: 未传时取下拉框值；'sync'/'async' 强制该模式；'auto' 表示由服务端按行数自动判定
+async function ecSubmitTask(mode) {
     const titleId = $('#ecTitleId').value;
     if (!titleId) { showToast('请先选择数据文件', 'error'); return; }
+    if (!mode) {
+        mode = $('#ecMode') ? $('#ecMode').value : 'auto';
+    }
     const options = {
         threshold: parseFloat($('#ecThreshold').value) || 0.7,
         maxCandidates: parseInt($('#ecMaxCandidates').value, 10) || 10,
         model: $('#ecModel').value || 'default'
     };
     const body = { tempDataTitleId: Number(titleId), options: options };
+    if (mode && mode !== 'auto') {
+        body.mode = mode;
+    }
+    const syncTip = (mode === 'sync') ? '（同步模式，请稍候…）' : '';
+    const btn = event && event.target ? event.target : null;
+    if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
     try {
         const task = await api('/external-clean/tasks', { method: 'POST', body: body });
-        showToast('任务已提交：' + task.taskId, 'success');
+        const modeText = (task && task.mode === 'sync') ? '同步' : '异步';
+        showToast('任务已提交[' + modeText + ']：' + task.taskId + syncTip, 'success');
         ecLoadTasks(1);
     } catch (e) {
         showToast('提交失败：' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = (mode === 'sync') ? '同步提交清洗任务' : '提交清洗任务'; }
     }
 }
 
@@ -5741,16 +5755,210 @@ function ecTaskActions(t) {
     return h;
 }
 
-// 查看任务结果（展开行卡片）
+// 查看任务结果（弹出页面）
 async function ecViewRows(taskId) {
     ecCurrentTaskId = taskId;
-    $('#ecRowsTaskId').textContent = '（' + taskId + '）';
-    $('#ecRowsCard').style.display = 'block';
-    const only = $('#ecOnlyReview');
+    $('#ecResultTaskId').textContent = '（' + taskId + '）';
+    const only = $('#ecResultOnlyReview');
     if (only) only.checked = false;
     ecOnlyReview = false;
     ecRowPage = 1;
-    await ecLoadRows(1);
+    $('#ecResultTbody').innerHTML = '<tr><td colspan="7" class="empty-hint">正在加载…</td></tr>';
+    $('#ecResultModal').classList.add('show');
+    $('#ecResultOverlay').classList.add('show');
+    ecResultOpen = true;
+    await ecResultLoadRows(1);
+}
+
+function closeEcResultModal() {
+    $('#ecResultModal').classList.remove('show');
+    $('#ecResultOverlay').classList.remove('show');
+    ecResultOpen = false;
+}
+
+// 结果行分页（弹窗内）
+async function ecResultLoadRows(page) {
+    if (!ecCurrentTaskId) return;
+    if (page) ecRowPage = page;
+    const onlyEl = $('#ecResultOnlyReview');
+    ecOnlyReview = (onlyEl && onlyEl.checked) ? true : false;
+    let url = '/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows?page=' + ecRowPage + '&size=' + EC_ROW_SIZE;
+    if (ecOnlyReview) url += '&needsReview=1';
+    try {
+        const data = await api(url);
+        const records = data.records || [];
+        ecRowsData = records;
+        const total = data.total || 0;
+        const pages = data.pages || 1;
+        const tbody = $('#ecResultTbody');
+        if (records.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无结果数据</td></tr>';
+        } else {
+            tbody.innerHTML = records.map(function (r, idx) {
+                const seq = (ecRowPage - 1) * EC_ROW_SIZE + idx + 1;
+                const cat = (r.categoryCode || '-') + (r.categoryName ? ' / ' + r.categoryName : '');
+                return '<tr>' +
+                    '<td>' + seq + '</td>' +
+                    '<td>' + esc(cat) + '</td>' +
+                    '<td>' + confidenceHtml(r.confidence) + '</td>' +
+                    '<td>' + ecAttrsFriendlyHtml(r.extractedAttrsJson, r.missingAttrsJson) + '</td>' +
+                    '<td>' + (r.needsReview === 1 ? '<span class="badge badge-warning">待复核</span>' : '<span class="badge badge-default">无需</span>') + '</td>' +
+                    '<td>' + ecRowStatusBadge(r.rowStatus) + '</td>' +
+                    '<td>' + ecResultRowActions(r) + '</td>' +
+                    '</tr>';
+            }).join('');
+        }
+        $('#ecResultPageInfo').textContent = '共 ' + total + ' 条';
+        ecRenderResultPager(pages);
+    } catch (e) {
+        console.error('加载外部清洗结果失败', e);
+        $('#ecResultTbody').innerHTML = '<tr><td colspan="7" class="empty-hint">加载失败：' + esc(e.message) + '</td></tr>';
+    }
+}
+
+function ecRenderResultPager(pages) {
+    let html = '';
+    html += '<button class="btn btn-sm" ' + (ecRowPage <= 1 ? 'disabled' : '') + ' onclick="ecResultLoadRows(1)">首页</button>';
+    html += '<button class="btn btn-sm" ' + (ecRowPage <= 1 ? 'disabled' : '') + ' onclick="ecResultLoadRows(' + (ecRowPage - 1) + ')">上一页</button>';
+    const maxBtns = 5;
+    let sp = Math.max(1, ecRowPage - Math.floor(maxBtns / 2));
+    let ep = Math.min(pages, sp + maxBtns - 1);
+    if (ep - sp < maxBtns - 1) sp = Math.max(1, ep - maxBtns + 1);
+    for (let i = sp; i <= ep; i++) {
+        html += '<button class="btn btn-sm ' + (i === ecRowPage ? 'btn-primary' : '') + '" onclick="ecResultLoadRows(' + i + ')">' + i + '</button>';
+    }
+    html += '<button class="btn btn-sm" ' + (ecRowPage >= pages ? 'disabled' : '') + ' onclick="ecResultLoadRows(' + (ecRowPage + 1) + ')">下一页</button>';
+    html += '<button class="btn btn-sm" ' + (ecRowPage >= pages ? 'disabled' : '') + ' onclick="ecResultLoadRows(' + pages + ')">末页</button>';
+    $('#ecResultPageBtns').innerHTML = html;
+}
+
+function ecResultRowActions(r) {
+    const idx = r.rowIndex;
+    let hasMissing = false;
+    try { hasMissing = Array.isArray(JSON.parse(r.missingAttrsJson || '[]')) && JSON.parse(r.missingAttrsJson || '[]').length > 0; } catch (e) {}
+    let h = '<button class="btn btn-sm btn-default" onclick="ecOpenRawData(' + idx + ')">查看原始数据</button> ';
+    if (hasMissing) h += '<button class="btn btn-sm btn-warning" onclick="ecOpenMissing(' + idx + ')">缺失属性</button> ';
+    if (r.rowStatus === 'pending' || r.rowStatus === 'completed') {
+        h += '<button class="btn btn-sm btn-success" onclick="ecAdoptRow(' + idx + ')">采纳</button> ';
+        h += '<button class="btn btn-sm btn-default" onclick="ecRejectRow(' + idx + ')">驳回</button> ';
+        h += '<button class="btn btn-sm btn-primary" onclick="ecOpenCorrect(' + idx + ')">修正</button>';
+    } else {
+        h += '<span style="font-size:12px;color:var(--text-tertiary)">' + esc(r.operatedBy || '') + '</span>';
+    }
+    return h;
+}
+
+// 采纳全部（弹窗内）
+async function ecResultAdoptAll() {
+    if (!ecCurrentTaskId) return;
+    if (!confirm('确认采纳当前任务全部可采纳行？')) return;
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/adopt-all', { method: 'POST' });
+        showToast('已采纳全部', 'success');
+        ecResultLoadRows(ecRowPage);
+    } catch (e) { showToast('采纳失败：' + e.message, 'error'); }
+}
+
+// 查看原始数据（requestColumnsJson）
+function ecOpenRawData(idx) {
+    const r = (ecRowsData || []).find(function (x) { return x.rowIndex === idx; }) || {};
+    const json = r.requestColumnsJson || '{}';
+    let pretty = json;
+    try { pretty = JSON.stringify(JSON.parse(json), null, 2); } catch (e) {}
+    const body = '' +
+        '<div style="margin-bottom:10px;font-size:13px;color:var(--text-secondary)">以下为提交清洗时的原始数据（requestColumnsJson）：</div>' +
+        '<pre style="background:var(--bg-tertiary,#f5f6fa);border:1px solid var(--border-color,#e5e7eb);border-radius:8px;padding:14px;max-height:460px;overflow:auto;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all">' + esc(pretty) + '</pre>' +
+        '<div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="btn btn-default" onclick="closeModal()">关闭</button></div>';
+    showModal('原始数据 - 行 #' + idx, body);
+}
+
+// 缺失属性编辑弹窗
+function ecOpenMissing(idx) {
+    const r = (ecRowsData || []).find(function (x) { return x.rowIndex === idx; }) || {};
+    let missing = [];
+    try { missing = JSON.parse(r.missingAttrsJson || '[]'); } catch (e) {}
+    if (!Array.isArray(missing) || missing.length === 0) { showToast('该行没有缺失属性', 'info'); return; }
+    let existing = {};
+    try { existing = JSON.parse(r.extractedAttrsJson || '{}'); } catch (e) {}
+    const fields = missing.map(function (key, i) {
+        const val = (existing[key] != null) ? existing[key] : '';
+        return '<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">' +
+            '<label style="flex:0 0 140px;font-size:13px;color:var(--text-secondary)">' + esc(key) + '</label>' +
+            '<input id="ecMissing_' + i + '" data-key="' + esc(key) + '" value="' + esc(val) + '" style="flex:1;padding:6px 8px;border:1px solid var(--border-color,#e5e7eb);border-radius:6px;font-size:13px">' +
+            '</div>';
+    }).join('');
+    const body = '' +
+        '<div style="margin-bottom:10px;font-size:13px;color:var(--text-secondary)">请为以下缺失属性填入值，保存后将合并进清洗结果（extractedAttrsJson）。</div>' +
+        fields +
+        '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">' +
+        '<button class="btn btn-default" onclick="closeModal()">取消</button>' +
+        '<button class="btn btn-primary" onclick="ecSubmitMissing(' + idx + ',' + missing.length + ')">保存</button>' +
+        '</div>';
+    showModal('缺失属性 - 行 #' + idx, body);
+}
+
+async function ecSubmitMissing(idx, count) {
+    const filled = {};
+    for (let i = 0; i < count; i++) {
+        const el = $('#ecMissing_' + i);
+        if (el) filled[el.getAttribute('data-key')] = el.value;
+    }
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows/' + idx + '/fill-missing', { method: 'POST', body: filled });
+        showToast('已填充缺失属性', 'success');
+        closeModal();
+        ecResultLoadRows(ecRowPage);
+    } catch (e) { showToast('保存失败：' + e.message, 'error'); }
+}
+
+// 下载结果（按分类分 Sheet 的 Excel）
+async function ecDownloadResult() {
+    if (!ecCurrentTaskId) return;
+    try {
+        showToast('正在生成下载文件…', 'info');
+        const res = await fetch(API + '/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/export');
+        if (!res.ok) {
+            let msg = '导出失败(' + res.status + ')';
+            try { const j = await res.json(); if (j && j.msg) msg = j.msg; } catch (e) {}
+            throw new Error(msg);
+        }
+        const blob = await res.blob();
+        if (!blob || blob.size === 0) throw new Error('导出内容为空');
+        const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '');
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'external_clean_result_' + ecCurrentTaskId + '_' + ts + '.xlsx';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        showToast('下载已开始', 'success');
+    } catch (e) { showToast('下载失败：' + e.message, 'error'); }
+}
+
+// extractedAttrsJson 用户友好展示；missingJson 为缺失属性数组（可选），用于标记缺失项
+function ecAttrsFriendlyHtml(json, missingJson) {
+    let m;
+    try { m = JSON.parse(json || '{}'); } catch (e) { return '<span style="color:var(--text-tertiary)">' + esc(json || '-') + '</span>'; }
+    if (!m || typeof m !== 'object' || Object.keys(m).length === 0) return '<span style="color:var(--text-tertiary)">-</span>';
+    let missingSet = [];
+    try { missingSet = JSON.parse(missingJson || '[]'); } catch (e) { missingSet = []; }
+    const missing = Array.isArray(missingSet) ? missingSet : [];
+    const rows = Object.keys(m).map(function (k) {
+        const v = m[k];
+        const val = (v == null) ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        const isMissing = missing.indexOf(k) >= 0 || (val === '' && missing.indexOf(k) >= 0);
+        const valHtml = isMissing
+            ? '<span style="color:#e53e3e;font-weight:600">缺失</span>'
+            : esc(val);
+        return '<div style="display:flex;gap:8px;padding:3px 0;border-bottom:1px dashed var(--border-color,#eee);align-items:baseline">' +
+            '<span style="flex:0 0 120px;color:var(--text-secondary);font-size:12px;word-break:break-all">' + esc(k) +
+            (isMissing ? ' <span style="color:#e53e3e">*</span>' : '') + '</span>' +
+            '<span style="flex:1;word-break:break-all">' + valHtml + '</span>' +
+            '</div>';
+    }).join('');
+    return '<div style="max-height:200px;overflow:auto">' + rows + '</div>';
 }
 
 // 结果行分页
@@ -5827,7 +6035,7 @@ async function ecAdoptRow(idx) {
     try {
         await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows/' + idx + '/adopt', { method: 'POST' });
         showToast('已采纳该行', 'success');
-        ecLoadRows(ecRowPage);
+        ecResultLoadRows(ecRowPage);
     } catch (e) { showToast('采纳失败：' + e.message, 'error'); }
 }
 
@@ -5847,7 +6055,7 @@ async function ecRejectRow(idx) {
     try {
         await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows/' + idx + '/reject?comment=' + encodeURIComponent(comment), { method: 'POST' });
         showToast('已驳回', 'success');
-        ecLoadRows(ecRowPage);
+        ecResultLoadRows(ecRowPage);
     } catch (e) { showToast('驳回失败：' + e.message, 'error'); }
 }
 
@@ -5894,7 +6102,7 @@ async function ecSubmitCorrect() {
         await api('/external-clean/tasks/' + encodeURIComponent(ecCurrentTaskId) + '/rows/' + ecCorrectRowIndex + '/correct', { method: 'POST', body: body });
         showToast('已修正', 'success');
         closeModal();
-        ecLoadRows(ecRowPage);
+        ecResultLoadRows(ecRowPage);
     } catch (e) { showToast('修正失败：' + e.message, 'error'); }
 }
 
@@ -5923,7 +6131,10 @@ function ecStartAutoRefresh() {
         if (!page || !page.classList.contains('active')) return;
         ecLoadTasks(ecTaskPage);
         const modalOpen = $('#modal') && $('#modal').classList.contains('show');
-        if (ecCurrentTaskId && !modalOpen) ecLoadRows(ecRowPage);
+        if (ecCurrentTaskId && !modalOpen) {
+            if (ecResultOpen) ecResultLoadRows(ecRowPage);
+            else ecLoadRows(ecRowPage);
+        }
     }, 5000);
 }
 
