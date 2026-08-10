@@ -166,7 +166,12 @@ function statusBadge(status) {
         'approved':'badge-success','rejected':'badge-danger','modified':'badge-info',
         'export_ready':'badge-success','processed':'badge-info','completed':'badge-success',
     };
-    return `<span class="badge ${map[status]||'badge-default'}">${status}</span>`;
+    const label = {
+        'draft':'草稿','processing':'处理中','needs_review':'待审核','reviewing':'审核中',
+        'approved':'审核通过','rejected':'审核驳回','modified':'已修改',
+        'export_ready':'可导出','processed':'已处理','completed':'已完成',
+    };
+    return `<span class="badge ${map[status]||'badge-default'}">${label[status]||status||'-'}</span>`;
 }
 
 function confidenceHtml(val) {
