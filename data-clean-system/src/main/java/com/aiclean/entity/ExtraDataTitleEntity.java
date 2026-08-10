@@ -16,6 +16,12 @@ public class ExtraDataTitleEntity extends BaseEntity {
     private Long tempDataTitleId;
     private Long parseRuleId;
 
+    /** 是否为 AI 提取（true=AI 智能提取，false=规则解析提取） */
+    private Boolean isAiExtract;
+
+    /** 自定义名称（用户在提取时填写，便于标识该提取结果） */
+    private String customName;
+
     private String col1Title;
     private String col2Title;
     private String col3Title;

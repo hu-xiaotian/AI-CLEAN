@@ -317,7 +317,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
     @Override
     @Transactional
-    public ExtraDataTitleEntity extractExtraData(Long titleId, Long parseRuleId) {
+    public ExtraDataTitleEntity extractExtraData(Long titleId, Long parseRuleId, String customName) {
         log.info("开始提取全描述属性，表头ID: {}, 规则ID: {}", titleId, parseRuleId);
         TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
         if (titleEntity == null) throw new RuntimeException("表头不存在: " + titleId);
@@ -374,6 +374,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         ExtraDataTitleEntity extraTitle = new ExtraDataTitleEntity();
         extraTitle.setTempDataTitleId(titleId);
         extraTitle.setParseRuleId(parseRuleId);
+        extraTitle.setIsAiExtract(false);
+        extraTitle.setCustomName(customName);
         for (int i = 0; i < keyList.size(); i++) {
             extraTitle.setColTitle(i + 1, keyList.get(i));
         }
@@ -431,9 +433,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
     @Override
     @Async
-    public String startAiExtract(Long titleId) {
+    public String startAiExtract(Long titleId, String customName) {
         log.info("开始 AI 属性提取，表头ID: {}", titleId);
-        doStartAiExtract(titleId);
+        doStartAiExtract(titleId, customName);
         return "ai_extract_task_" + titleId;
     }
 
@@ -476,7 +478,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
      * 4. 调用大模型将描述文本按标准字段拆分，要求只返回 JSON 键值对；
      * 5. 解析 JSON，汇总所有键生成 extra_data_title 列，并写入 extra_data 行。
      */
-    public void doStartAiExtract(Long titleId) {
+    public void doStartAiExtract(Long titleId, String customName) {
         TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
         if (titleEntity == null) {
             sendAiExtractProgress(titleId, "error", 0, 0, 0, 0, "表头不存在: " + titleId);
@@ -575,6 +577,8 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             ExtraDataTitleEntity extraTitle = new ExtraDataTitleEntity();
             extraTitle.setTempDataTitleId(titleId);
             extraTitle.setParseRuleId(null);
+            extraTitle.setIsAiExtract(true);
+            extraTitle.setCustomName(customName);
             for (int i = 0; i < columnKeys.size(); i++) {
                 extraTitle.setColTitle(i + 1, columnKeys.get(i));
             }

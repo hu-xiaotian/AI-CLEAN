@@ -82,6 +82,8 @@ CREATE TABLE extra_data_title (
     id BIGINT IDENTITY(1,1) PRIMARY KEY,
     temp_data_title_id BIGINT NOT NULL,
     parse_rule_id BIGINT,
+    is_ai_extract NUMBER(1) DEFAULT 0,
+    custom_name VARCHAR2(200),
     col1_title VARCHAR2(200),
     col2_title VARCHAR2(200),
     col3_title VARCHAR2(200),

@@ -27,11 +27,11 @@ public interface DataCleaningService {
     List<ParseRuleEntity> getActiveParseRules();
 
     // ===== 全描述解析 =====
-    ExtraDataTitleEntity extractExtraData(Long titleId, Long parseRuleId);
+    ExtraDataTitleEntity extractExtraData(Long titleId, Long parseRuleId, String customName);
     void deleteExtraTitle(Long extraTitleId);
 
     // ===== AI 智能提取 =====
-    String startAiExtract(Long titleId);
+    String startAiExtract(Long titleId, String customName);
     Map<String, Object> getAiExtractProgress(Long titleId);
 
     // ===== 分类匹配 =====

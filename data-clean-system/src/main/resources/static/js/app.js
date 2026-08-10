@@ -479,7 +479,7 @@ function ocDoExtractAi(titleId) {
         ocRenderCleanStatsCard({ progressPercent: 0, current: 0, total: 0, successCount: 0, errorCount: 0 });
 
         // 启动 AI 提取任务
-        fetch(API + `/cleaning/extract-extra-ai?titleId=${titleId}`, { method: 'POST' })
+        fetch(API + `/cleaning/extract-extra-ai?titleId=${titleId}` + (customName ? `&customName=${encodeURIComponent(customName)}` : ''), { method: 'POST' })
             .then(res => safeJson(res, '启动AI提取'))
             .then(data => { if (data.code !== 200) throw new Error(data.msg); })
             .catch(e => finish(false, 'AI 提取启动失败: ' + e.message));
@@ -1266,7 +1266,7 @@ async function loadExtraTitlesForSelect(selId, titleId) {
             return;
         }
         sel.innerHTML = '<option value="">-- 请选择 --</option>' +
-            filtered.map(et => `<option value="${et.id}">补充表头#${et.id} (关联数据ID:${et.tempDataTitleId})</option>`).join('');
+            filtered.map(et => `<option value="${et.id}">${et.customName ? escapeHtml(et.customName) : '补充表头#' + et.id} (关联数据ID:${et.tempDataTitleId})</option>`).join('');
     } catch (e) {
         console.error('加载补充数据表头失败:', e);
         sel.innerHTML = '<option value="">-- 请选择 --</option>';
@@ -1322,7 +1322,7 @@ async function loadExtraTitles() {
         const extraTitles = await api('/cleaning/extra-titles');
         const tbody = $('#extraTbody');
         if (!extraTitles || extraTitles.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="empty-hint">暂无提取结果，请先进行全描述属性提取</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无提取结果，请先进行全描述属性提取</td></tr>';
             return;
         }
         // 解析关联数据中文名（文件名）与解析规则中文名（规则名）
@@ -1338,6 +1338,8 @@ async function loadExtraTitles() {
                 <td>${et.id}</td>
                 <td>${et.tempDataTitleId != null ? (titleMap[et.tempDataTitleId] || et.tempDataTitleId) : '-'}</td>
                 <td>${et.parseRuleId != null ? (ruleMap[et.parseRuleId] || et.parseRuleId) : '-'}</td>
+                <td>${et.isAiExtract ? '<span class="badge badge-success">是</span>' : '<span class="badge">否</span>'}</td>
+                <td>${et.customName ? escapeHtml(et.customName) : '-'}</td>
                 <td>${buildExtraColSummary(et)}</td>
                 <td><button class="btn btn-sm btn-primary" onclick="viewExtraData(${et.id})">查看</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteExtraTitle(${et.id})">删除</button></td>
@@ -1386,7 +1388,9 @@ async function viewExtraData(extraTitleId) {
 
         let html = '';
         if (titleInfo) {
-            html += `<div class="view-data-info"><span><strong>关联数据ID:</strong> ${titleInfo.tempDataTitleId || '-'}</span><span><strong>总行数:</strong> ${list.length}</span></div>`;
+            const customName = titleInfo.customName ? escapeHtml(titleInfo.customName) : '补充表头#' + titleInfo.id;
+            if (titleInfo.customName) showModal('查看补充数据 - ' + titleInfo.customName, '<p style="text-align:center;padding:40px;color:var(--text-secondary)">加载中...</p>');
+            html += `<div class="view-data-info"><span><strong>名称:</strong> ${customName}</span><span><strong>关联数据ID:</strong> ${titleInfo.tempDataTitleId || '-'}</span><span><strong>总行数:</strong> ${list.length}</span></div>`;
         }
 
         if (!list || list.length === 0) {
@@ -1414,6 +1418,7 @@ async function viewExtraData(extraTitleId) {
 async function extractExtraData() {
     const titleId = $('#extractTitleId').value;
     const ruleId = $('#extractRuleId').value;
+    const customName = $('#extractCustomName').value.trim();
     if (!titleId || !ruleId) { showToast('请选择数据文件和解析规则', 'warning'); return; }
 
     showLoading('正在提取全描述属性…');
@@ -1421,7 +1426,8 @@ async function extractExtraData() {
         const formData = new FormData();
         formData.append('titleId', titleId);
         formData.append('parseRuleId', ruleId);
-        const res = await fetch(API + `/cleaning/extract-extra?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' });
+        if (customName) formData.append('customName', customName);
+        const res = await fetch(API + `/cleaning/extract-extra?titleId=${titleId}&parseRuleId=${ruleId}` + (customName ? `&customName=${encodeURIComponent(customName)}` : ''), { method: 'POST' });
         const data = await res.json();
         if (data.code !== 200) throw new Error(data.msg);
 
@@ -1447,6 +1453,7 @@ let aiExtractPollTimer = null;
 
 async function startAiExtract() {
     const titleId = $('#aiExtractTitleId').value;
+    const customName = $('#aiExtractCustomName').value.trim();
     if (!titleId) { showToast('请先选择数据文件', 'warning'); return; }
 
     // 重置进度 UI
@@ -1467,7 +1474,7 @@ async function startAiExtract() {
 
     connectAiExtractWs(titleId, function connected() {
         $('#aiExtractStatus').textContent = 'AI 提取任务已启动，正在处理…';
-        fetch(API + `/cleaning/extract-extra-ai?titleId=${titleId}`, { method: 'POST' })
+        fetch(API + `/cleaning/extract-extra-ai?titleId=${titleId}` + (customName ? `&customName=${encodeURIComponent(customName)}` : ''), { method: 'POST' })
             .then(res => safeJson(res, 'AI 提取'))
             .then(data => { if (data.code !== 200) throw new Error(data.msg); })
             .catch(e => {

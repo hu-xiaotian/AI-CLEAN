@@ -262,6 +262,7 @@
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="extractTitleId" class="form-input"></select></div>
                     <div class="form-group"><label>解析规则</label><select id="extractRuleId" class="form-input"></select></div>
+                    <div class="form-group"><label>自定义名称</label><input id="extractCustomName" class="form-input" type="text" placeholder="可选，便于标识本次提取结果"></div>
                     <div class="form-group"><button class="btn btn-primary" onclick="extractExtraData()">开始提取</button></div>
                 </div>
                 <div id="extractResult" class="mt-3" style="display:none"></div>
@@ -273,6 +274,7 @@
 <!--                <p class="desc">根据每行数据的分类编码查找对应标准字段表头作为<b>参数1（目标字段）</b>，结合文件导入时指定的<b>属性拆分列</b>作为<b>参数2（待拆分文本）</b>，由 AI 将描述文本按标准字段拆分并返回 JSON 键值对，解析后入库。</p>-->
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="aiExtractTitleId" class="form-input"></select></div>
+                    <div class="form-group"><label>自定义名称</label><input id="aiExtractCustomName" class="form-input" type="text" placeholder="可选，便于标识本次提取结果"></div>
                     <div class="form-group"><button class="btn btn-primary" id="aiExtractBtn" onclick="startAiExtract()">AI 提取</button></div>
                 </div>
                 <div id="aiExtractProgressCard" class="mt-3" style="display:none">
@@ -291,8 +293,8 @@
             <div class="card">
                 <h3>提取结果</h3>
                 <table class="data-table" id="extraTable">
-                    <thead><tr><th>ID</th><th>关联数据</th><th>解析规则</th><th>属性列</th><th>操作</th></tr></thead>
-                    <tbody id="extraTbody"><tr><td colspan="5" class="empty-hint">暂无提取结果</td></tr></tbody>
+                    <thead><tr><th>ID</th><th>关联数据</th><th>解析规则</th><th>是否AI提取</th><th>自定义名称</th><th>属性列</th><th>操作</th></tr></thead>
+                    <tbody id="extraTbody"><tr><td colspan="7" class="empty-hint">暂无提取结果</td></tr></tbody>
                 </table>
             </div>
         </section>

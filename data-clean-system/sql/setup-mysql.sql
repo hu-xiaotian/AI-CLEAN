@@ -93,6 +93,8 @@ CREATE TABLE `extra_data_title` (
                                     `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
                                     `temp_data_title_id` BIGINT NOT NULL COMMENT '关联原始表头ID',
                                     `parse_rule_id` BIGINT DEFAULT NULL COMMENT '使用的解析规则ID',
+                                    `is_ai_extract` TINYINT(1) DEFAULT 0 COMMENT '是否为AI提取 1=AI 0=规则解析',
+                                    `custom_name` VARCHAR(200) DEFAULT NULL COMMENT '自定义名称',
                                     `col1_title` VARCHAR(200) DEFAULT NULL,
                                     `col2_title` VARCHAR(200) DEFAULT NULL,
                                     `col3_title` VARCHAR(200) DEFAULT NULL,

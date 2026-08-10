@@ -70,8 +70,9 @@ public class DataCleaningController {
 
     @PostMapping("/extract-extra")
     @Operation(summary = "提取全描述属性")
-    public R<ExtraDataTitleEntity> extractExtraData(@RequestParam Long titleId, @RequestParam Long parseRuleId) {
-        return R.success(dataCleaningService.extractExtraData(titleId, parseRuleId));
+    public R<ExtraDataTitleEntity> extractExtraData(@RequestParam Long titleId, @RequestParam Long parseRuleId,
+                                                     @RequestParam(required = false) String customName) {
+        return R.success(dataCleaningService.extractExtraData(titleId, parseRuleId, customName));
     }
 
     @DeleteMapping("/extra-title/{id}")
@@ -89,8 +90,9 @@ public class DataCleaningController {
 
     @PostMapping("/extract-extra-ai")
     @Operation(summary = "AI 提取属性", description = "按每行分类编码查找标准字段表头(参数1)，结合属性拆分列(参数2)，由 AI 拆分为 JSON 键值对并入库")
-    public R<String> extractExtraDataByAi(@RequestParam Long titleId) {
-        return R.success(dataCleaningService.startAiExtract(titleId));
+    public R<String> extractExtraDataByAi(@RequestParam Long titleId,
+                                          @RequestParam(required = false) String customName) {
+        return R.success(dataCleaningService.startAiExtract(titleId, customName));
     }
 
     @GetMapping("/ai-extract-progress/{titleId}")
