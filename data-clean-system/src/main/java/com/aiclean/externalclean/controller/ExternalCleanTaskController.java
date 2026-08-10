@@ -64,6 +64,18 @@ public class ExternalCleanTaskController {
         return R.success(task);
     }
 
+    @PostMapping("/tasks/{taskId}/progress")
+    @Operation(summary = "主动查询外部任务进展", description = "调用外部 /api/v1/clean/{task_id} 获取进度并回写数据库，供前端定时刷新")
+    public R<ExternalCleanTaskEntity> refreshProgress(@PathVariable String taskId) {
+        try {
+            ExternalCleanTaskEntity task = taskService.queryAndUpdateProgress(taskId);
+            if (task == null) return R.notFound("任务不存在");
+            return R.success(task);
+        } catch (Exception e) {
+            return R.error("查询进展失败: " + e.getMessage());
+        }
+    }
+
     @GetMapping("/tasks/{taskId}/rows")
     @Operation(summary = "任务结果行分页", description = "可按 needsReview=1 过滤待复核行")
     public R<IPage<ExternalCleanTaskRowEntity>> listRows(@PathVariable String taskId,
@@ -179,6 +191,19 @@ public class ExternalCleanTaskController {
             return R.success("已填充缺失属性");
         } catch (IllegalArgumentException e) {
             return R.notFound(e.getMessage());
+        }
+    }
+
+    @DeleteMapping("/tasks/{taskId}")
+    @Operation(summary = "删除任务及关联记录", description = "删除任务及其关联的结果行、回调日志。仅允许终态或待处理任务删除，进行中任务请先取消")
+    public R<Void> deleteTask(@PathVariable String taskId) {
+        try {
+            taskService.deleteTask(taskId);
+            return R.success("已删除");
+        } catch (IllegalArgumentException e) {
+            return R.notFound(e.getMessage());
+        } catch (IllegalStateException e) {
+            return R.error(e.getMessage());
         }
     }
 }

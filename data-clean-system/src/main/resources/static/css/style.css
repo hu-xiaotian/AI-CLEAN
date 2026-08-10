@@ -414,6 +414,32 @@ a:hover { text-decoration: underline; }
     align-items: end;
 }
 
+/* 智能体一键清洗表单专属布局 */
+.ec-form-grid {
+    grid-template-columns: minmax(280px, 1.6fr) auto;
+    gap: 16px;
+}
+
+.ec-field-actions {
+    justify-content: flex-end;
+}
+
+.ec-field-actions .btn {
+    min-width: 140px;
+    height: 38px;
+}
+
+.ec-hint {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin: 4px 0 0;
+}
+
+@media (max-width: 760px) {
+    .ec-form-grid { grid-template-columns: 1fr; gap: 12px; }
+    .ec-field-actions .btn { width: 100%; }
+}
+
 .form-group {
     display: flex;
     flex-direction: column;

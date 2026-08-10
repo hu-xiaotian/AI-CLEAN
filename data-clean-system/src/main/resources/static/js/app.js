@@ -5651,6 +5651,8 @@ const AiCleanOverlay = {
 let ecTaskPage = 1;
 const EC_TASK_SIZE = 10;
 let ecCurrentTaskId = null;
+let ecCurrentTaskStatus = null; // 当前查看任务的外部状态，用于判断是否需要拉取进展
+let ecResultLoadedTaskId = null; // 本会话已为哪个任务加载过完整明细（终态后不再重复拉取）
 let ecRowPage = 1;
 const EC_ROW_SIZE = 20;
 let ecOnlyReview = false;
@@ -5672,22 +5674,81 @@ async function ecSubmitTask(mode) {
         maxCandidates: parseInt($('#ecMaxCandidates').value, 10) || 10,
         model: $('#ecModel').value || 'default'
     };
-    const body = { tempDataTitleId: Number(titleId), options: options };
-    if (mode && mode !== 'auto') {
-        body.mode = mode;
-    }
-    const syncTip = (mode === 'sync') ? '（同步模式，请稍候…）' : '';
     const btn = event && event.target ? event.target : null;
     if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
+
+    // 仅同步任务需要拆分：单次外部上限 20 条，超出则拆成每批 20 条、复用同一任务追加提交
+    if (mode === 'sync') {
+        await ecSubmitTaskInBatches(titleId, options, btn);
+    } else {
+        // 异步 / 自动：保持原有一次性提交（由后端按行数自动判定模式）
+        const body = { tempDataTitleId: Number(titleId), options: options };
+        if (mode && mode !== 'auto') { body.mode = mode; }
+        try {
+            const task = await api('/external-clean/tasks', { method: 'POST', body: body });
+            const modeText = (task && task.mode === 'sync') ? '同步' : '异步';
+            showToast('任务已提交[' + modeText + ']：' + (task && task.taskId), 'success');
+            ecLoadTasks(1);
+        } catch (e) {
+            showToast('提交失败：' + e.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '提交清洗任务'; }
+        }
+    }
+}
+
+// 同步任务分批提交：每批 20 条，前批阻塞完成后再以同一任务追加下一批
+async function ecSubmitTaskInBatches(titleId, options, btn) {
+    const EC_SYNC_BATCH = 10;
+    // 拉取该文件全部行ID，用于按批次拆分
+    let allRowIds = [];
     try {
-        const task = await api('/external-clean/tasks', { method: 'POST', body: body });
-        const modeText = (task && task.mode === 'sync') ? '同步' : '异步';
-        showToast('任务已提交[' + modeText + ']：' + task.taskId + syncTip, 'success');
-        ecLoadTasks(1);
+        const rows = await api('/cleaning/temp-data/' + titleId);
+        allRowIds = (rows || []).map(function (r) { return r.id; });
+    } catch (e) {
+        showToast('获取文件行列表失败：' + e.message, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = '同步提交清洗任务'; }
+        return;
+    }
+    if (allRowIds.length === 0) {
+        showToast('该文件没有可清洗的数据行', 'error');
+        if (btn) { btn.disabled = false; btn.textContent = '同步提交清洗任务'; }
+        return;
+    }
+
+    // 按每批 20 条拆分
+    const batches = [];
+    for (let i = 0; i < allRowIds.length; i += EC_SYNC_BATCH) {
+        batches.push(allRowIds.slice(i, i + EC_SYNC_BATCH));
+    }
+
+    try {
+        let taskId = null;
+        for (let b = 0; b < batches.length; b++) {
+            const body = {
+                tempDataTitleId: Number(titleId),
+                options: options,
+                mode: 'sync',
+                rowIds: batches[b]
+            };
+            // 首批创建任务；后续批次追加到同一任务（复用 taskId）
+            if (taskId) {
+                body.appendTaskId = taskId;
+            }
+            if (btn) { btn.textContent = '提交中…(' + (b + 1) + '/' + batches.length + ')'; }
+            const task = await api('/external-clean/tasks', { method: 'POST', body: body });
+            if (!taskId && task && task.taskId) {
+                taskId = task.taskId;
+            }
+        }
+        if (taskId) {
+            showToast('同步任务已分批提交[共' + batches.length + '批]：' + taskId + '（请稍候…）', 'success');
+            ecLoadTasks(1);
+        }
     } catch (e) {
         showToast('提交失败：' + e.message, 'error');
     } finally {
-        if (btn) { btn.disabled = false; btn.textContent = (mode === 'sync') ? '同步提交清洗任务' : '提交清洗任务'; }
+        if (btn) { btn.disabled = false; btn.textContent = '同步提交清洗任务'; }
     }
 }
 
@@ -5705,23 +5766,25 @@ async function ecLoadTasks(page) {
         const pages = data.pages || 1;
         const tbody = $('#ecTaskTbody');
         if (records.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无任务</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无任务</td></tr>';
         } else {
             tbody.innerHTML = records.map(function (t) {
                 return '<tr>' +
                     '<td>' + esc(t.taskId) + '</td>' +
                     '<td>' + esc(t.fileName || '-') + '</td>' +
-                    '<td>' + (t.mode === 'sync' ? '同步' : '异步') + '</td>' +
                     '<td>' + ecTaskStatusBadge(t.status) + '</td>' +
-                    '<td>' + ecProgressText(t) + '</td>' +
                     '<td>' + ecAccText(t.estimatedAccuracy) + '</td>' +
                     '<td>' + formatDate(t.submittedAt) + '</td>' +
                     '<td>' + ecTaskActions(t) + '</td>' +
+                    '<td>' + ecProgressBar(t) + '</td>' +
                     '</tr>';
             }).join('');
         }
         $('#ecTaskPageInfo').textContent = '共 ' + total + ' 条';
         ecRenderTaskPager(pages);
+        // 列表中有处于处理中/待提交/待处理的任务时，主动拉取外部进展并回写数据库，
+        // 使列表的进度列（processedRows/totalRows）能够实时刷新
+        ecRefreshProgressForList(records);
     } catch (e) {
         console.error('加载外部清洗任务失败', e);
     }
@@ -5745,13 +5808,16 @@ function ecRenderTaskPager(pages) {
 }
 
 function ecTaskActions(t) {
-    let h = '<button class="btn btn-sm btn-info" onclick="ecViewRows(\'' + t.taskId + '\')">查看结果</button> ';
+    // 状态不为「已完成」时，查看结果按钮不可点击
+    const viewDisabled = (t.status !== 'completed') ? 'disabled' : '';
+    let h = '<button class="btn btn-sm btn-info" ' + viewDisabled + ' onclick="ecViewRows(\'' + t.taskId + '\')">查看结果</button> ';
     if (t.status === 'processing' || t.status === 'submitting' || t.status === 'pending') {
         h += '<button class="btn btn-sm btn-default" onclick="ecCancelTask(\'' + t.taskId + '\')">取消</button> ';
     }
     if (t.status === 'failed' || t.status === 'callback_timeout') {
         h += '<button class="btn btn-sm btn-warning" onclick="ecRetryTask(\'' + t.taskId + '\')">重试</button> ';
     }
+    h += '<button class="btn btn-sm btn-danger" onclick="ecDeleteTask(\'' + t.taskId + '\')">删除</button> ';
     return h;
 }
 
@@ -5767,6 +5833,12 @@ async function ecViewRows(taskId) {
     $('#ecResultModal').classList.add('show');
     $('#ecResultOverlay').classList.add('show');
     ecResultOpen = true;
+    // 记录当前任务状态，便于定时刷新时判断是否仍需向外部拉取进展
+    try {
+        const detail = await api('/external-clean/tasks/' + encodeURIComponent(taskId));
+        ecCurrentTaskStatus = detail && detail.status ? detail.status : null;
+        ecApplyTaskProgress(detail);
+    } catch (e) { ecCurrentTaskStatus = null; }
     await ecResultLoadRows(1);
 }
 
@@ -5774,6 +5846,7 @@ function closeEcResultModal() {
     $('#ecResultModal').classList.remove('show');
     $('#ecResultOverlay').classList.remove('show');
     ecResultOpen = false;
+    ecResultLoadedTaskId = null; // 关闭后重置，重新打开时再次加载
 }
 
 // 结果行分页（弹窗内）
@@ -5810,6 +5883,8 @@ async function ecResultLoadRows(page) {
         }
         $('#ecResultPageInfo').textContent = '共 ' + total + ' 条';
         ecRenderResultPager(pages);
+        // 标记本会话已为该任务加载过完整明细，终态后定时器不再重复拉取
+        ecResultLoadedTaskId = ecCurrentTaskId;
     } catch (e) {
         console.error('加载外部清洗结果失败', e);
         $('#ecResultTbody').innerHTML = '<tr><td colspan="7" class="empty-hint">加载失败：' + esc(e.message) + '</td></tr>';
@@ -6124,6 +6199,15 @@ async function ecRetryTask(taskId) {
     } catch (e) { showToast('重试失败：' + e.message, 'error'); }
 }
 
+async function ecDeleteTask(taskId) {
+    if (!confirm('确认删除任务 ' + taskId + '？该操作将一并删除其关联的结果行与回调日志，且不可恢复。')) return;
+    try {
+        await api('/external-clean/tasks/' + encodeURIComponent(taskId), { method: 'DELETE' });
+        showToast('已删除', 'success');
+        ecLoadTasks(ecTaskPage);
+    } catch (e) { showToast('删除失败：' + e.message, 'error'); }
+}
+
 function ecStartAutoRefresh() {
     if (ecAutoTimer) clearInterval(ecAutoTimer);
     ecAutoTimer = setInterval(function () {
@@ -6131,11 +6215,72 @@ function ecStartAutoRefresh() {
         if (!page || !page.classList.contains('active')) return;
         ecLoadTasks(ecTaskPage);
         const modalOpen = $('#modal') && $('#modal').classList.contains('show');
-        if (ecCurrentTaskId && !modalOpen) {
-            if (ecResultOpen) ecResultLoadRows(ecRowPage);
-            else ecLoadRows(ecRowPage);
+        if (!ecCurrentTaskId || modalOpen) return;
+
+        const isTerminal = ecCurrentTaskStatus === 'completed' || ecCurrentTaskStatus === 'failed'
+            || ecCurrentTaskStatus === 'cancelled' || ecCurrentTaskStatus === 'callback_timeout';
+
+        if (ecResultOpen) {
+            // 结果视图：非终态不重复拉取行数据（进展由进度条体现）；
+            // 终态且本会话尚未为该任务加载过完整明细时，补加载一次，之后停止轮询明细
+            if (!isTerminal) {
+                ecRefreshProgress(ecCurrentTaskId);
+            } else if (ecResultLoadedTaskId !== ecCurrentTaskId) {
+                ecResultLoadRows(ecRowPage);
+            }
+        } else {
+            // 列表视图：ecLoadTasks 内部已对非终态任务批量拉取外部进展；
+            // 仅当任务已终态时做一次本地行数据展示
+            if (isTerminal) ecLoadRows(ecRowPage);
         }
     }, 5000);
+}
+
+// 主动触发外部进展查询（POST /tasks/{taskId}/progress），并将返回的统计应用到页面
+async function ecRefreshProgress(taskId) {
+    try {
+        const task = await api('/external-clean/tasks/' + encodeURIComponent(taskId) + '/progress', { method: 'POST' });
+        if (task) {
+            ecCurrentTaskStatus = task.status || ecCurrentTaskStatus;
+            ecApplyTaskProgress(task);
+        }
+    } catch (e) {
+        // 拉取失败不影响正常行数据刷新
+        console.warn('查询外部任务进展失败', e);
+    }
+}
+
+// 列表视图：对处于非终态的任务批量触发外部进展查询（不阻塞列表渲染）
+function ecRefreshProgressForList(records) {
+    if (!records || !records.length) return;
+    const pending = records.filter(function (t) {
+        const s = t.status;
+        return s === 'processing' || s === 'submitting' || s === 'pending'
+            || s === 'submitted' || s === 'running';
+    });
+    pending.forEach(function (t) {
+        // 异步触发，更新 DB 后下一轮 ecLoadTasks 会自动体现
+        api('/external-clean/tasks/' + encodeURIComponent(t.taskId) + '/progress', { method: 'POST' })
+            .catch(function () {});
+    });
+}
+
+// 将任务统计（total/processed 等）回显到页面进度区域
+function ecApplyTaskProgress(task) {
+    if (!task) return;
+    const totalEl = $('#ecTaskTotalRows');
+    const doneEl = $('#ecTaskProcessedRows');
+    const accEl = $('#ecTaskAccuracy');
+    const barEl = $('#ecTaskProgressBar');
+    if (totalEl) totalEl.textContent = (task.totalRows == null ? '-' : task.totalRows);
+    if (doneEl) doneEl.textContent = (task.processedRows == null ? 0 : task.processedRows);
+    if (accEl && task.estimatedAccuracy != null) accEl.textContent = (task.estimatedAccuracy * 100).toFixed(1) + '%';
+    if (barEl) {
+        const total = task.totalRows || 0;
+        const done = task.processedRows || 0;
+        const pct = total > 0 ? Math.min(100, Math.round(done * 100 / total)) : 0;
+        barEl.style.width = pct + '%';
+    }
 }
 
 // ===== 展示辅助 =====
@@ -6158,6 +6303,23 @@ function ecAccText(v) {
     if (v == null) return '-';
     if (v <= 1) return Math.round(v * 100) + '%';
     return v + '%';
+}
+// 任务列表「执行进度」列：可视化进度条，每个任务执行时均可看到
+function ecProgressBar(t) {
+    const total = t.totalRows || 0;
+    const done = t.processedRows == null ? 0 : t.processedRows;
+    // 终态且未拿到总数时按 100% 展示，避免空进度条
+    const isTerminal = t.status === 'completed' || t.status === 'failed'
+        || t.status === 'cancelled' || t.status === 'callback_timeout';
+    const pct = total > 0 ? Math.min(100, Math.round(done * 100 / total))
+        : (isTerminal ? 100 : 0);
+    const label = total > 0 ? (done + ' / ' + total) : (isTerminal ? '完成' : '等待中');
+    return '<div style="display:flex;align-items:center;gap:8px;min-width:120px">' +
+        '<div style="flex:1;height:8px;background:var(--bg-tertiary);border-radius:6px;overflow:hidden">' +
+        '<div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,#4f8cff,#42d392);transition:width .4s"></div>' +
+        '</div>' +
+        '<span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">' + label + '</span>' +
+        '</div>';
 }
 function ecRawColumns(r) {
     try {

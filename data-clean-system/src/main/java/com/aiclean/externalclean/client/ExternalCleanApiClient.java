@@ -3,6 +3,7 @@ package com.aiclean.externalclean.client;
 import com.aiclean.externalclean.config.ExternalCleanProperties;
 import com.aiclean.externalclean.dto.CallbackPayload;
 import com.aiclean.externalclean.dto.CleanOptions;
+import com.aiclean.externalclean.dto.ExternalProgressResponse;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
@@ -59,23 +60,30 @@ public class ExternalCleanApiClient {
      * 构建外部清洗请求体（CleanRequest）
      */
     private JSONObject buildRequestBody(String taskId, String callbackUrl,
-                                        List<Map<String, String>> rows, CleanOptions options, boolean async) {
+                                        List<Map<String, String>> rows, CleanOptions options,
+                                        boolean async, int startIndex) {
         JSONObject body = new JSONObject();
         body.put("task_id", taskId);
         if (async) {
             body.put("callback_url", callbackUrl);
         }
         JSONArray rowsArr = new JSONArray();
-        int idx = 1;
+        int idx = startIndex;
         for (Map<String, String> columns : rows) {
             JSONObject row = new JSONObject();
-            // 显式提供行号，与对方契约（api-design 示例）对齐
+            // 显式提供行号，与对方契约（api-design 示例）对齐；追加批次时从偏移量起算
             row.put("index", idx++);
             row.put("columns", columns);
             rowsArr.add(row);
         }
         body.put("rows", rowsArr);
         return body;
+    }
+
+    /** 起始行号默认为 1 的重载 */
+    private JSONObject buildRequestBody(String taskId, String callbackUrl,
+                                        List<Map<String, String>> rows, CleanOptions options, boolean async) {
+        return buildRequestBody(taskId, callbackUrl, rows, options, async, 1);
     }
 
     /**
@@ -103,8 +111,16 @@ public class ExternalCleanApiClient {
      */
     public CallbackPayload submitSync(String taskId,
                                       List<Map<String, String>> rows, CleanOptions options) {
+        return submitSync(taskId, rows, options, 1);
+    }
+
+    /**
+     * 提交同步清洗任务（≤10 条），直接返回结果；startIndex 指定行号起始偏移（追加批次用）
+     */
+    public CallbackPayload submitSync(String taskId,
+                                      List<Map<String, String>> rows, CleanOptions options, int startIndex) {
         String url = baseUrl() + "/api/v1/clean";
-        JSONObject body = buildRequestBody(taskId, null, rows, options, false);
+        JSONObject body = buildRequestBody(taskId, null, rows, options, false, startIndex);
         HttpEntity<String> entity = new HttpEntity<>(body.toJSONString(), headers());
         org.springframework.http.ResponseEntity<String> resp =
                 restTemplate.postForEntity(url, entity, String.class);
@@ -126,6 +142,45 @@ public class ExternalCleanApiClient {
             return null;
         }
         return JSON.parseObject(resp.getBody(), CallbackPayload.class);
+    }
+
+    /**
+     * 查询任务进展（GET /api/v1/clean/{task_id}）。
+     * 外部接口返回 task_id / status / stats{total_rows,processed_rows,...}，需鉴权（Bearer ApiKey）。
+     * 解析时显式按 snake_case 取字段，避免命名策略歧义。
+     */
+    public ExternalProgressResponse queryProgress(String taskId) {
+        String url = baseUrl() + "/api/v1/clean/" + taskId;
+        HttpEntity<String> entity = new HttpEntity<>(headers());
+        try {
+            org.springframework.http.ResponseEntity<String> resp =
+                    restTemplate.exchange(url, org.springframework.http.HttpMethod.GET, entity, String.class);
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                log.warn("查询外部任务进展 {} 返回异常 HTTP={}", taskId, resp.getStatusCode());
+                return null;
+            }
+            JSONObject root = JSON.parseObject(resp.getBody());
+            ExternalProgressResponse result = new ExternalProgressResponse();
+            result.setTaskId(root.getString("task_id"));
+            result.setStatus(root.getString("status"));
+            result.setResults(root.getString("results"));
+            result.setError(root.getString("error"));
+            JSONObject stats = root.getJSONObject("stats");
+            if (stats != null) {
+                ExternalProgressResponse.Stats s = new ExternalProgressResponse.Stats();
+                s.setTotalRows(stats.getInteger("total_rows"));
+                s.setProcessedRows(stats.getInteger("processed_rows"));
+                s.setHighConfidence(stats.getInteger("high_confidence"));
+                s.setMediumConfidence(stats.getInteger("medium_confidence"));
+                s.setLowConfidence(stats.getInteger("low_confidence"));
+                s.setEstimatedAccuracy(stats.getDouble("estimated_accuracy"));
+                result.setStats(s);
+            }
+            return result;
+        } catch (Exception e) {
+            log.error("查询外部任务进展 {} 失败: {}", taskId, e.getMessage(), e);
+            return null;
+        }
     }
 
     /**

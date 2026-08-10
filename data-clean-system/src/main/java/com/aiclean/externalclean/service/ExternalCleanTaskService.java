@@ -5,6 +5,7 @@ import com.aiclean.externalclean.client.ExternalCleanApiClient;
 import com.aiclean.externalclean.config.ExternalCleanProperties;
 import com.aiclean.externalclean.dto.CallbackPayload;
 import com.aiclean.externalclean.dto.CleanOptions;
+import com.aiclean.externalclean.dto.ExternalProgressResponse;
 import com.aiclean.externalclean.dto.SubmitExternalCleanTaskRequest;
 import com.aiclean.externalclean.dto.TaskRowCorrectRequest;
 import com.aiclean.externalclean.entity.ExternalCleanCallbackLogEntity;
@@ -55,6 +56,8 @@ import java.util.stream.Collectors;
 public class ExternalCleanTaskService {
 
     private static final int SYNC_MAX_ROWS = 10;
+    /** 单次同步提交外部服务的最大行数（外部接口上限，超出需拆分批次） */
+    private static final int SYNC_BATCH_LIMIT = 10;
 
     private final ExternalCleanProperties properties;
     private final ExternalCleanApiClient apiClient;
@@ -82,6 +85,12 @@ public class ExternalCleanTaskService {
 
     // ===================== 提交任务 =====================
 
+    /**
+     * 提交外部清洗任务。
+     * <p>同步模式（sync）若数据行超过 {@link #SYNC_BATCH_LIMIT} 条，外部服务单次有上限，
+     * 调用方可分多次提交：首批不带 appendTaskId 新建任务，后续批次携带同一 appendTaskId 追加，
+     * 复用同一 taskId，每批最多 {@link #SYNC_BATCH_LIMIT} 条。</p>
+     */
     @Transactional(rollbackFor = Exception.class)
     public ExternalCleanTaskEntity submitTask(SubmitExternalCleanTaskRequest request) {
         if (!properties.isEnabled()) {
@@ -93,6 +102,11 @@ public class ExternalCleanTaskService {
         TempDataTitleEntity title = tempDataTitleMapper.selectById(request.getTempDataTitleId());
         if (title == null) {
             throw new IllegalArgumentException("数据文件不存在: " + request.getTempDataTitleId());
+        }
+
+        // ---- 追加模式：本次提交作为已有任务的后续批次 ----
+        if (StringUtils.hasText(request.getAppendTaskId())) {
+            return appendToTask(request, title);
         }
 
         // 1. 读取选定行，构建列数据快照
@@ -121,47 +135,116 @@ public class ExternalCleanTaskService {
         taskMapper.insert(task);
 
         // 3. 写入行快照
+        List<Map<String, String>> columnsList = buildRowSnapshots(task, title, tempRows, 0);
+
+        // 4. 提交外部服务
+        submitToExternal(task, options, columnsList, 1);
+        return taskMapper.selectById(task.getId());
+    }
+
+    /**
+     * 追加批次：往已有任务追加行快照并提交同步清洗（同一 taskId）。
+     * 行号（rowIndex / 外部 index）从已有行数之后连续递增，保证结果能正确落回对应行。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ExternalCleanTaskEntity appendToTask(SubmitExternalCleanTaskRequest request, TempDataTitleEntity title) {
+        ExternalCleanTaskEntity task = getTask(request.getAppendTaskId());
+        if (task == null) {
+            throw new IllegalArgumentException("追加失败：目标任务不存在 " + request.getAppendTaskId());
+        }
+        if (!"sync".equals(task.getMode())) {
+            throw new IllegalStateException("仅同步任务支持追加分批提交，目标任务模式为 " + task.getMode());
+        }
+        if ("completed".equals(task.getStatus()) || "failed".equals(task.getStatus())
+                || "cancelled".equals(task.getStatus())) {
+            throw new IllegalStateException("目标任务已处于终态(" + task.getStatus() + ")，无法追加");
+        }
+
+        // 读取本批次行并追加行快照
+        List<TempDataEntity> tempRows = loadTempRows(title.getId(), request.getRowIds());
+        if (tempRows.isEmpty()) {
+            throw new IllegalArgumentException("未找到可清洗的数据行");
+        }
+        CleanOptions options = request.getOptions() == null ? new CleanOptions() : request.getOptions();
+        int baseIndex = countTaskRows(task.getTaskId());
+        List<Map<String, String>> columnsList = buildRowSnapshots(task, title, tempRows, baseIndex);
+
+        // 追加批次只允许同步提交（复用同一任务）
+        submitToExternal(task, options, columnsList, baseIndex + 1);
+
+        // 更新任务总行数
+        task.setTotalRows(task.getTotalRows() + tempRows.size());
+        taskMapper.updateById(task);
+        return taskMapper.selectById(task.getId());
+    }
+
+    /** 写入行快照，rowIndex 从 startRowIndex 开始连续递增；返回与行一一对应的列快照列表 */
+    private List<Map<String, String>> buildRowSnapshots(ExternalCleanTaskEntity task, TempDataTitleEntity title,
+                                                        List<TempDataEntity> tempRows, int startRowIndex) {
         List<Map<String, String>> columnsList = new ArrayList<>(tempRows.size());
+        int rowIdx = startRowIndex;
         for (TempDataEntity tr : tempRows) {
             Map<String, String> columns = buildColumns(title, tr);
             columnsList.add(columns);
+            rowIdx++;
             ExternalCleanTaskRowEntity row = new ExternalCleanTaskRowEntity();
             row.setTaskId(task.getTaskId());
-            row.setRowIndex(columnsList.size());
+            row.setRowIndex(rowIdx);
             row.setTempDataId(tr.getId());
             row.setRequestColumnsJson(JSON.toJSONString(columns));
             row.setRowStatus("pending");
             rowMapper.insert(row);
         }
+        return columnsList;
+    }
 
-        // 4. 提交外部服务
-        String callbackUrl = properties.getCallbackBaseUrl();
-        if (cn.hutool.core.util.StrUtil.isNotBlank(callbackUrl)) {
-            callbackUrl = (callbackUrl.endsWith("/") ? callbackUrl.substring(0, callbackUrl.length() - 1) : callbackUrl)
-                    + "/api/internal/tasks/" + task.getTaskId() + "/result";
+    /** 统计任务已有行数 */
+    private int countTaskRows(String taskId) {
+        return Math.toIntExact(rowMapper.selectCount(
+                new LambdaQueryWrapper<ExternalCleanTaskRowEntity>().eq(ExternalCleanTaskRowEntity::getTaskId, taskId)));
+    }
+
+    /**
+     * 将列快照提交到外部服务。
+     * 同步模式若超过 {@link #SYNC_BATCH_LIMIT} 则自动按批拆分（每批最多该上限条），
+     * 因 submitSync 为阻塞调用，逐批 await 天然满足"前批完成再提交下批"。
+     */
+    private void submitToExternal(ExternalCleanTaskEntity task, CleanOptions options,
+                                  List<Map<String, String>> columnsList, int startIndex) {
+        String callbackUrl = task.getCallbackUrl();
+        if (callbackUrl == null) {
+            callbackUrl = properties.getCallbackBaseUrl();
+            if (cn.hutool.core.util.StrUtil.isNotBlank(callbackUrl)) {
+                callbackUrl = (callbackUrl.endsWith("/") ? callbackUrl.substring(0, callbackUrl.length() - 1) : callbackUrl)
+                        + "/api/internal/tasks/" + task.getTaskId() + "/result";
+                task.setCallbackUrl(callbackUrl);
+            }
         }
-        task.setCallbackUrl(callbackUrl);
         task.setStatus("submitting");
         taskMapper.updateById(task);
 
-        boolean submitted;
         if ("sync".equals(task.getMode())) {
             try {
-                CallbackPayload payload = apiClient.submitSync(task.getTaskId(), columnsList, options);
-                task.setStatus("processing");
-                task.setSubmittedAt(LocalDateTime.now());
-                taskMapper.updateById(task);
-                // 同步模式直接应用结果（无需回调）
-                applyResults(task, payload, null);
-                submitted = true;
+                for (int i = 0; i < columnsList.size(); i += SYNC_BATCH_LIMIT) {
+                    int to = Math.min(i + SYNC_BATCH_LIMIT, columnsList.size());
+                    List<Map<String, String>> batch = columnsList.subList(i, to);
+                    // 本批起始行号：全局偏移 + 批次内偏移
+                    int batchStart = startIndex + i;
+                    CallbackPayload payload = apiClient.submitSync(task.getTaskId(), batch, options, batchStart);
+                    task.setStatus("processing");
+                    task.setSubmittedAt(LocalDateTime.now());
+                    taskMapper.updateById(task);
+                    // 同步模式直接应用结果（无需回调）。applyResults 按 item.index 落回对应行
+                    applyResults(task, payload, null);
+                }
             } catch (Exception e) {
                 task.setStatus("failed");
                 task.setErrorMessage("同步清洗失败: " + e.getMessage());
                 taskMapper.updateById(task);
-                submitted = false;
+                throw new RuntimeException(task.getErrorMessage(), e);
             }
         } else {
-            submitted = apiClient.submitAsync(task.getTaskId(), callbackUrl, columnsList, options);
+            boolean submitted = apiClient.submitAsync(task.getTaskId(), callbackUrl, columnsList, options);
             if (submitted) {
                 task.setStatus("processing");
                 task.setSubmittedAt(LocalDateTime.now());
@@ -170,12 +253,10 @@ public class ExternalCleanTaskService {
                 task.setErrorMessage("外部服务未接受任务（返回非 202）");
             }
             taskMapper.updateById(task);
+            if (!submitted) {
+                throw new RuntimeException(task.getErrorMessage());
+            }
         }
-
-        if (!submitted) {
-            throw new RuntimeException(task.getErrorMessage());
-        }
-        return taskMapper.selectById(task.getId());
     }
 
     private List<TempDataEntity> loadTempRows(Long titleId, List<Long> rowIds) {
@@ -250,9 +331,8 @@ public class ExternalCleanTaskService {
             throw new IllegalStateException("该任务暂无结果数据，无法导出");
         }
 
-        // 解析每行的属性 Map，并收集任务级统一属性列（所有分类属性一致，取并集）
+        // 解析每行的属性 Map（含缺失属性）
         Map<Integer, Map<String, String>> rowAttrs = new LinkedHashMap<>();
-        List<String> unionKeys = new ArrayList<>();
         for (ExternalCleanTaskRowEntity row : rows) {
             Map<String, String> attrs = new LinkedHashMap<>();
             if (StringUtils.hasText(row.getExtractedAttrsJson())) {
@@ -267,26 +347,21 @@ public class ExternalCleanTaskService {
                     log.warn("行 {} 的 extractedAttrsJson 解析失败", row.getRowIndex(), ex);
                 }
             }
-            rowAttrs.put(row.getRowIndex(), attrs);
-            for (String k : attrs.keySet()) {
-                if (!unionKeys.contains(k)) unionKeys.add(k);
-            }
-        }
-        // 缺失属性（missingAttrsJson）也要作为列出现（值为空）
-        for (ExternalCleanTaskRowEntity row : rows) {
+            // 缺失属性（missingAttrsJson）也作为属性键记录（值为空）
             if (StringUtils.hasText(row.getMissingAttrsJson())) {
                 try {
                     List<?> missing = JSON.parseArray(row.getMissingAttrsJson(), String.class);
                     if (missing != null) {
                         for (Object m : missing) {
                             String k = String.valueOf(m);
-                            if (!unionKeys.contains(k)) unionKeys.add(k);
+                            attrs.putIfAbsent(k, "");
                         }
                     }
                 } catch (Exception ex) {
                     log.warn("行 {} 的 missingAttrsJson 解析失败", row.getRowIndex(), ex);
                 }
             }
+            rowAttrs.put(row.getRowIndex(), attrs);
         }
 
         // 按分类分组
@@ -304,10 +379,19 @@ public class ExternalCleanTaskService {
                 String sheetName = sanitizeSheetName(entry.getKey(), catSeq++);
                 Sheet sheet = workbook.createSheet(sheetName);
 
-                // 表头：行号 + 统一属性列
+                // 仅取当前分类内的属性并集（含缺失属性），不混入其它分类的字段
+                List<String> categoryKeys = new ArrayList<>();
+                for (ExternalCleanTaskRowEntity row : entry.getValue()) {
+                    Map<String, String> attrs = rowAttrs.getOrDefault(row.getRowIndex(), new LinkedHashMap<>());
+                    for (String k : attrs.keySet()) {
+                        if (!categoryKeys.contains(k)) categoryKeys.add(k);
+                    }
+                }
+
+                // 表头：行号 + 本分类属性列
                 List<String> headers = new ArrayList<>();
                 headers.add("行号");
-                headers.addAll(unionKeys);
+                headers.addAll(categoryKeys);
                 Row headerRow = sheet.createRow(0);
                 for (int i = 0; i < headers.size(); i++) {
                     org.apache.poi.ss.usermodel.Cell cell = headerRow.createCell(i);
@@ -320,8 +404,8 @@ public class ExternalCleanTaskService {
                     Row excelRow = sheet.createRow(r++);
                     excelRow.createCell(0).setCellValue(row.getRowIndex() == null ? "" : String.valueOf(row.getRowIndex()));
                     Map<String, String> attrs = rowAttrs.getOrDefault(row.getRowIndex(), new LinkedHashMap<>());
-                    for (int i = 0; i < unionKeys.size(); i++) {
-                        String v = attrs.get(unionKeys.get(i));
+                    for (int i = 0; i < categoryKeys.size(); i++) {
+                        String v = attrs.get(categoryKeys.get(i));
                         excelRow.createCell(1 + i).setCellValue(v == null ? "" : v);
                     }
                 }
@@ -435,7 +519,7 @@ public class ExternalCleanTaskService {
                 row.setCategoryPath(item.getCategoryPath());
                 row.setConfidence(item.getConfidence());
                 row.setCategoryConfidence(item.getCategoryConfidence());
-                row.setExtractedAttrsJson(item.getExtractedAttrs() == null ? null : JSON.toJSONString(item.getExtractedAttrs()));
+                row.setExtractedAttrsJson(item.getExtractedAttrs() == null ? null : JSON.toJSONString(item.getExtractedAttrs(), com.alibaba.fastjson2.JSONWriter.Feature.WriteMapNullValue));
                 row.setMissingAttrsJson(item.getMissingAttrs() == null ? null : JSON.toJSONString(item.getMissingAttrs()));
                 row.setNeedsReview(Boolean.TRUE.equals(item.getNeedsReview()) ? 1 : 0);
                 row.setReviewReason(item.getReviewReason());
@@ -450,6 +534,52 @@ public class ExternalCleanTaskService {
                 }
             }
         }
+    }
+
+    /**
+     * 主动到外部接口查询任务进展并更新到数据库（供前端定时轮询触发）。
+     * 仅当本地任务处于 processing/pending 等未完成态时才拉取，避免无意义请求。
+     * 返回更新后的任务实体；若无需更新或查询失败则返回 null。
+     */
+    public ExternalCleanTaskEntity queryAndUpdateProgress(String taskId) {
+        ExternalCleanTaskEntity task = taskMapper.selectOne(
+                new LambdaQueryWrapper<ExternalCleanTaskEntity>()
+                        .eq(ExternalCleanTaskEntity::getTaskId, taskId));
+        if (task == null) {
+            return null;
+        }
+        // 终态任务无需再查询外部进展
+        if (isTerminalStatus(task.getStatus())) {
+            return task;
+        }
+        ExternalProgressResponse resp = apiClient.queryProgress(taskId);
+        if (resp == null) {
+            log.warn("查询外部任务进展失败，跳过更新 taskId={}", taskId);
+            return task;
+        }
+        // 仅在数据库比外部少时回写，避免覆盖人工已更新的行数
+        if (resp.getStats() != null) {
+            ExternalProgressResponse.Stats s = resp.getStats();
+            if (s.getTotalRows() != null) task.setTotalRows(s.getTotalRows());
+            if (s.getProcessedRows() != null) task.setProcessedRows(s.getProcessedRows());
+            if (s.getHighConfidence() != null) task.setHighConfidence(s.getHighConfidence());
+            if (s.getMediumConfidence() != null) task.setMediumConfidence(s.getMediumConfidence());
+            if (s.getLowConfidence() != null) task.setLowConfidence(s.getLowConfidence());
+            if (s.getEstimatedAccuracy() != null) task.setEstimatedAccuracy(s.getEstimatedAccuracy());
+        }
+        // 同步外部状态；进入终态则记录完成时间
+        String status = resp.getStatus();
+        if ("completed".equals(status) || "failed".equals(status) || "cancelled".equals(status)) {
+            task.setStatus(status);
+            task.setCompletedAt(LocalDateTime.now());
+            if ("failed".equals(status) || "cancelled".equals(status)) {
+                task.setErrorMessage(resp.getError());
+            }
+        } else if (status != null) {
+            task.setStatus(status);
+        }
+        taskMapper.updateById(task);
+        return task;
     }
 
     private void saveCallbackLog(String taskId, Integer pageNo, Integer pageSize, String digest,
@@ -558,7 +688,7 @@ public class ExternalCleanTaskService {
             attrs.put(key, e.getValue() == null ? "" : e.getValue());
             stillMissing.remove(key);
         }
-        row.setExtractedAttrsJson(JSON.toJSONString(attrs));
+        row.setExtractedAttrsJson(JSON.toJSONString(attrs, com.alibaba.fastjson2.JSONWriter.Feature.WriteMapNullValue));
         row.setMissingAttrsJson(stillMissing.isEmpty() ? null : JSON.toJSONString(stillMissing));
         if (CollectionUtils.isEmpty(stillMissing)) {
             row.setNeedsReview(0);
@@ -566,6 +696,32 @@ public class ExternalCleanTaskService {
         row.setOperatedBy(currentUser());
         row.setOperatedAt(LocalDateTime.now());
         rowMapper.updateById(row);
+    }
+
+    /**
+     * 删除任务及关联的任务记录（结果行、回调日志）。
+     * 仅允许终态（completed/failed/cancelled/callback_timeout）或待处理（pending）任务删除，
+     * 正在提交/处理中的任务需先取消，避免与外部服务状态不一致。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteTask(String taskId) {
+        ExternalCleanTaskEntity task = requireTask(taskId);
+        String status = task.getStatus();
+        boolean deletable = "completed".equals(status) || "failed".equals(status)
+                || "cancelled".equals(status) || "callback_timeout".equals(status)
+                || "pending".equals(status);
+        if (!deletable) {
+            throw new IllegalStateException("当前状态(" + status + ")不允许删除，请先取消任务");
+        }
+        // 删除关联行记录
+        rowMapper.delete(new LambdaQueryWrapper<ExternalCleanTaskRowEntity>()
+                .eq(ExternalCleanTaskRowEntity::getTaskId, taskId));
+        // 删除关联回调日志
+        callbackLogMapper.delete(new LambdaQueryWrapper<ExternalCleanCallbackLogEntity>()
+                .eq(ExternalCleanCallbackLogEntity::getTaskId, taskId));
+        // 删除任务
+        taskMapper.delete(new LambdaQueryWrapper<ExternalCleanTaskEntity>()
+                .eq(ExternalCleanTaskEntity::getTaskId, taskId));
     }
 
     // ===================== 取消 / 重试 =====================
@@ -696,6 +852,12 @@ public class ExternalCleanTaskService {
         } catch (Exception e) {
             return "system";
         }
+    }
+
+    /** 是否为终态状态（无需再向外部查询进展） */
+    private boolean isTerminalStatus(String status) {
+        return "completed".equals(status) || "failed".equals(status)
+                || "cancelled".equals(status) || "callback_timeout".equals(status);
     }
 
     private static String sha256Hex(String input) {

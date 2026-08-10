@@ -6,15 +6,15 @@ spring:
   # 数据源配置
   datasource:
     # 开发环境使用MySQL (生产环境使用达梦)
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&sessionVariables=transaction_isolation='READ-COMMITTED'}
-    username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:Mysql123456.}
+    #driver-class-name: com.mysql.cj.jdbc.Driver
+    #url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&sessionVariables=transaction_isolation='READ-COMMITTED'}
+    #username: ${DB_USERNAME:root}
+    #password: ${DB_PASSWORD:Mysql123456.}
     # 达梦数据库配置示例:
-#    driver-class-name: dm.jdbc.driver.DmDriver
-#    url: jdbc:dm://121.229.145.117:5236?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
-#    username: SYSDBA
-#    password: Dameng123456
+    driver-class-name: dm.jdbc.driver.DmDriver
+    url: jdbc:dm://203.83.238.245:19770?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
+    username: SYSDBA
+    password: Dameng123456
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
@@ -88,7 +88,7 @@ mybatis-plus:
 
 # 服务器配置
 server:
-  port: 8080
+  port: 8081
   shutdown: graceful
   servlet:
     context-path: /
@@ -330,13 +330,15 @@ app:
     # 是否启用，false 时模块不参与任何系统流程
     enabled: ${EXTERNAL_CLEAN_ENABLED:true}
     # 外部清洗服务地址，如 http://clean-service:8000
-    base-url: ${EXTERNAL_CLEAN_BASE_URL:}
+    base-url: ${EXTERNAL_CLEAN_BASE_URL:http://203.83.238.245:19772}
     # 调用外部服务的 API Key（Bearer Token）
-    api-key: ${EXTERNAL_CLEAN_API_KEY:123}
+    # 注意：此处只填原始 Key（如 test-key-001），不要带 "Bearer " 前缀——
+    # 代码 headers() 已通过 setBearerAuth 自动添加 "Bearer "，重复前缀会导致 401。
+    api-key: ${EXTERNAL_CLEAN_API_KEY:test-key-001}
     # 本系统对外暴露的回调基础地址，如 http://java-service:8080
-    callback-base-url: ${EXTERNAL_CLEAN_CALLBACK_BASE_URL:127.0.0.1:8080}
+    callback-base-url: ${EXTERNAL_CLEAN_CALLBACK_BASE_URL:http://127.0.0.1:19771}
     # 回调接口校验令牌（请求头 X-Callback-Token）
-    callback-token: ${EXTERNAL_CLEAN_CALLBACK_TOKEN:123}
+    callback-token: ${EXTERNAL_CLEAN_CALLBACK_TOKEN:test-key-001}
     # 调用外部服务超时（秒）
     timeout-seconds: 5
     # 兜底轮询间隔（分钟）

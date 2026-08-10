@@ -42,7 +42,7 @@
             </a>
             <a class="nav-item" data-page="externalclean" onclick="switchPage('externalclean')">
                 <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v4H4z"/><path d="M4 10h16v10H4z"/><path d="M8 14h8"/></svg>
-                <span class="nav-label">外部清洗</span>
+                <span class="nav-label">智能体一键清洗</span>
             </a>
 
             <div class="nav-group">
@@ -677,26 +677,26 @@
 
         <!-- ===== 外部数据清洗 ===== -->
         <section id="page-externalclean" class="page">
-            <h2>外部数据清洗</h2>
-            <p class="desc">选择已导入的数据文件，提交至外部清洗服务；清洗完成后通过回调接收结果，可采纳或修正</p>
+            <h2>智能体一键清洗</h2>
+<!--            <p class="desc">选择已导入的数据文件，提交至外部清洗服务；清洗完成后通过回调接收结果，可采纳或修正</p>-->
             <div class="card">
-                <div class="form-grid">
-                    <div class="form-group"><label>数据文件</label><select id="ecTitleId" class="form-input"></select></div>
-                    <div class="form-group"><label>置信度阈值</label><input id="ecThreshold" class="form-input" type="number" min="0" max="1" step="0.05" value="0.7"></div>
-                    <div class="form-group"><label>候选分类数</label><input id="ecMaxCandidates" class="form-input" type="number" min="1" max="50" step="1" value="10"></div>
-                    <div class="form-group"><label>模型</label><input id="ecModel" class="form-input" value="default"></div>
-                    <div class="form-group"><label>提交模式</label>
-                        <select id="ecMode" class="form-input">
-                            <option value="auto">自动（按行数判定）</option>
-                            <option value="sync">同步清洗</option>
-                            <option value="async">异步清洗</option>
-                        </select>
+                <!-- 隐藏的内部参数（保持默认值，提交逻辑不变） -->
+                <input id="ecThreshold" type="hidden" value="0.7">
+                <input id="ecMaxCandidates" type="hidden" value="10">
+                <input id="ecModel" type="hidden" value="default">
+                <input id="ecMode" type="hidden" value="auto">
+
+                <div class="form-grid ec-form-grid">
+                    <div class="form-group ec-field-file">
+                        <label>数据文件</label>
+                        <select id="ecTitleId" class="form-input"></select>
                     </div>
-                    <div class="form-group form-actions" style="display:flex;gap:8px;align-items:flex-end">
+                    <div class="form-group ec-field-actions">
                         <button class="btn btn-primary" id="ecSubmitBtn" onclick="ecSubmitTask()">提交清洗任务</button>
-                        <button class="btn btn-success" onclick="ecSubmitTask('sync')">同步提交清洗任务</button>
+<!--                        <button class="btn btn-success" onclick="ecSubmitTask('sync')">同步提交清洗任务</button>-->
                     </div>
                 </div>
+                <p class="mt-2 ec-hint">提示：置信度阈值、候选分类数、模型、提交模式等服务端参数已采用默认配置，无需手动设置。</p>
             </div>
             <div class="card">
                 <h3 style="display:flex;justify-content:space-between;align-items:center">
@@ -714,8 +714,8 @@
                     </span>
                 </h3>
                 <table class="data-table" id="ecTaskTable">
-                    <thead><tr><th>任务号</th><th>文件</th><th>模式</th><th>状态</th><th>进度</th><th>预估准确率</th><th>提交时间</th><th>操作</th></tr></thead>
-                    <tbody id="ecTaskTbody"><tr><td colspan="8" class="empty-hint">暂无任务</td></tr></tbody>
+                    <thead><tr><th>任务号</th><th>文件</th><th>状态</th><th>预估准确率</th><th>提交时间</th><th>操作</th><th>执行进度</th></tr></thead>
+                    <tbody id="ecTaskTbody"><tr><td colspan="7" class="empty-hint">暂无任务</td></tr></tbody>
                 </table>
                 <div class="pagination" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
                     <div class="pagination-info"><span id="ecTaskPageInfo">共 0 条</span></div>
@@ -1058,6 +1058,14 @@
         <button class="btn-close" onclick="closeEcResultModal()">&#x2715;</button>
     </div>
     <div class="modal-body">
+        <div id="ecResultProgress" style="display:flex;align-items:center;gap:12px;margin-bottom:12px;font-size:13px;color:var(--text-secondary)">
+            <span>整体进度：<b id="ecTaskProcessedRows" style="color:var(--text-primary)">0</b> / <span id="ecTaskTotalRows">-</span> 行</span>
+            <div style="flex:1;height:8px;background:var(--bg-tertiary);border-radius:6px;overflow:hidden;min-width:120px">
+                <div id="ecTaskProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#4f8cff,#42d392);transition:width .4s"></div>
+            </div>
+            <span>预估准确率：<b id="ecTaskAccuracy" style="color:var(--text-primary)">-</b></span>
+        </div>
+
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
                 <input type="checkbox" id="ecResultOnlyReview" onchange="ecResultLoadRows(1)"> 仅看待复核
