@@ -14,8 +14,10 @@ import com.aiclean.externalclean.entity.ExternalCleanTaskRowEntity;
 import com.aiclean.externalclean.mapper.ExternalCleanCallbackLogMapper;
 import com.aiclean.externalclean.mapper.ExternalCleanTaskMapper;
 import com.aiclean.externalclean.mapper.ExternalCleanTaskRowMapper;
+import com.aiclean.mapper.StandardTitleMapper;
 import com.aiclean.mapper.TempDataMapper;
 import com.aiclean.mapper.TempDataTitleMapper;
+import com.aiclean.entity.StandardTitleEntity;
 import com.aiclean.entity.TempDataEntity;
 import com.aiclean.entity.TempDataTitleEntity;
 import com.alibaba.fastjson2.JSON;
@@ -66,6 +68,7 @@ public class ExternalCleanTaskService {
     private final ExternalCleanCallbackLogMapper callbackLogMapper;
     private final TempDataTitleMapper tempDataTitleMapper;
     private final TempDataMapper tempDataMapper;
+    private final StandardTitleMapper standardTitleMapper;
 
     public ExternalCleanTaskService(ExternalCleanProperties properties,
                                     ExternalCleanApiClient apiClient,
@@ -73,7 +76,8 @@ public class ExternalCleanTaskService {
                                     ExternalCleanTaskRowMapper rowMapper,
                                     ExternalCleanCallbackLogMapper callbackLogMapper,
                                     TempDataTitleMapper tempDataTitleMapper,
-                                    TempDataMapper tempDataMapper) {
+                                    TempDataMapper tempDataMapper,
+                                    StandardTitleMapper standardTitleMapper) {
         this.properties = properties;
         this.apiClient = apiClient;
         this.taskMapper = taskMapper;
@@ -81,6 +85,7 @@ public class ExternalCleanTaskService {
         this.callbackLogMapper = callbackLogMapper;
         this.tempDataTitleMapper = tempDataTitleMapper;
         this.tempDataMapper = tempDataMapper;
+        this.standardTitleMapper = standardTitleMapper;
     }
 
     // ===================== 提交任务 =====================
@@ -388,10 +393,25 @@ public class ExternalCleanTaskService {
                     }
                 }
 
-                // 表头：行号 + 本分类属性列
+                // 表头顺序：优先采用标准字段表头(colTitle1..20)顺序，与"标准字段表头"页保持一致；
+                // 标准表头未覆盖的提取属性（如 AI 额外抽出的字段）追加在末尾，避免数据丢失
+                String catCode = entry.getValue().isEmpty() ? null : entry.getValue().get(0).getCategoryCode();
+                List<String> standardCols = resolveStandardTitleColumns(catCode);
+                List<String> orderedKeys = new ArrayList<>();
+                if (standardCols != null && !standardCols.isEmpty()) {
+                    orderedKeys.addAll(standardCols);
+                    java.util.Set<String> covered = new java.util.LinkedHashSet<>(standardCols);
+                    for (String k : categoryKeys) {
+                        if (!covered.contains(k)) orderedKeys.add(k);
+                    }
+                } else {
+                    orderedKeys.addAll(categoryKeys);
+                }
+
+                // 表头：行号 + 本分类属性列（按标准/提取顺序）
                 List<String> headers = new ArrayList<>();
                 headers.add("行号");
-                headers.addAll(categoryKeys);
+                headers.addAll(orderedKeys);
                 Row headerRow = sheet.createRow(0);
                 for (int i = 0; i < headers.size(); i++) {
                     org.apache.poi.ss.usermodel.Cell cell = headerRow.createCell(i);
@@ -404,8 +424,8 @@ public class ExternalCleanTaskService {
                     Row excelRow = sheet.createRow(r++);
                     excelRow.createCell(0).setCellValue(row.getRowIndex() == null ? "" : String.valueOf(row.getRowIndex()));
                     Map<String, String> attrs = rowAttrs.getOrDefault(row.getRowIndex(), new LinkedHashMap<>());
-                    for (int i = 0; i < categoryKeys.size(); i++) {
-                        String v = attrs.get(categoryKeys.get(i));
+                    for (int i = 0; i < orderedKeys.size(); i++) {
+                        String v = attrs.get(orderedKeys.get(i));
                         excelRow.createCell(1 + i).setCellValue(v == null ? "" : v);
                     }
                 }
@@ -419,6 +439,28 @@ public class ExternalCleanTaskService {
         } catch (IOException e) {
             throw new RuntimeException("导出 Excel 失败: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 根据分类编码获取标准字段表头列名（按 colTitle1..20 物理顺序，跳过空列）。
+     * 用于任务结果导出时，使表头顺序与"标准字段表头"保持一致。
+     */
+    private List<String> resolveStandardTitleColumns(String categoryCode) {
+        if (!StringUtils.hasText(categoryCode)) {
+            return new ArrayList<>();
+        }
+        StandardTitleEntity std = standardTitleMapper.selectByCategoryCode(categoryCode);
+        if (std == null) {
+            return new ArrayList<>();
+        }
+        List<String> cols = new ArrayList<>();
+        for (int i = 1; i <= 20; i++) {
+            String title = std.getColTitle(i);
+            if (StringUtils.hasText(title)) {
+                cols.add(title);
+            }
+        }
+        return cols;
     }
 
     private CellStyle buildExportHeaderStyle(XSSFWorkbook workbook) {
