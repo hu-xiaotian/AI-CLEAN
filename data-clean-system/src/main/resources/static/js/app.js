@@ -1817,6 +1817,9 @@ function handleAiCheckMessage(msg) {
             $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">暂无数据</td></tr>';
             if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
             if (aiCheckCardEl && aiCheckCardEl.classList.contains('ai-active')) AiFx.deactivate(aiCheckCardEl);
+            // 检测完成后自动刷新智能分类界面记录列表
+            const ctId = $('#cleanTitleId').value;
+            if (ctId) loadCleanedRecords(ctId);
             setTimeout(disconnectAiCheckWebSocket, 2000);
             showToast(msg.message, 'warning');
             return;
@@ -1837,6 +1840,9 @@ function handleAiCheckMessage(msg) {
         showToast('检测完成', 'success');
         if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
         if (aiCheckCardEl && aiCheckCardEl.classList.contains('ai-active')) AiFx.deactivate(aiCheckCardEl);
+        // AI 辅助分类检测完成后自动刷新智能分类界面（清洗结果记录含最新评分与理由）
+        const ctId = $('#cleanTitleId').value;
+        if (ctId) loadCleanedRecords(ctId);
         setTimeout(disconnectAiCheckWebSocket, 2000);
         return;
     }
@@ -2096,6 +2102,9 @@ function handleCleaningMessage(msg) {
         if (clCard && clCard.classList.contains('ai-active')) AiFx.deactivate(clCard);
         showToast('数据清洗完成');
         loadCleanStats();
+        // 清洗完成后自动刷新智能分类界面（清洗结果记录列表）；仅当当前选中的正是该数据文件时
+        const ctId = $('#cleanTitleId').value;
+        if (ctId && String(msg.titleId) === String(ctId)) loadCleanedRecords(ctId);
         // 延迟断开
         setTimeout(disconnectWebSocket, 2000);
     } else if (type === 'error') {
@@ -2104,6 +2113,9 @@ function handleCleaningMessage(msg) {
         if (clCard && clCard.classList.contains('ai-active')) AiFx.deactivate(clCard);
         showToast('清洗异常终止', 'error');
         loadCleanStats();
+        // 异常终止后也刷新一次界面，避免残留旧数据
+        const ctId = $('#cleanTitleId').value;
+        if (ctId) loadCleanedRecords(ctId);
         setTimeout(disconnectWebSocket, 2000);
     }
 }
