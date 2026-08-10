@@ -416,7 +416,7 @@
             <p class="desc">自动匹配标准字段表头并填充结果数据</p>
             <div class="card">
                 <div class="form-grid">
-                    <div class="form-group"><label>数据文件</label><select id="mapTitleId" class="form-input"></select></div>
+                    <div class="form-group"><label>数据文件</label><select id="mapTitleId" class="form-input" onchange="onMapTitleChange()"></select></div>
                     <div class="form-group"><label>补充数据表头</label><select id="mapExtraTitleId" class="form-input"></select></div>
                     <div class="form-group"><button class="btn btn-primary" onclick="autoMapFields()">自动映射并填充</button></div>
                 </div>

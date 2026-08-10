@@ -206,8 +206,10 @@ function switchPage(name) {
         'extract': () => { loadTitles(); loadRules(); loadExtraTitles(); loadTitlesForSelect('extractTitleId'); loadRulesForSelect('extractRuleId'); loadTitlesForSelect('aiExtractTitleId'); },  // 刷新提取相关数据
         'clean': () => { refreshCleanPage(); },     // 刷新清洗相关数据 + 加载已清洗记录
         'mapping': () => { 
-            loadTitlesForSelect('mapTitleId'); 
-            loadExtraTitlesForSelect('mapExtraTitleId'); 
+            loadTitlesForSelect('mapTitleId').then(() => {
+                // 数据文件加载完成后触发一次联动，使补充数据表头与已选数据文件绑定
+                onMapTitleChange();
+            });
             loadStandardTitles('mapStandardTitleId'); 
         },
         'result': async () => { 
@@ -636,6 +638,13 @@ async function onResultTitleChange() {
     await loadExtraTitlesForSelect('resultExtraTitleId', titleId);
     // 联动刷新填充失败记录
     loadFailedResults();
+}
+
+// 属性补全模块：数据文件变更时联动过滤补充数据表头（参考结果数据模块的 onResultTitleChange）
+async function onMapTitleChange() {
+    const titleId = $('#mapTitleId').value;
+    // 根据选中的数据文件过滤补充数据表头，实现数据文件与补充数据表头的绑定
+    await loadExtraTitlesForSelect('mapExtraTitleId', titleId);
 }
 
 // 刷新结果数据列表（如果已选择标准表头）
