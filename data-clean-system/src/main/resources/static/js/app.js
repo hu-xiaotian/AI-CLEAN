@@ -207,10 +207,11 @@ function switchPage(name) {
         'clean': () => { refreshCleanPage(); },     // 刷新清洗相关数据 + 加载已清洗记录
         'mapping': () => { 
             loadTitlesForSelect('mapTitleId').then(() => {
-                // 数据文件加载完成后触发一次联动，使补充数据表头与已选数据文件绑定
+                // 数据文件加载完成后触发一次联动，按需加载补充数据表头与标准字段表头
+                // （onMapTitleChange 内部已按当前数据文件过滤标准字段表头，无需再单独全量加载，
+                //  避免与下方重复请求同一接口导致映射列表加载变慢）
                 onMapTitleChange();
             });
-            loadStandardTitles('mapStandardTitleId'); 
         },
         'result': async () => { 
             // 仅首次进入时填充下拉框并联动过滤标准/补充表头，
@@ -640,11 +641,86 @@ async function onResultTitleChange() {
     loadFailedResults();
 }
 
-// 属性补全模块：数据文件变更时联动过滤补充数据表头（参考结果数据模块的 onResultTitleChange）
+// 属性补全模块：数据文件变更时联动过滤补充数据表头，并加载标准字段表头列表
 async function onMapTitleChange() {
     const titleId = $('#mapTitleId').value;
     // 根据选中的数据文件过滤补充数据表头，实现数据文件与补充数据表头的绑定
     await loadExtraTitlesForSelect('mapExtraTitleId', titleId);
+    // 加载该数据文件对应的标准字段表头列表（列表形式展示，行内可编辑映射）
+    await loadMapStandardList();
+}
+
+// ==================== 属性补全模块：标准字段表头列表（替代原下拉框） ====================
+
+// 加载"标准字段表头列表"：选数据文件后展示该文件可填充的全部标准字段表头，行内可编辑映射
+async function loadMapStandardList() {
+    const titleId = $('#mapTitleId').value;
+    const card = $('#mapStandardListCard');
+    const tbody = $('#mapStandardTbody');
+    const countEl = $('#mapStandardListCount');
+    if (!titleId) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = 'block';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">加载中…</td></tr>';
+    countEl.textContent = '';
+    try {
+        // 返回该数据文件已关联（或懒回填）的标准字段表头
+        const list = await api(`/cleaning/standard-titles/by-title?tempDataTitleId=${encodeURIComponent(titleId)}`);
+        if (!list || list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">该数据文件清洗后得到的分类暂无可对应的标准字段表头，请先在「标准字段表头管理」中创建对应分类的标准表头</td></tr>';
+            return;
+        }
+        const hasUnrelated = list.some(st => st.related === false);
+        let html = '';
+        list.forEach((st, idx) => {
+            let fieldCount = 0;
+            for (let i = 1; i <= 20; i++) {
+                if (st['colTitle' + i]) fieldCount++;
+            }
+            const titleName = st.categoryName || st.categoryCode || ('标准表头#' + st.id);
+            const relBadge = st.related === false
+                ? '<span class="badge badge-warning">未关联</span>'
+                : '<span class="badge badge-info">已关联</span>';
+            html += '<tr>'
+                + '<td>' + (idx + 1) + '</td>'
+                + '<td>' + escapeHtml(titleName) + '</td>'
+                + '<td>' + escapeHtml(st.categoryCode || '-') + '</td>'
+                + '<td>' + fieldCount + '</td>'
+                + '<td>' + relBadge + '</td>'
+                + '<td>'
+                + '<button class="btn btn-xs btn-default" onclick="editMapStandard(' + st.id + ')">编辑</button> '
+                + '<button class="btn btn-xs btn-primary" onclick="fillMapStandard(' + st.id + ')">填充</button>'
+                + '</td>'
+                + '</tr>';
+        });
+        tbody.innerHTML = html;
+        countEl.textContent = '共 ' + list.length + ' 个标准字段表头'
+            + (hasUnrelated ? '（含未关联，可直接编辑，保存后自动建立关联）' : '');
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+    }
+}
+
+// 编辑某个标准字段表头的映射关系（复用结果数据模块的手动映射弹窗）
+function editMapStandard(standardTitleId) {
+    const titleId = $('#mapTitleId').value;
+    if (!titleId) { showToast('请先选择数据文件', 'warning'); return; }
+    openManualFillModal({
+        standardTitleId: String(standardTitleId),
+        titleIdSel: 'mapTitleId',
+        extraTitleIdSel: 'mapExtraTitleId',
+    });
+}
+
+// 对单个标准字段表头执行填充（采用其已保存的映射）
+function fillMapStandard(standardTitleId) {
+    const titleId = $('#mapTitleId').value;
+    const extraTitleId = $('#mapExtraTitleId').value;
+    if (!titleId) { showToast('请先选择数据文件', 'warning'); return; }
+    switchPage('mapping');
+    startFillWithSocket(standardTitleId, titleId, extraTitleId || 0);
 }
 
 // 刷新结果数据列表（如果已选择标准表头）
@@ -2189,82 +2265,97 @@ async function autoMapFields() {
         hideLoading();
         showToast('字段映射完成，开始填充所有标准表头的结果数据…');
 
-        // Step 2: 通过 WebSocket 显示填充进度
-        disconnectFillWebSocket();
-        fillGlobalMode = true;
-        fillGlobalTotal = 0;
-        fillGlobalProgress = 0;
-        fillGlobalSuccess = 0;
-        fillGlobalError = 0;
-
-        $('#fillLiveCard').style.display = 'block';
-        $('#fillProgressFill').style.width = '0%';
-        $('#fillProgressFill').textContent = '0%';
-        $('#fillLiveCurrent').textContent = '0';
-        $('#fillLiveTotal').textContent = '0';
-        $('#fillLiveSuccess').textContent = '0';
-        $('#fillLiveError').textContent = '0';
-        $('#fillLiveTbody').innerHTML = '<tr><td colspan="6" class="empty-hint">连接中…</td></tr>';
-        $('#fillLiveStatus').innerHTML = '<p style="font-size:13px;color:var(--text-secondary)">正在连接填充服务…</p>';
-
-        const socket = new SockJS('/ws-cleaning');
-        fillStompClient = Stomp.over(socket);
-        fillStompClient.debug = null;
-
-        fillStompClient.connect({}, function(frame) {
-            console.log('Fill WebSocket 已连接 (fill-all)');
-            // 订阅所有标准表头的填充进度（通配符）
-            fillSubscription = fillStompClient.subscribe('/topic/fill/*', function(message) {
-                handleFillMessage(JSON.parse(message.body));
-            });
-
-            $('#fillLiveStatus').innerHTML = '<p style="font-size:13px;color:var(--accent)">填充任务已启动，正在处理…</p>';
-
-            // 调用 fill-all API（服务端同步执行，WebSocket 实时推送进度）
-            const fillParams = new URLSearchParams({ tempDataTitleId: titleId });
-            if (extraTitleId) fillParams.append('extraDataTitleId', extraTitleId);
-            fetch(API + `/cleaning/fill-result/fill-all?${fillParams}`, { method: 'POST' })
-                .then(fillRes => safeJson(fillRes, '填充结果'))
-                .then(fillData => {
-                    if (fillData.code !== 200) throw new Error(fillData.msg);
-                    fillGlobalMode = false;
-                    $('#fillLiveStatus').innerHTML = '<p style="color:var(--success);font-size:13px">全部填充完成！共处理 ' + fillGlobalTotal + ' 条 (成功 ' + fillGlobalSuccess + ', 失败 ' + fillGlobalError + ')</p>';
-                    $('#fillProgressFill').style.width = '100%';
-                    $('#fillProgressFill').textContent = '100%';
-                    showToast('所有标准表头结果数据填充完成！');
-                    loadFieldMappings();
-                    setTimeout(disconnectFillWebSocket, 2000);
-                })
-                .catch(e => {
-                    fillGlobalMode = false;
-                    $('#fillLiveStatus').innerHTML = '<p style="color:var(--danger)">填充失败: ' + e.message + '</p>';
-                    showToast('填充失败: ' + e.message, 'error');
-                    setTimeout(disconnectFillWebSocket, 2000);
-                });
-        }, function(error) {
-            console.error('Fill WebSocket 连接失败:', error);
-            fillGlobalMode = false;
-            $('#fillLiveStatus').innerHTML = '<p style="color:var(--warning);font-size:13px">实时连接失败，后台填充中…</p>';
-            $('#fillLiveTbody').innerHTML = '<tr><td colspan="6" class="empty-hint">实时连接失败，填充在后台进行中…</td></tr>';
-
-            // WebSocket 连接失败降级：直接调用 fill-all
-            const fillParams = new URLSearchParams({ tempDataTitleId: titleId });
-            if (extraTitleId) fillParams.append('extraDataTitleId', extraTitleId);
-            fetch(API + `/cleaning/fill-result/fill-all?${fillParams}`, { method: 'POST' })
-                .then(fillRes => safeJson(fillRes, '填充结果'))
-                .then(fillData => {
-                    if (fillData.code !== 200) throw new Error(fillData.msg);
-                    showToast('所有标准表头结果数据填充完成！');
-                    loadFieldMappings();
-                })
-                .catch(e2 => {
-                    showToast('填充失败: ' + e2.message, 'error');
-                });
-        });
+        // Step 2: 通过 WebSocket 显示填充进度（对所有标准表头执行填充）
+        startFillAllWithSocket(titleId, extraTitleId);
     } catch (e) {
         showToast('映射或填充失败: ' + e.message, 'error');
         hideLoading();
     }
+}
+
+// 采用【已保存的映射】对所有标准表头执行填充（不重新自动映射，保留手动编辑的配置）
+async function manualMapAndFill() {
+    const titleId = $('#mapTitleId').value;
+    const extraTitleId = $('#mapExtraTitleId').value;
+    if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
+    // 直接调用 fill-all（后端读取各标准表头已保存的 field_mappings 进行填充），
+    // 不会像 autoMapFields 那样先覆盖式自动映射，从而保留用户自定义的映射关系。
+    startFillAllWithSocket(titleId, extraTitleId);
+}
+
+// 通过 WebSocket 实时展示"填充所有标准表头"的进度，并在连接失败时降级为后台填充
+function startFillAllWithSocket(titleId, extraTitleId) {
+    disconnectFillWebSocket();
+    fillGlobalMode = true;
+    fillGlobalTotal = 0;
+    fillGlobalProgress = 0;
+    fillGlobalSuccess = 0;
+    fillGlobalError = 0;
+
+    $('#fillLiveCard').style.display = 'block';
+    $('#fillProgressFill').style.width = '0%';
+    $('#fillProgressFill').textContent = '0%';
+    $('#fillLiveCurrent').textContent = '0';
+    $('#fillLiveTotal').textContent = '0';
+    $('#fillLiveSuccess').textContent = '0';
+    $('#fillLiveError').textContent = '0';
+    $('#fillLiveTbody').innerHTML = '<tr><td colspan="6" class="empty-hint">连接中…</td></tr>';
+    $('#fillLiveStatus').innerHTML = '<p style="font-size:13px;color:var(--text-secondary)">正在连接填充服务…</p>';
+
+    const socket = new SockJS('/ws-cleaning');
+    fillStompClient = Stomp.over(socket);
+    fillStompClient.debug = null;
+
+    fillStompClient.connect({}, function(frame) {
+        console.log('Fill WebSocket 已连接 (fill-all)');
+        // 订阅所有标准表头的填充进度（通配符）
+        fillSubscription = fillStompClient.subscribe('/topic/fill/*', function(message) {
+            handleFillMessage(JSON.parse(message.body));
+        });
+
+        $('#fillLiveStatus').innerHTML = '<p style="font-size:13px;color:var(--accent)">填充任务已启动，正在处理…</p>';
+
+        // 调用 fill-all API（服务端同步执行，WebSocket 实时推送进度）
+        const fillParams = new URLSearchParams({ tempDataTitleId: titleId });
+        if (extraTitleId) fillParams.append('extraDataTitleId', extraTitleId);
+        fetch(API + `/cleaning/fill-result/fill-all?${fillParams}`, { method: 'POST' })
+            .then(fillRes => safeJson(fillRes, '填充结果'))
+            .then(fillData => {
+                if (fillData.code !== 200) throw new Error(fillData.msg);
+                fillGlobalMode = false;
+                $('#fillLiveStatus').innerHTML = '<p style="color:var(--success);font-size:13px">全部填充完成！共处理 ' + fillGlobalTotal + ' 条 (成功 ' + fillGlobalSuccess + ', 失败 ' + fillGlobalError + ')</p>';
+                $('#fillProgressFill').style.width = '100%';
+                $('#fillProgressFill').textContent = '100%';
+                showToast('所有标准表头结果数据填充完成！');
+                loadFieldMappings();
+                setTimeout(disconnectFillWebSocket, 2000);
+            })
+            .catch(e => {
+                fillGlobalMode = false;
+                $('#fillLiveStatus').innerHTML = '<p style="color:var(--danger)">填充失败: ' + e.message + '</p>';
+                showToast('填充失败: ' + e.message, 'error');
+                setTimeout(disconnectFillWebSocket, 2000);
+            });
+    }, function(error) {
+        console.error('Fill WebSocket 连接失败:', error);
+        fillGlobalMode = false;
+        $('#fillLiveStatus').innerHTML = '<p style="color:var(--warning);font-size:13px">实时连接失败，后台填充中…</p>';
+        $('#fillLiveTbody').innerHTML = '<tr><td colspan="6" class="empty-hint">实时连接失败，填充在后台进行中…</td></tr>';
+
+        // WebSocket 连接失败降级：直接调用 fill-all
+        const fillParams = new URLSearchParams({ tempDataTitleId: titleId });
+        if (extraTitleId) fillParams.append('extraDataTitleId', extraTitleId);
+        fetch(API + `/cleaning/fill-result/fill-all?${fillParams}`, { method: 'POST' })
+            .then(fillRes => safeJson(fillRes, '填充结果'))
+            .then(fillData => {
+                if (fillData.code !== 200) throw new Error(fillData.msg);
+                showToast('所有标准表头结果数据填充完成！');
+                loadFieldMappings();
+            })
+            .catch(e2 => {
+                showToast('填充失败: ' + e2.message, 'error');
+            });
+    });
 }
 
 async function fillResultData() {
@@ -2832,9 +2923,16 @@ let manualFillState = {
     existingMappings: [],    // [FieldMappingAuditEntity, ...]
 };
 
-async function openManualFillModal() {
-    const standardTitleId = $('#resultStandardTitleId').value;
-    const titleId = $('#resultTitleId').value;
+async function openManualFillModal(opts) {
+    // opts: { standardTitleId, standardTitleIdSel, titleIdSel, extraTitleIdSel }
+    //  - standardTitleId: 直接传入的标准字段表头 id（属性补全模块列表行编辑时使用）
+    //  - standardTitleIdSel: 下拉框 id（结果数据模块使用），未传则默认 resultStandardTitleId
+    const standardTitleId = (opts && opts.standardTitleId)
+        || (opts && opts.standardTitleIdSel ? $('#' + opts.standardTitleIdSel).value : $('#resultStandardTitleId').value);
+    const titleIdSel = (opts && opts.titleIdSel) || 'resultTitleId';
+    const extraTitleIdSel = (opts && opts.extraTitleIdSel) || 'resultExtraTitleId';
+
+    const titleId = $('#' + titleIdSel).value;
 
     if (!standardTitleId || !titleId) {
         showToast('请选择标准字段表头和数据文件', 'warning');
@@ -3933,9 +4031,9 @@ async function saveStandardTitleFromModal() {
         }
         closeStandardEditModal();
         queryStandardTitles(1);
-        // 刷新其他页面的下拉框（保持结果页当前数据文件过滤与已选标准表头）
+        // 刷新其他页面的标准字段表头列表 / 下拉框
         invalidateStandardTitlesCache();
-        loadStandardTitles('mapStandardTitleId');
+        loadMapStandardList();
         loadStandardTitles('resultStandardTitleId', $('#resultTitleId').value);
     } catch (e) {
         showToast('保存失败: ' + e.message, 'error');
@@ -3951,9 +4049,9 @@ async function deleteStandardTitleById(id) {
         await api(`/cleaning/standard-title/${id}`, { method: 'DELETE' });
         showToast('标准字段表头已删除');
         queryStandardTitles(1);
-        // 刷新下拉框（保持结果页当前数据文件过滤与已选标准表头）
+        // 刷新列表 / 下拉框（保持结果页当前数据文件过滤与已选标准表头）
         invalidateStandardTitlesCache();
-        loadStandardTitles('mapStandardTitleId');
+        loadMapStandardList();
         loadStandardTitles('resultStandardTitleId', $('#resultTitleId').value);
     } catch (e) {
         showToast('删除失败: ' + e.message, 'error');

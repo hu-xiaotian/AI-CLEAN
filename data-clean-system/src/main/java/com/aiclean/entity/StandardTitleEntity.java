@@ -23,6 +23,14 @@ public class StandardTitleEntity extends BaseEntity {
     @TableField(exist = false)
     private String categoryName;
 
+    /**
+     * 该标准表头是否与当前数据文件已建立关联（前端用于区分"已关联/未关联"）。
+     * 当数据文件尚未执行自动映射时，接口会回退返回全部标准表头供用户选择编辑，
+     * 此时未真正关联的表头该标记为 false。
+     */
+    @TableField(exist = false)
+    private boolean related = true;
+
     @TableField("col_title_1")
     private String colTitle1;
     @TableField("col_title_2")

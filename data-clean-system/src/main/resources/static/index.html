@@ -420,9 +420,35 @@
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="mapTitleId" class="form-input" onchange="onMapTitleChange()"></select></div>
                     <div class="form-group"><label>补充数据表头</label><select id="mapExtraTitleId" class="form-input"></select></div>
-                    <div class="form-group"><button class="btn btn-primary" onclick="autoMapFields()">自动映射并填充</button></div>
+                    <div class="form-group" style="flex-direction:row;gap:6px;align-items:center">
+                        <button class="btn btn-primary" onclick="autoMapFields()">自动映射并填充</button>
+                        <button class="btn btn-default" onclick="manualMapAndFill()">手动映射并填充</button>
+                    </div>
                 </div>
-                <p class="mapping-tip">根据清洗后数据的分类编码自动匹配标准字段表头并填充</p>
+                <p class="mapping-tip">选择数据文件与补充数据表头后，下方列出该数据文件可填充的全部标准字段表头。点击「编辑」可自定义字段与数据文件 / 补充数据列的映射关系并保存；「手动映射并填充」将采用各标准表头已保存的自定义映射进行填充（不会重新自动映射，保留您的手动配置）。</p>
+            </div>
+            <div class="card" id="mapStandardListCard" style="display:none">
+                <div class="card-head">
+                    <h3>标准字段表头列表</h3>
+                    <span class="muted" id="mapStandardListCount"></span>
+                </div>
+                <div class="table-scroll mt-2" style="max-height:520px;overflow-y:auto">
+                    <table class="data-table" id="mapStandardTable">
+                        <thead>
+                            <tr>
+                                <th style="width:50px">#</th>
+                                <th>分类编码名称</th>
+                                <th>分类编码</th>
+                                <th style="width:90px">字段数</th>
+                                <th style="width:110px">映射状态</th>
+                                <th style="width:170px">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mapStandardTbody">
+                            <tr><td colspan="6" class="empty-hint">请选择数据文件以加载标准字段表头列表</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
             <div class="card" id="fillLiveCard" style="display:none">
                 <h3>填充进度</h3>
@@ -466,10 +492,10 @@
                     <div class="form-group" style="flex-direction:row;gap:6px;align-items:center">
                         <button class="btn btn-primary" onclick="loadResultData(1)">查询结果</button>
                         <button class="btn btn-success" onclick="downloadResultData()">下载</button>
-                        <button class="btn btn-info" onclick="showMappingStatus()">显示映射状态</button>
-                        <button class="btn btn-default" onclick="openManualFillModal()">手动填充</button>
-                        <button class="btn btn-warning" onclick="fillAllStandardTitles()">全部填充</button>
-                        <button class="btn btn-danger" onclick="showFailedResults()">查看填充失败</button>
+<!--                        <button class="btn btn-info" onclick="showMappingStatus()">显示映射状态</button>-->
+<!--                        <button class="btn btn-default" onclick="openManualFillModal()">手动填充</button>-->
+<!--                        <button class="btn btn-warning" onclick="fillAllStandardTitles()">全部填充</button>-->
+<!--                        <button class="btn btn-danger" onclick="showFailedResults()">查看填充失败</button>-->
                     </div>
                 </div>
             </div>

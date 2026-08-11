@@ -1318,6 +1318,11 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             return result;
         }
 
+        // 自动建立/补全"数据文件-标准字段表头"关联：
+        // 即使用户从未执行过自动映射，只要在此标准表头上编辑并保存字段映射，
+        // 就视为该数据文件已关联此标准表头，保证后续可正常填充、列表可正常显示
+        ensureTitleStandardRel(standardTitleId, tempDataTitleId);
+
         // 区分"已映射"与"显式不映射"的目标字段：
         // - 已映射：targetField + 非空 sourceField，需删除同名旧映射后插入新映射
         // - 显式不映射：sourceField 为空，需删除该字段的全部旧映射，并清空结果数据对应列
@@ -1393,6 +1398,24 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         log.info("手动字段映射保存完成（合并），新增/更新 {} 条，移除被覆盖的旧记录 {} 条，显式不映射 {} 条",
                 result.size(), deletedCount, unmappedTargets.size());
         return result;
+    }
+
+    /**
+     * 确保"数据文件-标准字段表头"关联存在。
+     * 用于支持"即使未执行过自动映射，用户也能直接编辑并填充"的场景：
+     * 当用户在某标准表头上保存手动字段映射时，若该组合尚未关联，
+     * 则自动建立关联，避免后续填充/列表查询因缺少关联而报错或显示为空。
+     */
+    private void ensureTitleStandardRel(Long standardTitleId, Long tempDataTitleId) {
+        if (standardTitleId == null || tempDataTitleId == null) return;
+        Integer ex = titleStandardTitleMapper.exists(tempDataTitleId, standardTitleId);
+        if (ex == null) {
+            TitleStandardTitleEntity rel = new TitleStandardTitleEntity();
+            rel.setTempDataTitleId(tempDataTitleId);
+            rel.setStandardTitleId(standardTitleId);
+            titleStandardTitleMapper.insert(rel);
+            log.info("自动补全数据文件-标准表头关联，tempDataTitleId: {}, standardTitleId: {}", tempDataTitleId, standardTitleId);
+        }
     }
 
     /**
@@ -2100,16 +2123,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Override
     public List<StandardTitleEntity> getAllStandardTitles() {
         List<StandardTitleEntity> titles = standardTitleMapper.selectList(null);
-        if (titles != null) {
-            for (StandardTitleEntity title : titles) {
-                if (StrUtil.isNotBlank(title.getCategoryCode())) {
-                    CategoryEntity cat = categoryMapper.selectByCode(title.getCategoryCode());
-                    if (cat != null) {
-                        title.setCategoryName(cat.getCategoryName());
-                    }
-                }
-            }
-        }
+        applyCategoryNames(titles);
         return titles;
     }
 
@@ -2123,16 +2137,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         wrapper.orderByDesc(StandardTitleEntity::getId);
         IPage<StandardTitleEntity> result = standardTitleMapper.selectPage(pageReq, wrapper);
         // 补全分类名称
-        if (result.getRecords() != null) {
-            for (StandardTitleEntity title : result.getRecords()) {
-                if (StrUtil.isNotBlank(title.getCategoryCode())) {
-                    CategoryEntity cat = categoryMapper.selectByCode(title.getCategoryCode());
-                    if (cat != null) {
-                        title.setCategoryName(cat.getCategoryName());
-                    }
-                }
-            }
-        }
+        applyCategoryNames(result.getRecords());
         return result;
     }
 
@@ -2154,23 +2159,71 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         // 懒回填：关联表为空时，从已填充的 result_data 反推该文件关联的标准表头，避免历史数据需重新清洗
         if (list == null || list.isEmpty()) {
             List<Long> stdIds = resultDataMapper.selectStandardTitleIdsByTitle(tempDataTitleId);
-            if (stdIds != null) {
-                for (Long sid : stdIds) {
-                    recordTitleStandardTitle(tempDataTitleId, sid);
+            if (stdIds != null && !stdIds.isEmpty()) {
+                // 去重，避免重复关联
+                Set<Long> uniqueIds = new LinkedHashSet<>(stdIds);
+                // 一次性查出已存在的关联，避免逐条 exists 查询（N+1）
+                List<TitleStandardTitleEntity> exists = titleStandardTitleMapper.selectList(
+                        new LambdaQueryWrapper<TitleStandardTitleEntity>()
+                                .eq(TitleStandardTitleEntity::getTempDataTitleId, tempDataTitleId)
+                                .in(TitleStandardTitleEntity::getStandardTitleId, uniqueIds));
+                Set<Long> existIds = new HashSet<>();
+                if (exists != null) {
+                    for (TitleStandardTitleEntity e : exists) existIds.add(e.getStandardTitleId());
+                }
+                // 仅对不存在的关联执行批量 insert，避免逐条 exists + 可能 insert
+                for (Long sid : uniqueIds) {
+                    if (existIds.contains(sid)) continue;
+                    TitleStandardTitleEntity rel = new TitleStandardTitleEntity();
+                    rel.setTempDataTitleId(tempDataTitleId);
+                    rel.setStandardTitleId(sid);
+                    titleStandardTitleMapper.insert(rel);
                 }
             }
             list = titleStandardTitleMapper.selectStandardTitlesByTitleId(tempDataTitleId);
         }
-        // 补全分类名称，与 getAllStandardTitles 保持一致
-        if (list != null) {
-            for (StandardTitleEntity title : list) {
-                if (StrUtil.isNotBlank(title.getCategoryCode())) {
-                    CategoryEntity cat = categoryMapper.selectByCode(title.getCategoryCode());
-                    if (cat != null) title.setCategoryName(cat.getCategoryName());
+        // 兜底：若该数据文件从未执行过自动映射、也没有任何历史填充记录，
+        // 则根据文件清洗后实际存在的分类编码，只返回这些分类对应的标准字段表头
+        // （标记为未关联），让用户不依赖"先自动映射"也能直接选择并编辑/填充。
+        // 真正关联在用户首次保存字段映射时建立。
+        if (list == null || list.isEmpty()) {
+            List<String> categoryCodes =
+                    cleanedDataMapper.selectDistinctCategoryCodesByTitleId(tempDataTitleId);
+            if (categoryCodes != null && !categoryCodes.isEmpty()) {
+                list = standardTitleMapper.selectList(
+                        new LambdaQueryWrapper<StandardTitleEntity>()
+                                .in(StandardTitleEntity::getCategoryCode, categoryCodes)
+                                .orderByDesc(StandardTitleEntity::getId));
+                if (list == null) list = new ArrayList<>();
+                for (StandardTitleEntity st : list) st.setRelated(false);
+            }
+        }
+        // 补全分类名称，与 getAllStandardTitles 保持一致（使用一次性加载，避免逐条 selectByCode）
+        applyCategoryNames(list);
+        return list == null ? new ArrayList<>() : list;
+    }
+
+    /**
+     * 为一批标准字段表头补全分类名称。
+     * 一次性加载全部分类到 Map，避免逐条 selectByCode 产生的 N+1 查询。
+     */
+    private void applyCategoryNames(List<StandardTitleEntity> titles) {
+        if (titles == null || titles.isEmpty()) return;
+        List<CategoryEntity> allCategories = categoryMapper.selectList(null);
+        Map<String, String> catNameByCode = new HashMap<>();
+        if (allCategories != null) {
+            for (CategoryEntity c : allCategories) {
+                if (StrUtil.isNotBlank(c.getCategoryCode()) && c.getCategoryName() != null) {
+                    catNameByCode.put(c.getCategoryCode(), c.getCategoryName());
                 }
             }
         }
-        return list == null ? new ArrayList<>() : list;
+        for (StandardTitleEntity title : titles) {
+            if (StrUtil.isNotBlank(title.getCategoryCode())) {
+                String name = catNameByCode.get(title.getCategoryCode());
+                if (name != null) title.setCategoryName(name);
+            }
+        }
     }
 
     @Override
@@ -2203,13 +2256,16 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 String sheetName = sanitizeSheetName(st, sheetSeq++);
                 Sheet sheet = workbook.createSheet(sheetName);
 
-                // 表头：ID、状态 + 该标准表头各自的属性列（col_title_1..20）
+                // 表头：仅该标准表头实际配置了属性名称的列，过滤掉未配置（原 fallback "列N"）的空列
+                // 不导出 ID / 状态列
                 List<String> headers = new ArrayList<>();
-                headers.add("ID");
-                headers.add("状态");
+                List<Integer> activeCols = new ArrayList<>();
                 for (int i = 1; i <= 20; i++) {
                     String t = st.getColTitle(i);
-                    headers.add(StrUtil.isNotBlank(t) ? t : ("列" + i));
+                    if (StrUtil.isNotBlank(t)) {
+                        headers.add(t);
+                        activeCols.add(i);
+                    }
                 }
                 Row headerRow = sheet.createRow(0);
                 for (int i = 0; i < headers.size(); i++) {
@@ -2228,11 +2284,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 int r = 1;
                 for (ResultDataEntity rd : rows) {
                     Row row = sheet.createRow(r++);
-                    row.createCell(0).setCellValue(rd.getId() != null ? String.valueOf(rd.getId()) : "");
-                    row.createCell(1).setCellValue(rd.getStatus() != null ? rd.getStatus() : "");
-                    for (int i = 1; i <= 20; i++) {
-                        String v = rd.getColData(i);
-                        row.createCell(1 + i).setCellValue(v != null ? v : "");
+                    for (int idx = 0; idx < activeCols.size(); idx++) {
+                        String v = rd.getColData(activeCols.get(idx));
+                        row.createCell(idx).setCellValue(v != null ? v : "");
                     }
                 }
 
