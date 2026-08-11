@@ -77,13 +77,6 @@ public interface CleanedDataMapper extends BaseMapper<CleanedDataEntity> {
     List<CleanedDataEntity> selectByMaterialName(@Param("materialName") String materialName);
     
     /**
-     * 根据质量评分范围查询
-     */
-    @Select("SELECT * FROM cleaned_data WHERE quality_score BETWEEN #{minScore} AND #{maxScore} ORDER BY quality_score DESC")
-    List<CleanedDataEntity> selectByQualityScoreRange(@Param("minScore") Double minScore, 
-                                                       @Param("maxScore") Double maxScore);
-    
-    /**
      * 根据导出批次ID查询
      */
     @Select("SELECT * FROM cleaned_data WHERE export_batch_id = #{batchId} ORDER BY exported_at DESC")

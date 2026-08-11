@@ -3654,7 +3654,6 @@ async function searchData(page) {
         materialCode: $('#searchCode').value.trim() || null,
         materialName: $('#searchName').value.trim() || null,
         specification: $('#searchSpec').value.trim() || null,
-        qualityScoreMin: $('#searchScoreMin').value ? parseFloat($('#searchScoreMin').value) : null,
         page: curPage,
         pageSize: size,
     };

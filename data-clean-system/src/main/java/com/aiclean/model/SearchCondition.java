@@ -53,16 +53,6 @@ public class SearchCondition {
     private List<DataStatus> statuses;
     
     /**
-     * 质量评分最小值
-     */
-    private Double qualityScoreMin;
-    
-    /**
-     * 质量评分最大值
-     */
-    private Double qualityScoreMax;
-    
-    /**
      * 创建时间起始
      */
     private LocalDateTime createdStart;
@@ -155,7 +145,6 @@ public class SearchCondition {
             case "materialCode": return "material_code";
             case "materialName": return "material_name";
             case "categoryCode": return "category_code";
-            case "qualityScore": return "quality_score";
             case "createdAt": return "created_at";
             case "reviewedAt": return "reviewed_at";
             case "exportedAt": return "exported_at";
@@ -211,8 +200,6 @@ public class SearchCondition {
                 || specification != null
                 || technicalStandard != null
                 || (statuses != null && !statuses.isEmpty())
-                || qualityScoreMin != null
-                || qualityScoreMax != null
                 || createdStart != null
                 || createdEnd != null
                 || reviewedStart != null

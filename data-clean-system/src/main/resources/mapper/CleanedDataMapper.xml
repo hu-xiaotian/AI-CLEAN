@@ -108,12 +108,6 @@
                     #{status.code}
                 </foreach>
             </if>
-            <if test="condition.qualityScoreMin != null">
-                AND quality_score &gt;= #{condition.qualityScoreMin}
-            </if>
-            <if test="condition.qualityScoreMax != null">
-                AND quality_score &lt;= #{condition.qualityScoreMax}
-            </if>
             <if test="condition.createdStart != null">
                 AND created_at &gt;= #{condition.createdStart}
             </if>
