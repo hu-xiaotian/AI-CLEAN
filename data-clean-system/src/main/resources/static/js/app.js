@@ -132,7 +132,12 @@ function showToast(msg, type = 'success') {
 function showModal(title, bodyHtml) {
     $('#modalTitle').textContent = title;
     $('#modalBody').innerHTML = bodyHtml;
-    $('#modal').classList.add('show');
+    const modal = $('#modal');
+    // 重置拖动位置，恢复默认居中
+    modal.classList.remove('dragging');
+    modal.style.top = '';
+    modal.style.left = '';
+    modal.classList.add('show');
     $('#modalOverlay').classList.add('show');
 }
 
@@ -140,6 +145,53 @@ function closeModal() {
     $('#modal').classList.remove('show');
     $('#modalOverlay').classList.remove('show');
 }
+
+// 让通用弹窗可拖动（通过标题栏拖拽）
+(function enableModalDrag() {
+    const modal = document.getElementById('modal');
+    if (!modal) return;
+    const header = modal.querySelector('.modal-header');
+    if (!header) return;
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0, dragging = false;
+
+    function onPointerDown(e) {
+        // 点击关闭按钮等不触发拖动
+        if (e.target.closest('.btn-close')) return;
+        // 先读取当前（居中 translate 状态）的实际屏幕位置，再切换为绝对定位
+        const rect = modal.getBoundingClientRect();
+        dragging = true;
+        modal.classList.add('dragging');
+        modal.style.left = rect.left + 'px';
+        modal.style.top = rect.top + 'px';
+        startLeft = rect.left;
+        startTop = rect.top;
+        startX = e.clientX;
+        startY = e.clientY;
+        e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+        if (!dragging) return;
+        let newLeft = startLeft + (e.clientX - startX);
+        let newTop = startTop + (e.clientY - startY);
+        // 限制在视口范围内
+        const maxLeft = window.innerWidth - modal.offsetWidth;
+        const maxTop = window.innerHeight - modal.offsetHeight;
+        newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+        newTop = Math.max(0, Math.min(newTop, maxTop));
+        modal.style.left = newLeft + 'px';
+        modal.style.top = newTop + 'px';
+    }
+
+    function onPointerUp() {
+        // 拖动结束后保持绝对定位（dragging），否则 transform: translate(-50%,-50%) 会重新生效使弹窗跳回居中
+        dragging = false;
+    }
+
+    header.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('mousemove', onPointerMove);
+    document.addEventListener('mouseup', onPointerUp);
+})();
 
 function showLoading(msg) {
     const overlay = $('#loadingOverlay');
