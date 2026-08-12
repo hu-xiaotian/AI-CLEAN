@@ -2648,6 +2648,16 @@ let resultPageState = {
 // 结果数据页下拉框是否已初始化（仅首次进入时填充，避免切换页面时重置已选条件与结果）
 let _resultSelectsReady = false;
 
+// 结果数据当前显示顺序：desc（倒序/默认）| asc（顺序）
+let resultSortOrder = 'desc';
+
+// 点击 ID 表头倒三角：切换显示顺序并触发查询
+function toggleResultSort() {
+    resultSortOrder = (resultSortOrder === 'desc') ? 'asc' : 'desc';
+    resultPageState.page = 1;
+    loadResultData();
+}
+
 async function loadResultData(page) {
     const standardTitleId = $('#resultStandardTitleId').value;
     const titleId = $('#resultTitleId').value;
@@ -2662,6 +2672,9 @@ async function loadResultData(page) {
         if (standardTitleId) condition.standardTitleId = parseInt(standardTitleId);
         // 按当前数据文件过滤，避免结果数据跨文件显示（当前文件匹配）
         if (titleId) condition.tempDataTitleId = parseInt(titleId);
+        // 显示顺序：倒序(desc)/顺序(asc)，点击 ID 表头倒三角切换
+        condition.sortBy = 'createdAt';
+        condition.sortOrder = resultSortOrder || 'desc';
 
         // 并行查询数据和总数
         const [results, total] = await Promise.all([
@@ -3559,7 +3572,10 @@ async function renderResultData(results) {
         standardCols = cols.map((c, i) => ({ key: c, title: '列' + (i + 1) }));
     }
 
-    $('#resultThead').innerHTML = '<tr><th>ID</th><th>标准表头</th><th>状态</th>' +
+    const sortArrow = resultSortOrder === 'desc'
+        ? '▼'   // 倒序：倒三角
+        : '▲';  // 顺序：正三角
+    $('#resultThead').innerHTML = `<tr><th class="sortable-id" onclick="toggleResultSort()" title="点击切换显示顺序">ID <span class="sort-arrow">${sortArrow}</span></th><th>标准表头</th><th>状态</th>` +
         standardCols.map(c => `<th>${c.title}</th>`).join('') + '<th>操作</th></tr>';
 
     $('#resultTbody').innerHTML = results.map(r => `

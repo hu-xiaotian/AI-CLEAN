@@ -72,7 +72,7 @@
     <select id="searchByConditions" resultMap="BaseResultMap">
         SELECT * FROM result_data
         <include refid="whereCondition"/>
-        ORDER BY id DESC
+        ORDER BY ${condition.sortField} ${condition.sortDirection}
         <if test="condition != null and condition.page != null">
             LIMIT #{condition.offset}, #{condition.limit}
         </if>

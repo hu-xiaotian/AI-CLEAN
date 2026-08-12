@@ -804,6 +804,21 @@ select.form-input { cursor: pointer; appearance: none; background-image: url("da
     transform: none !important;
 }
 
+/* 结果数据 ID 表头：可点击切换显示顺序 */
+th.sortable-id {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+th.sortable-id:hover {
+    color: var(--primary);
+}
+th.sortable-id .sort-arrow {
+    font-size: 11px;
+    margin-left: 2px;
+    opacity: 0.7;
+}
+
 .modal-body { padding: 20px; }
 
 /* -------- Utility -------- */
