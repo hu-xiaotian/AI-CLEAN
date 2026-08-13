@@ -269,7 +269,8 @@ function switchPage(name) {
             // 仅首次进入时填充下拉框并联动过滤标准/补充表头，
             // 之后切换页面不再重新加载下拉框，保留用户已选条件、结果与翻页位置
             if (!_resultSelectsReady) {
-                await loadTitlesForSelect('resultTitleId');
+                // 结果数据模块：数据文件下拉框只显示"导入数据状态为完成"的数据
+                await loadTitlesForSelect('resultTitleId', 'completed');
                 await onResultTitleChange();
                 _resultSelectsReady = true;
             }
@@ -1346,9 +1347,11 @@ function clearRuleForm() {
 
 // ==================== 全描述提取 ====================
 
-async function loadTitlesForSelect(selId) {
+async function loadTitlesForSelect(selId, status) {
     try {
-        const titles = await api('/import/titles');
+        // 指定 status 时（如结果数据模块只显示"导入数据完成"的数据文件）按状态过滤
+        const url = status ? `/import/titles/by-status?status=${encodeURIComponent(status)}` : '/import/titles';
+        const titles = await api(url);
         const sel = $(`#${selId}`);
         sel.innerHTML = '<option value="">-- 请选择 --</option>' +
             (titles || []).map(t => `<option value="${t.id}">${t.fileName || '数据#' + t.id} (${t.totalRows || 0}行)</option>`).join('');
@@ -2707,98 +2710,41 @@ async function downloadResultData() {
 
     showLoading('正在下载数据…');
     try {
-        // 先获取总数
-        const condition = { page: 1, pageSize: 1, standardTitleId: parseInt(standardTitleId) };
-        if (titleId) condition.tempDataTitleId = parseInt(titleId);
-        const total = await api('/cleaning/result-data/count', { method: 'POST', body: condition });
-        if (!total || total === 0) {
-            showToast('没有可下载的数据', 'warning');
-            hideLoading();
-            return;
-        }
-
-        // 一次性获取全部数据
-        const allCondition = { page: 1, pageSize: total, standardTitleId: parseInt(standardTitleId) };
-        if (titleId) allCondition.tempDataTitleId = parseInt(titleId);
-        const allResults = await api('/cleaning/result-data/search', { method: 'POST', body: allCondition });
-
-        if (!allResults || allResults.length === 0) {
-            showToast('没有可下载的数据', 'warning');
-            hideLoading();
-            return;
-        }
-
-        // 仅获取当前选中的标准字段表头（避免全量请求，全量接口为 N+1 查询，慢）
-        let selectedStandard = null;
-        if (_standardTitlesCache) {
-            selectedStandard = _standardTitlesCache.find(s => s.id == standardTitleId) || null;
-        }
-        if (!selectedStandard) {
-            selectedStandard = await api(`/cleaning/standard-title/${standardTitleId}`).catch(() => null);
-        }
-        let standardCols = [];
-        if (selectedStandard) {
-            for (let i = 1; i <= 20; i++) {
-                const title = selectedStandard['colTitle' + i];
-                if (title) standardCols.push({ key: 'col' + i, title: title });
-            }
-        }
-
-        if (standardCols.length === 0) {
-            for (let i = 1; i <= 20; i++) {
-                standardCols.push({ key: 'col' + i, title: '列' + i });
-            }
-        }
-
-        // 构建CSV内容
-        const headers = ['ID', '标准表头', '状态', ...standardCols.map(c => c.title)];
-        const rows = [headers];
-
-        // 加载标准表头映射
-        const standardTitleMap = {};
-        if (_standardTitlesCache) {
-            _standardTitlesCache.forEach(s => {
-                standardTitleMap[s.id] = s.categoryCode || ('标准表头#' + s.id);
-            });
-        }
-        if (selectedStandard) standardTitleMap[selectedStandard.id] = selectedStandard.categoryCode || ('标准表头#' + selectedStandard.id);
-
-        allResults.forEach(r => {
-            const row = [
-                r.id || '',
-                standardTitleMap[r.standardTitleId] || '',
-                r.status || '',
-                ...standardCols.map(c => (r[c.key] || '').toString())
-            ];
-            rows.push(row);
+        // 后端导出：表头为 行号 + 原始数据列（前置）+ 结果属性列，便于与原始数据对比
+        const token = getToken();
+        const headers = {};
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        const res = await fetch(API + '/cleaning/result-data/export?standardTitleId=' + encodeURIComponent(standardTitleId) +
+            (titleId ? '&tempDataTitleId=' + encodeURIComponent(titleId) : ''), {
+            method: 'GET',
+            headers
         });
-
-        // 生成CSV字符串
-        const csvContent = rows.map(row =>
-            row.map(cell => {
-                const val = String(cell);
-                if (val.includes(',') || val.includes('"') || val.includes('\n')) {
-                    return '"' + val.replace(/"/g, '""') + '"';
-                }
-                return val;
-            }).join(',')
-        ).join('\n');
-
-        // 添加BOM以确保Excel正确识别中文
-        const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+        if (res.status === 401) {
+            showToast('登录已过期，请重新登录', 'error');
+            hideLoading();
+            return;
+        }
+        if (!res.ok) {
+            let msg = '下载失败';
+            try { const t = await res.text(); if (t) msg += ': ' + t; } catch (e) {}
+            showToast(msg, 'error');
+            hideLoading();
+            return;
+        }
+        const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
         const now = new Date();
         const timestamp = now.getFullYear() + ('0' + (now.getMonth() + 1)).slice(-2) + ('0' + now.getDate()).slice(-2) + '_' +
             ('0' + now.getHours()).slice(-2) + ('0' + now.getMinutes()).slice(-2) + ('0' + now.getSeconds()).slice(-2);
-        link.download = 'result_data_' + timestamp + '.csv';
+        link.download = 'result_data_' + timestamp + '.xlsx';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
 
-        showToast('下载完成，共 ' + allResults.length + ' 条数据');
+        showToast('下载完成');
     } catch (e) {
         showToast('下载失败: ' + e.message, 'error');
     } finally {
@@ -5384,7 +5330,7 @@ document.addEventListener('DOMContentLoaded', () => {
         await loadTitlesForSelect('extractTitleId');
         await loadTitlesForSelect('cleanTitleId');
         await loadTitlesForSelect('mapTitleId');
-        await loadTitlesForSelect('resultTitleId');
+        await loadTitlesForSelect('resultTitleId', 'completed');
     };
     initSelects().catch(console.error);
     initAiChat().catch(console.error);

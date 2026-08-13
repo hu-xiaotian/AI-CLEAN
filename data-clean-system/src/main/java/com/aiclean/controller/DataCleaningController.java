@@ -286,6 +286,33 @@ public class DataCleaningController {
         }
     }
 
+    @GetMapping("/result-data/export")
+    @Operation(summary = "导出单 Sheet 结果数据", description = "表头为 行号 + 原始数据列（前置，便于对比）+ 结果属性列，按标准字段表头筛选后分页合并为一个 .xlsx 下载")
+    public void exportResultData(@RequestParam Long standardTitleId,
+                                 @RequestParam(defaultValue = "1") int page,
+                                 @RequestParam(defaultValue = "2000") int pageSize,
+                                 HttpServletResponse response) {
+        try {
+            byte[] data = dataCleaningService.exportResultData(standardTitleId, page, pageSize);
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            String fileName = "result_data_" + standardTitleId + "_" + timestamp + ".xlsx";
+            String encodedName = URLEncoder.encode(fileName, "UTF-8").replaceAll("\\+", "%20");
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=\"" + encodedName + "\"; filename*=UTF-8''" + encodedName);
+            response.setContentLength(data.length);
+            response.getOutputStream().write(data);
+            response.getOutputStream().flush();
+        } catch (IOException e) {
+            log.error("导出结果数据失败", e);
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            writeError(response, "导出失败: " + e.getMessage());
+        } catch (Exception e) {
+            log.error("导出结果数据失败", e);
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            writeError(response, "导出失败: " + e.getMessage());
+        }
+    }
+
     private void writeError(HttpServletResponse response, String msg) {
         try {
             response.setContentType("application/json;charset=UTF-8");

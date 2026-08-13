@@ -2254,7 +2254,14 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             CellStyle headerStyle = buildResultExportHeaderStyle(workbook);
+            CellStyle rawHeaderStyle = buildResultExportRawHeaderStyle(workbook);
             int sheetSeq = 0;
+
+            // 原始数据列（全局顺序）：rowIndex -> (原始列名 -> 值)
+            Map<Long, Map<String, String>> rawDataByRow = new LinkedHashMap<>();
+            List<String> rawColumnOrder = new ArrayList<>();
+            loadResultRawDataByTitle(tempDataTitleId, rawDataByRow, rawColumnOrder);
+
             for (StandardTitleEntity st : standardTitles) {
                 // 2) 每个标准字段表头 -> 一张 sheet，sheet 名取自分类名称/编码并追加 ID 保证唯一
                 String sheetName = sanitizeSheetName(st, sheetSeq++);
@@ -2271,11 +2278,26 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                         activeCols.add(i);
                     }
                 }
+
+                // 本 sheet 实际出现过的原始数据列（保持全局原始列顺序），便于与结果对比
+                List<String> rawKeys = new ArrayList<>();
+                for (String rk : rawColumnOrder) {
+                    rawKeys.add(rk);
+                }
+
+                // 最终表头：行号 + 原始数据列（前置） + 结果属性列
+                List<String> finalHeaders = new ArrayList<>();
+                finalHeaders.add("行号");
+                for (String rk : rawKeys) {
+                    finalHeaders.add("原始-" + rk);
+                }
+                finalHeaders.addAll(headers);
+
                 Row headerRow = sheet.createRow(0);
-                for (int i = 0; i < headers.size(); i++) {
+                for (int i = 0; i < finalHeaders.size(); i++) {
                     Cell cell = headerRow.createCell(i);
-                    cell.setCellValue(headers.get(i));
-                    cell.setCellStyle(headerStyle);
+                    cell.setCellValue(finalHeaders.get(i));
+                    cell.setCellStyle(i >= 1 && i <= rawKeys.size() ? rawHeaderStyle : headerStyle);
                 }
 
                 // 3) 该标准表头 + 当前数据文件下的结果数据
@@ -2288,14 +2310,23 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 int r = 1;
                 for (ResultDataEntity rd : rows) {
                     Row row = sheet.createRow(r++);
+                    row.createCell(0).setCellValue(rd.getId() == null ? "" : String.valueOf(rd.getId()));
+                    // 原始数据列（前置）
+                    Map<String, String> raw = rawDataByRow.getOrDefault(rd.getId(), new LinkedHashMap<>());
+                    for (int idx = 0; idx < rawKeys.size(); idx++) {
+                        String v = raw.get(rawKeys.get(idx));
+                        row.createCell(1 + idx).setCellValue(v != null ? v : "");
+                    }
+                    // 结果属性列
+                    int offset = 1 + rawKeys.size();
                     for (int idx = 0; idx < activeCols.size(); idx++) {
                         String v = rd.getColData(activeCols.get(idx));
-                        row.createCell(idx).setCellValue(v != null ? v : "");
+                        row.createCell(offset + idx).setCellValue(v != null ? v : "");
                     }
                 }
 
                 // 轻量列宽自适应
-                for (int i = 0; i < headers.size(); i++) {
+                for (int i = 0; i < finalHeaders.size(); i++) {
                     sheet.autoSizeColumn(i);
                 }
             }
@@ -2303,6 +2334,162 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             workbook.write(out);
             return out.toByteArray();
+        }
+    }
+
+    /**
+     * 导出（单 Sheet）结果数据：表头顺序为 行号 + 原始数据列（前置）+ 结果属性列。
+     * 原始数据优先按 tempDataId 回查 temp_data（列名取 temp_data_title 的 colNTitle），
+     * 源行已删除或无 tempDataId 时回退使用提交快照 requestColumnsJson。
+     */
+    @Override
+    public byte[] exportResultData(Long standardTitleId, int page, int pageSize) throws IOException {
+        SearchCondition cond = new SearchCondition();
+        cond.setStandardTitleId(standardTitleId);
+        cond.setPage(page);
+        cond.setPageSize(pageSize);
+        List<ResultDataEntity> results = resultDataMapper.searchByConditions(cond);
+        if (results == null || results.isEmpty()) {
+            throw new IllegalStateException("没有结果数据可导出");
+        }
+
+        // 结果属性列顺序：取该标准表头实际配置的属性列（1~20）
+        List<String> headers = new ArrayList<>();
+        List<Integer> activeCols = new ArrayList<>();
+        StandardTitleEntity st = standardTitleId != null ? standardTitleMapper.selectById(standardTitleId) : null;
+        if (st != null) {
+            for (int i = 1; i <= 20; i++) {
+                String t = st.getColTitle(i);
+                if (StrUtil.isNotBlank(t)) {
+                    headers.add(t);
+                    activeCols.add(i);
+                }
+            }
+        }
+
+        // 原始数据列
+        List<String> rawColumnOrder = new ArrayList<>();
+        Map<Long, Map<String, String>> rawDataByRow = new LinkedHashMap<>();
+        loadResultRawData(results, rawDataByRow, rawColumnOrder);
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            CellStyle headerStyle = buildResultExportHeaderStyle(workbook);
+            CellStyle rawHeaderStyle = buildResultExportRawHeaderStyle(workbook);
+            Sheet sheet = workbook.createSheet("结果数据");
+
+            List<String> finalHeaders = new ArrayList<>();
+            finalHeaders.add("行号");
+            for (String rk : rawColumnOrder) {
+                finalHeaders.add("原始-" + rk);
+            }
+            finalHeaders.addAll(headers);
+            Row headerRow = sheet.createRow(0);
+            for (int i = 0; i < finalHeaders.size(); i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(finalHeaders.get(i));
+                cell.setCellStyle(i >= 1 && i <= rawColumnOrder.size() ? rawHeaderStyle : headerStyle);
+            }
+
+            int r = 1;
+            for (ResultDataEntity rd : results) {
+                Row row = sheet.createRow(r++);
+                row.createCell(0).setCellValue(rd.getId() == null ? "" : String.valueOf(rd.getId()));
+                Map<String, String> raw = rawDataByRow.getOrDefault(rd.getId(), new LinkedHashMap<>());
+                for (int idx = 0; idx < rawColumnOrder.size(); idx++) {
+                    String v = raw.get(rawColumnOrder.get(idx));
+                    row.createCell(1 + idx).setCellValue(v != null ? v : "");
+                }
+                int offset = 1 + rawColumnOrder.size();
+                for (int idx = 0; idx < activeCols.size(); idx++) {
+                    String v = rd.getColData(activeCols.get(idx));
+                    row.createCell(offset + idx).setCellValue(v != null ? v : "");
+                }
+            }
+
+            for (int i = 0; i < finalHeaders.size(); i++) {
+                sheet.autoSizeColumn(i);
+            }
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    /**
+     * 加载结果数据对应的原始数据（按 tempDataId 回查 temp_data）。
+     * 结果写入 rawDataByRow（rowIndex -> (原始列名 -> 值)）与 rawColumnOrder（全局列顺序）。
+     */
+    private void loadResultRawData(List<ResultDataEntity> results,
+                                   Map<Long, Map<String, String>> rawDataByRow,
+                                   List<String> rawColumnOrder) {
+        if (results == null || results.isEmpty()) {
+            return;
+        }
+        List<Long> tempDataIds = results.stream()
+                .map(ResultDataEntity::getTempDataId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        Map<Long, TempDataEntity> tempDataMap = new LinkedHashMap<>();
+        if (!tempDataIds.isEmpty()) {
+            try {
+                List<TempDataEntity> tempRows = tempDataMapper.selectBatchIds(tempDataIds);
+                if (tempRows != null) {
+                    for (TempDataEntity td : tempRows) {
+                        tempDataMap.put(td.getId(), td);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("导出时回查 temp_data 失败", e);
+            }
+        }
+
+        TempDataTitleEntity title = null;
+        if (!tempDataMap.isEmpty()) {
+            Long titleId = tempDataMap.values().iterator().next().getTempDataTitleId();
+            if (titleId != null) {
+                try {
+                    title = tempDataTitleMapper.selectById(titleId);
+                } catch (Exception e) {
+                    log.warn("导出时查询 temp_data_title 失败 titleId={}", titleId, e);
+                }
+            }
+        }
+        List<Integer> validColIndexes = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            String colTitle = title == null ? null : title.getColTitle(i);
+            boolean hasTitle = StrUtil.isNotBlank(colTitle);
+            boolean hasValue = false;
+            if (!hasTitle) {
+                for (TempDataEntity td : tempDataMap.values()) {
+                    if (StrUtil.isNotBlank(td.getColData(i))) {
+                        hasValue = true;
+                        break;
+                    }
+                }
+            }
+            if (hasTitle || hasValue) {
+                validColIndexes.add(i);
+                String name = hasTitle ? colTitle.trim() : ("col" + i);
+                if (!rawColumnOrder.contains(name)) {
+                    rawColumnOrder.add(name);
+                }
+            }
+        }
+
+        for (ResultDataEntity rd : results) {
+            Map<String, String> raw = new LinkedHashMap<>();
+            TempDataEntity td = rd.getTempDataId() == null ? null : tempDataMap.get(rd.getTempDataId());
+            if (td != null) {
+                for (Integer idx : validColIndexes) {
+                    String colTitle = title == null ? null : title.getColTitle(idx);
+                    String name = StrUtil.isNotBlank(colTitle) ? colTitle.trim() : ("col" + idx);
+                    String v = td.getColData(idx);
+                    raw.put(name, v == null ? "" : v);
+                }
+            }
+            rawDataByRow.put(rd.getId(), raw);
         }
     }
 
@@ -2317,6 +2504,102 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         style.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
         style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
         return style;
+    }
+
+    /**
+     * 构建原始数据列表头样式（加粗 + 浅蓝底，与结果列区分，便于对比）
+     */
+    private CellStyle buildResultExportRawHeaderStyle(XSSFWorkbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setBold(true);
+        style.setFont(font);
+        style.setFillForegroundColor(IndexedColors.PALE_BLUE.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        return style;
+    }
+
+    /**
+     * 加载指定数据文件下所有结果数据对应的原始数据（按 tempDataId 回查 temp_data）。
+     * 列名取 temp_data_title 的 colNTitle，源行已删除时回退使用提交快照 requestColumnsJson。
+     * 结果写入 rawDataByRow（rowIndex -> (原始列名 -> 值)）与 rawColumnOrder（全局列顺序）。
+     */
+    private void loadResultRawDataByTitle(Long tempDataTitleId,
+                                          Map<Long, Map<String, String>> rawDataByRow,
+                                          List<String> rawColumnOrder) {
+        SearchCondition cond = new SearchCondition();
+        cond.setTempDataTitleId(tempDataTitleId);
+        cond.setQueryAll(true);
+        List<ResultDataEntity> allResults = resultDataMapper.searchByConditions(cond);
+        if (allResults == null || allResults.isEmpty()) {
+            return;
+        }
+
+        List<Long> tempDataIds = allResults.stream()
+                .map(ResultDataEntity::getTempDataId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        Map<Long, TempDataEntity> tempDataMap = new LinkedHashMap<>();
+        if (!tempDataIds.isEmpty()) {
+            try {
+                List<TempDataEntity> tempRows = tempDataMapper.selectBatchIds(tempDataIds);
+                if (tempRows != null) {
+                    for (TempDataEntity td : tempRows) {
+                        tempDataMap.put(td.getId(), td);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("导出时回查 temp_data 失败 titleId={}", tempDataTitleId, e);
+            }
+        }
+
+        TempDataTitleEntity title = null;
+        if (!tempDataMap.isEmpty()) {
+            Long titleId = tempDataMap.values().iterator().next().getTempDataTitleId();
+            if (titleId != null) {
+                try {
+                    title = tempDataTitleMapper.selectById(titleId);
+                } catch (Exception e) {
+                    log.warn("导出时查询 temp_data_title 失败 titleId={}", titleId, e);
+                }
+            }
+        }
+        List<Integer> validColIndexes = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            String colTitle = title == null ? null : title.getColTitle(i);
+            boolean hasTitle = StrUtil.isNotBlank(colTitle);
+            boolean hasValue = false;
+            if (!hasTitle) {
+                for (TempDataEntity td : tempDataMap.values()) {
+                    if (StrUtil.isNotBlank(td.getColData(i))) {
+                        hasValue = true;
+                        break;
+                    }
+                }
+            }
+            if (hasTitle || hasValue) {
+                validColIndexes.add(i);
+                String name = hasTitle ? colTitle.trim() : ("col" + i);
+                if (!rawColumnOrder.contains(name)) {
+                    rawColumnOrder.add(name);
+                }
+            }
+        }
+
+        for (ResultDataEntity rd : allResults) {
+            Map<String, String> raw = new LinkedHashMap<>();
+            TempDataEntity td = rd.getTempDataId() == null ? null : tempDataMap.get(rd.getTempDataId());
+            if (td != null) {
+                for (Integer idx : validColIndexes) {
+                    String colTitle = title == null ? null : title.getColTitle(idx);
+                    String name = StrUtil.isNotBlank(colTitle) ? colTitle.trim() : ("col" + idx);
+                    String v = td.getColData(idx);
+                    raw.put(name, v == null ? "" : v);
+                }
+            }
+            rawDataByRow.put(rd.getId(), raw);
+        }
     }
 
     /**

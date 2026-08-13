@@ -42,6 +42,16 @@ public class DataImportController {
     }
 
     /**
+     * 按导入数据状态获取文件列表（如结果数据模块只展示"已完成"的数据文件）
+     */
+    @GetMapping("/titles/by-status")
+    @Operation(summary = "按状态获取已导入文件列表", description = "根据 status 过滤文件列表，默认 completed（已完成）")
+    public R<List<TempDataTitleEntity>> listTitlesByStatus(@RequestParam(defaultValue = "completed") String status) {
+        List<TempDataTitleEntity> titles = tempDataTitleMapper.selectByStatus(status);
+        return R.success(titles);
+    }
+
+    /**
      * 上传Excel文件并解析为临时数据
      */
     @PostMapping("/upload")

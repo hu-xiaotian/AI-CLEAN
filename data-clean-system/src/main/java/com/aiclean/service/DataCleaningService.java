@@ -99,6 +99,9 @@ public interface DataCleaningService {
     /** 导出多 Sheet 结果数据：数据文件下每个标准字段表头生成一张 sheet，表头为该标准表头的属性列，合并为一个 .xlsx 字节流 */
     byte[] exportResultDataMultiSheet(Long tempDataTitleId) throws IOException;
 
+    /** 导出（单 Sheet）结果数据：表头为 行号 + 原始数据列（前置）+ 结果属性列，合并为一个 .xlsx 字节流 */
+    byte[] exportResultData(Long standardTitleId, int page, int pageSize) throws IOException;
+
     /** 查询某数据文件下填充失败的结果数据（未匹配标准表头） */
     List<FailedResultDataEntity> getFailedResults(Long titleId);
 
