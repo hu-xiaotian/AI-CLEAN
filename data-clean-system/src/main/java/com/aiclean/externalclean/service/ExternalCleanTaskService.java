@@ -945,7 +945,8 @@ public class ExternalCleanTaskService {
     @Transactional(rollbackFor = Exception.class)
     public void cancelTask(String taskId) {
         ExternalCleanTaskEntity task = requireTask(taskId);
-        if (!"processing".equals(task.getStatus()) && !"pending".equals(task.getStatus()) && !"submitting".equals(task.getStatus())) {
+        if (!"processing".equals(task.getStatus()) && !"pending".equals(task.getStatus())
+                && !"submitting".equals(task.getStatus()) && !"queued".equals(task.getStatus())) {
             throw new IllegalStateException("当前状态(" + task.getStatus() + ")不允许取消");
         }
         if ("async".equals(task.getMode())) {

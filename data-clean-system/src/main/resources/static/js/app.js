@@ -5994,7 +5994,7 @@ function ecTaskActions(t) {
     // 状态不为「已完成」时，查看结果按钮不可点击
     const viewDisabled = (t.status !== 'completed') ? 'disabled' : '';
     let h = '<button class="btn btn-sm btn-info" ' + viewDisabled + ' onclick="ecViewRows(\'' + t.taskId + '\')">查看结果</button> ';
-    if (t.status === 'processing' || t.status === 'submitting' || t.status === 'pending') {
+    if (t.status === 'processing' || t.status === 'submitting' || t.status === 'pending' || t.status === 'queued') {
         h += '<button class="btn btn-sm btn-default" onclick="ecCancelTask(\'' + t.taskId + '\')">取消</button> ';
     }
     if (t.status === 'failed' || t.status === 'callback_timeout') {
