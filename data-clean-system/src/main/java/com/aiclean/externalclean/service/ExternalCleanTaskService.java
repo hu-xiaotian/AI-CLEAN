@@ -324,8 +324,11 @@ public class ExternalCleanTaskService {
     }
 
     /**
-     * 导出任务结果：按分类分 Sheet，每个 Sheet 表头为各分类 extractedAttrsJson 属性列（缺失属性补空列），
-     * 内容为 extractedAttrsJson 转化后的扁平列表，便于下载后查看与编辑。
+     * 导出任务结果：按分类分 Sheet。
+     * <p>每个 Sheet 表头顺序为：行号 + 原始数据列（前置，便于与结果比对） + 结果属性列
+     * （extractedAttrsJson 属性列，缺失属性补空列）。原始数据优先取 temp_data 中
+     * tempDataId 对应的行（列名取 temp_data_title 的表头），若源行已删除则回退使用
+     * 提交时的快照 requestColumnsJson。</p>
      */
     public byte[] exportRowsByCategory(String taskId) {
         List<ExternalCleanTaskRowEntity> rows = rowMapper.selectList(
@@ -335,6 +338,10 @@ public class ExternalCleanTaskService {
         if (rows == null || rows.isEmpty()) {
             throw new IllegalStateException("该任务暂无结果数据，无法导出");
         }
+
+        // 原始数据：rowIndex -> (原始列名 -> 值)，以及全局原始列顺序
+        List<String> rawColumnOrder = new ArrayList<>();
+        Map<Integer, Map<String, String>> rowRawData = loadRawDataForExport(taskId, rows, rawColumnOrder);
 
         // 解析每行的属性 Map（含缺失属性）
         Map<Integer, Map<String, String>> rowAttrs = new LinkedHashMap<>();
@@ -379,6 +386,7 @@ public class ExternalCleanTaskService {
 
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             CellStyle headerStyle = buildExportHeaderStyle(workbook);
+            CellStyle rawHeaderStyle = buildExportRawHeaderStyle(workbook);
             int catSeq = 0;
             for (Map.Entry<String, List<ExternalCleanTaskRowEntity>> entry : byCategory.entrySet()) {
                 String sheetName = sanitizeSheetName(entry.getKey(), catSeq++);
@@ -408,25 +416,48 @@ public class ExternalCleanTaskService {
                     orderedKeys.addAll(categoryKeys);
                 }
 
-                // 表头：行号 + 本分类属性列（按标准/提取顺序）
+                // 本分类实际出现过的原始数据列（保持全局原始列顺序）
+                List<String> rawKeys = new ArrayList<>();
+                for (String rk : rawColumnOrder) {
+                    for (ExternalCleanTaskRowEntity row : entry.getValue()) {
+                        Map<String, String> raw = rowRawData.get(row.getRowIndex());
+                        if (raw != null && raw.containsKey(rk)) {
+                            rawKeys.add(rk);
+                            break;
+                        }
+                    }
+                }
+
+                // 表头：行号 + 原始数据列（前置，便于对比） + 本分类结果属性列（按标准/提取顺序）
                 List<String> headers = new ArrayList<>();
                 headers.add("行号");
+                for (String rk : rawKeys) {
+                    headers.add("原始-" + rk);
+                }
                 headers.addAll(orderedKeys);
                 Row headerRow = sheet.createRow(0);
                 for (int i = 0; i < headers.size(); i++) {
                     org.apache.poi.ss.usermodel.Cell cell = headerRow.createCell(i);
                     cell.setCellValue(headers.get(i));
-                    cell.setCellStyle(headerStyle);
+                    cell.setCellStyle(i >= 1 && i <= rawKeys.size() ? rawHeaderStyle : headerStyle);
                 }
 
                 int r = 1;
                 for (ExternalCleanTaskRowEntity row : entry.getValue()) {
                     Row excelRow = sheet.createRow(r++);
                     excelRow.createCell(0).setCellValue(row.getRowIndex() == null ? "" : String.valueOf(row.getRowIndex()));
+                    // 原始数据列
+                    Map<String, String> raw = rowRawData.getOrDefault(row.getRowIndex(), new LinkedHashMap<>());
+                    for (int i = 0; i < rawKeys.size(); i++) {
+                        String v = raw.get(rawKeys.get(i));
+                        excelRow.createCell(1 + i).setCellValue(v == null ? "" : v);
+                    }
+                    // 结果属性列
+                    int offset = 1 + rawKeys.size();
                     Map<String, String> attrs = rowAttrs.getOrDefault(row.getRowIndex(), new LinkedHashMap<>());
                     for (int i = 0; i < orderedKeys.size(); i++) {
                         String v = attrs.get(orderedKeys.get(i));
-                        excelRow.createCell(1 + i).setCellValue(v == null ? "" : v);
+                        excelRow.createCell(offset + i).setCellValue(v == null ? "" : v);
                     }
                 }
                 for (int i = 0; i < headers.size(); i++) {
@@ -471,6 +502,117 @@ public class ExternalCleanTaskService {
         style.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
         style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
         return style;
+    }
+
+    /** 原始数据列表头样式：与结果列区分（浅蓝底色） */
+    private CellStyle buildExportRawHeaderStyle(XSSFWorkbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setBold(true);
+        style.setFont(font);
+        style.setFillForegroundColor(IndexedColors.PALE_BLUE.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        return style;
+    }
+
+    /**
+     * 加载导出所需的原始数据。
+     * <p>优先按行的 tempDataId 回查 temp_data（列名取 temp_data_title 的 colNTitle），
+     * 源行已删除或无 tempDataId 时回退使用提交快照 requestColumnsJson。</p>
+     *
+     * @param rawColumnOrder 出参，收集全局原始列顺序（表头顺序优先，快照额外列追加在后）
+     * @return rowIndex -> (原始列名 -> 值)
+     */
+    private Map<Integer, Map<String, String>> loadRawDataForExport(String taskId,
+                                                                  List<ExternalCleanTaskRowEntity> rows,
+                                                                  List<String> rawColumnOrder) {
+        Map<Integer, Map<String, String>> result = new LinkedHashMap<>();
+
+        // 1) 批量查询 temp_data
+        List<Long> tempDataIds = rows.stream()
+                .map(ExternalCleanTaskRowEntity::getTempDataId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        Map<Long, TempDataEntity> tempDataMap = new LinkedHashMap<>();
+        if (!tempDataIds.isEmpty()) {
+            try {
+                List<TempDataEntity> tempRows = tempDataMapper.selectBatchIds(tempDataIds);
+                if (tempRows != null) {
+                    for (TempDataEntity td : tempRows) {
+                        tempDataMap.put(td.getId(), td);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("导出时回查 temp_data 失败 taskId={}，将回退使用提交快照", taskId, e);
+            }
+        }
+
+        // 2) 原始表头（列名）
+        TempDataTitleEntity title = null;
+        if (!tempDataMap.isEmpty()) {
+            Long titleId = tempDataMap.values().iterator().next().getTempDataTitleId();
+            if (titleId != null) {
+                try {
+                    title = tempDataTitleMapper.selectById(titleId);
+                } catch (Exception e) {
+                    log.warn("导出时查询 temp_data_title 失败 titleId={}", titleId, e);
+                }
+            }
+        }
+        // 有效列索引：该列有标题，或任一行该列有值
+        List<Integer> validColIndexes = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            String colTitle = title == null ? null : title.getColTitle(i);
+            boolean hasTitle = StringUtils.hasText(colTitle);
+            boolean hasValue = false;
+            if (!hasTitle) {
+                for (TempDataEntity td : tempDataMap.values()) {
+                    if (StringUtils.hasText(td.getColData(i))) {
+                        hasValue = true;
+                        break;
+                    }
+                }
+            }
+            if (hasTitle || hasValue) {
+                validColIndexes.add(i);
+                String name = hasTitle ? colTitle.trim() : ("col" + i);
+                if (!rawColumnOrder.contains(name)) {
+                    rawColumnOrder.add(name);
+                }
+            }
+        }
+
+        // 3) 逐行组装
+        for (ExternalCleanTaskRowEntity row : rows) {
+            Map<String, String> raw = new LinkedHashMap<>();
+            TempDataEntity td = row.getTempDataId() == null ? null : tempDataMap.get(row.getTempDataId());
+            if (td != null) {
+                for (Integer idx : validColIndexes) {
+                    String colTitle = title == null ? null : title.getColTitle(idx);
+                    String name = StringUtils.hasText(colTitle) ? colTitle.trim() : ("col" + idx);
+                    String v = td.getColData(idx);
+                    raw.put(name, v == null ? "" : v);
+                }
+            } else if (StringUtils.hasText(row.getRequestColumnsJson())) {
+                // 回退：使用提交时的快照
+                try {
+                    Map<?, ?> parsed = JSON.parseObject(row.getRequestColumnsJson(), Map.class);
+                    for (Map.Entry<?, ?> e : parsed.entrySet()) {
+                        String k = String.valueOf(e.getKey());
+                        Object v = e.getValue();
+                        raw.put(k, v == null ? "" : (v instanceof Map || v instanceof List ? JSON.toJSONString(v) : String.valueOf(v)));
+                        if (!rawColumnOrder.contains(k)) {
+                            rawColumnOrder.add(k);
+                        }
+                    }
+                } catch (Exception ex) {
+                    log.warn("行 {} 的 requestColumnsJson 解析失败", row.getRowIndex(), ex);
+                }
+            }
+            result.put(row.getRowIndex(), raw);
+        }
+        return result;
     }
 
     private String sanitizeSheetName(String base, int index) {
