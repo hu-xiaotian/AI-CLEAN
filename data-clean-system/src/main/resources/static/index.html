@@ -8,6 +8,31 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/style.css">
+<style>
+    #ecTaskTable th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    #ecTaskTable th.sortable:hover { background: var(--bg-hover, #f1f5f9); }
+    #ecTaskTable th .sort-caret {
+        display: inline-block;
+        width: 0; height: 0;
+        margin-left: 4px;
+        vertical-align: middle;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid #cbd5e1;
+        position: relative;
+        opacity: .5;
+    }
+    #ecTaskTable th.sortable.sorted-asc .sort-caret {
+        border-top: none;
+        border-bottom: 5px solid #2563eb;
+        opacity: 1;
+    }
+    #ecTaskTable th.sortable.sorted-desc .sort-caret {
+        border-top: 5px solid #2563eb;
+        border-bottom: none;
+        opacity: 1;
+    }
+</style>
 </head>
 <body>
 <div class="app-container">
@@ -732,6 +757,7 @@
                         <select id="ecStatusFilter" class="form-input" style="min-width:140px" onchange="ecLoadTasks(1)">
                             <option value="">全部状态</option>
                             <option value="processing">处理中</option>
+                            <option value="queued">队列中</option>
                             <option value="completed">已完成</option>
                             <option value="failed">失败</option>
                             <option value="cancelled">已取消</option>
@@ -741,8 +767,17 @@
                     </span>
                 </h3>
                 <table class="data-table" id="ecTaskTable">
-                    <thead><tr><th>任务号</th><th>文件</th><th>状态</th><th>预估准确率</th><th>提交时间</th><th>操作</th><th>执行进度</th></tr></thead>
-                    <tbody id="ecTaskTbody"><tr><td colspan="7" class="empty-hint">暂无任务</td></tr></tbody>
+                    <thead><tr>
+                        <th>任务号</th>
+                        <th class="sortable" data-sort="fileName" onclick="ecSortTasks('fileName')">文件 <span class="sort-caret"></span></th>
+                        <th class="sortable" data-sort="status" onclick="ecSortTasks('status')">状态 <span class="sort-caret"></span></th>
+                        <th class="sortable" data-sort="estimatedAccuracy" onclick="ecSortTasks('estimatedAccuracy')">预估准确率 <span class="sort-caret"></span></th>
+                        <th class="sortable" data-sort="submittedAt" onclick="ecSortTasks('submittedAt')">提交时间 <span class="sort-caret"></span></th>
+                        <th class="sortable" data-sort="completedAt" onclick="ecSortTasks('completedAt')">完成时间 <span class="sort-caret"></span></th>
+                        <th>操作</th>
+                        <th>执行进度</th>
+                    </tr></thead>
+                    <tbody id="ecTaskTbody"><tr><td colspan="8" class="empty-hint">暂无任务</td></tr></tbody>
                 </table>
                 <div class="pagination" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
                     <div class="pagination-info"><span id="ecTaskPageInfo">共 0 条</span></div>

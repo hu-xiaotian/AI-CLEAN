@@ -52,8 +52,10 @@ public class ExternalCleanTaskController {
     @Operation(summary = "任务分页列表", description = "按状态筛选分页查询")
     public R<IPage<ExternalCleanTaskEntity>> listTasks(@RequestParam(defaultValue = "1") int page,
                                                        @RequestParam(defaultValue = "10") int size,
-                                                       @RequestParam(required = false) String status) {
-        return R.success(taskService.listTasks(page, size, status));
+                                                       @RequestParam(required = false) String status,
+                                                       @RequestParam(required = false) String sortField,
+                                                       @RequestParam(required = false) String sortOrder) {
+        return R.success(taskService.listTasks(page, size, status, sortField, sortOrder));
     }
 
     @GetMapping("/tasks/{taskId}")

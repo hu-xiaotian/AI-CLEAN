@@ -5806,6 +5806,8 @@ const AiCleanOverlay = {
 // ==================== 外部数据清洗 ====================
 let ecTaskPage = 1;
 const EC_TASK_SIZE = 10;
+let ecSortField = 'createdAt'; // 默认按创建时间
+let ecSortOrder = 'desc';      // 默认倒序
 let ecCurrentTaskId = null;
 let ecCurrentTaskStatus = null; // 当前查看任务的外部状态，用于判断是否需要拉取进展
 let ecResultLoadedTaskId = null; // 本会话已为哪个任务加载过完整明细（终态后不再重复拉取）
@@ -5915,6 +5917,7 @@ async function ecLoadTasks(page) {
     const status = statusSel ? statusSel.value : '';
     let url = '/external-clean/tasks?page=' + ecTaskPage + '&size=' + EC_TASK_SIZE;
     if (status) url += '&status=' + encodeURIComponent(status);
+    if (ecSortField) url += '&sortField=' + encodeURIComponent(ecSortField) + '&sortOrder=' + encodeURIComponent(ecSortOrder);
     try {
         const data = await api(url);
         const records = data.records || [];
@@ -5922,7 +5925,7 @@ async function ecLoadTasks(page) {
         const pages = data.pages || 1;
         const tbody = $('#ecTaskTbody');
         if (records.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无任务</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无任务</td></tr>';
         } else {
             tbody.innerHTML = records.map(function (t) {
                 return '<tr>' +
@@ -5931,6 +5934,7 @@ async function ecLoadTasks(page) {
                     '<td>' + ecTaskStatusBadge(t.status) + '</td>' +
                     '<td>' + ecAccText(t.estimatedAccuracy) + '</td>' +
                     '<td>' + formatDate(t.submittedAt) + '</td>' +
+                    '<td>' + formatDate(t.completedAt) + '</td>' +
                     '<td>' + ecTaskActions(t) + '</td>' +
                     '<td>' + ecProgressBar(t) + '</td>' +
                     '</tr>';
@@ -5938,12 +5942,35 @@ async function ecLoadTasks(page) {
         }
         $('#ecTaskPageInfo').textContent = '共 ' + total + ' 条';
         ecRenderTaskPager(pages);
+        ecUpdateSortHeaders();
         // 列表中有处于处理中/待提交/待处理的任务时，主动拉取外部进展并回写数据库，
         // 使列表的进度列（processedRows/totalRows）能够实时刷新
         ecRefreshProgressForList(records);
     } catch (e) {
         console.error('加载外部清洗任务失败', e);
     }
+}
+
+// 点击表头排序：同一字段再次点击切换正/倒序，不同字段则切换为该字段倒序
+function ecSortTasks(field) {
+    if (ecSortField === field) {
+        ecSortOrder = (ecSortOrder === 'asc') ? 'desc' : 'asc';
+    } else {
+        ecSortField = field;
+        ecSortOrder = 'desc';
+    }
+    ecUpdateSortHeaders();
+    ecLoadTasks(1);
+}
+
+// 根据当前排序状态更新表头的三角符号与高亮样式
+function ecUpdateSortHeaders() {
+    document.querySelectorAll('#ecTaskTable th.sortable').forEach(function (th) {
+        th.classList.remove('sorted-asc', 'sorted-desc');
+        if (th.getAttribute('data-sort') === ecSortField) {
+            th.classList.add(ecSortOrder === 'asc' ? 'sorted-asc' : 'sorted-desc');
+        }
+    });
 }
 
 function ecRenderTaskPager(pages) {
@@ -6441,8 +6468,8 @@ function ecApplyTaskProgress(task) {
 
 // ===== 展示辅助 =====
 function ecTaskStatusBadge(s) {
-    const map = { pending: 'badge-default', submitting: 'badge-info', processing: 'badge-info', completed: 'badge-success', failed: 'badge-danger', cancelled: 'badge-default', callback_timeout: 'badge-warning' };
-    const label = { pending: '待提交', submitting: '提交中', processing: '处理中', completed: '已完成', failed: '失败', cancelled: '已取消', callback_timeout: '回调超时' };
+    const map = { pending: 'badge-default', submitting: 'badge-info', processing: 'badge-info', queued: 'badge-default', completed: 'badge-success', failed: 'badge-danger', cancelled: 'badge-default', callback_timeout: 'badge-warning' };
+    const label = { pending: '待提交', submitting: '提交中', processing: '处理中', queued: '队列中', completed: '已完成', failed: '失败', cancelled: '已取消', callback_timeout: '回调超时' };
     return '<span class="badge ' + (map[s] || 'badge-default') + '">' + (label[s] || s) + '</span>';
 }
 function ecRowStatusBadge(s) {
