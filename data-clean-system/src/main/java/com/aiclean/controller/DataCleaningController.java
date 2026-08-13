@@ -393,8 +393,9 @@ public class DataCleaningController {
     @Operation(summary = "分页查询标准字段表头", description = "支持按分类编码关键字搜索，用于标准列表页面分页展示")
     public R<IPage<StandardTitleEntity>> pageStandardTitles(@RequestParam(defaultValue = "1") long page,
                                                             @RequestParam(defaultValue = "10") long size,
-                                                            @RequestParam(required = false) String keyword) {
-        return R.success(dataCleaningService.pageStandardTitles(page, size, keyword));
+                                                            @RequestParam(required = false) String keyword,
+                                                            @RequestParam(defaultValue = "desc") String sortOrder) {
+        return R.success(dataCleaningService.pageStandardTitles(page, size, keyword, sortOrder));
     }
 
     @GetMapping("/standard-titles/by-title")

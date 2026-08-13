@@ -604,7 +604,7 @@
                         <thead>
                             <tr>
                                 <th style="width:50px">#</th>
-                                <th style="width:60px">ID</th>
+                                <th id="standardSortTh" style="width:60px" class="sortable-id" onclick="toggleStandardSort()" title="点击切换显示顺序">ID <span class="sort-arrow">▼</span></th>
                                 <th style="width:110px">分类编码</th>
                                 <th>字段定义</th>
                                 <th style="width:150px">创建时间</th>
@@ -723,7 +723,7 @@
 <!--                        <button class="btn btn-success" onclick="ecSubmitTask('sync')">同步提交清洗任务</button>-->
                     </div>
                 </div>
-                <p class="mt-2 ec-hint">提示：置信度阈值、候选分类数、模型、提交模式等服务端参数已采用默认配置，无需手动设置。</p>
+<!--                <p class="mt-2 ec-hint">提示：置信度阈值、候选分类数、模型、提交模式等服务端参数已采用默认配置，无需手动设置。</p>-->
             </div>
             <div class="card">
                 <h3 style="display:flex;justify-content:space-between;align-items:center">

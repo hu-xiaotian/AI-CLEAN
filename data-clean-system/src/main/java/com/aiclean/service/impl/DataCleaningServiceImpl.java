@@ -2128,13 +2128,17 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     }
 
     @Override
-    public IPage<StandardTitleEntity> pageStandardTitles(long page, long size, String keyword) {
+    public IPage<StandardTitleEntity> pageStandardTitles(long page, long size, String keyword, String sortOrder) {
         Page<StandardTitleEntity> pageReq = new Page<>(page, size);
         LambdaQueryWrapper<StandardTitleEntity> wrapper = new LambdaQueryWrapper<>();
         if (keyword != null && !keyword.trim().isEmpty()) {
             wrapper.like(StandardTitleEntity::getCategoryCode, keyword.trim());
         }
-        wrapper.orderByDesc(StandardTitleEntity::getId);
+        if ("asc".equalsIgnoreCase(sortOrder)) {
+            wrapper.orderByAsc(StandardTitleEntity::getId);
+        } else {
+            wrapper.orderByDesc(StandardTitleEntity::getId);
+        }
         IPage<StandardTitleEntity> result = standardTitleMapper.selectPage(pageReq, wrapper);
         // 补全分类名称
         applyCategoryNames(result.getRecords());

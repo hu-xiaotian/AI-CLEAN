@@ -3853,12 +3853,24 @@ function loadStandardTitleList() {
 }
 
 // 分页查询标准字段表头
+// 标准列表当前显示顺序：desc（倒序/默认）| asc（顺序）
+let standardSortOrder = 'desc';
+
+// 点击 ID 表头倒三角：切换显示顺序并触发查询
+function toggleStandardSort() {
+    standardSortOrder = (standardSortOrder === 'desc') ? 'asc' : 'desc';
+    const th = document.getElementById('standardSortTh');
+    if (th) th.querySelector('.sort-arrow').textContent = (standardSortOrder === 'desc') ? '▼' : '▲';
+    queryStandardTitles(1);
+}
+
 async function queryStandardTitles(page) {
     if (page) standardPageState.page = page;
     standardPageState.keyword = document.getElementById('standardSearchInput').value.trim();
     const { page: curPage, size, keyword } = standardPageState;
     try {
-        const qs = `page=${curPage}&size=${size}` + (keyword ? '&keyword=' + encodeURIComponent(keyword) : '');
+        const qs = `page=${curPage}&size=${size}` + (keyword ? '&keyword=' + encodeURIComponent(keyword) : '') +
+            '&sortOrder=' + (standardSortOrder || 'desc');
         const data = await api('/cleaning/standard-titles/page?' + qs);
         standardPageState.total = data.total || 0;
         standardPageState.pages = data.pages || 1;
