@@ -1376,10 +1376,20 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                 continue;
             }
 
+            // 规范化多来源字段：中英文逗号统一为英文逗号、trim、去重、过滤空值
+            String[] rawFields = sourceField.split("[,，]", -1);
+            Set<String> fieldSet = new LinkedHashSet<>();
+            for (String f : rawFields) {
+                String trimmed = f.trim();
+                if (StrUtil.isNotBlank(trimmed)) fieldSet.add(trimmed);
+            }
+            if (fieldSet.isEmpty()) continue;
+            String normalizedSourceField = String.join(",", fieldSet);
+
             FieldMappingAuditEntity entity = new FieldMappingAuditEntity();
             entity.setStandardTitleId(standardTitleId);
             entity.setTempDataTitleId(tempDataTitleId);
-            entity.setSourceField(sourceField);
+            entity.setSourceField(normalizedSourceField);
             entity.setSourceType(StrUtil.isNotBlank(sourceType) ? sourceType : "temp_data");
             entity.setTargetField(targetField);
             entity.setMappingType("manual");
@@ -3767,19 +3777,46 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                                     ExtraDataTitleEntity extraTitle) {
         FieldMappingAuditEntity mapping = mappingByTarget.get(standardColTitle);
         if (mapping == null) return null;
-        String sourceField = mapping.getSourceField();
-        if ("temp_data".equals(mapping.getSourceType()) && title != null && tempData != null) {
-            for (int i = 1; i <= 10; i++) {
-                if (sourceField.equals(title.getColTitle(i))) return tempData.getColData(i);
-            }
-        } else if ("extra_data".equals(mapping.getSourceType()) && extraData != null) {
-            // extraTitle 已在 buildFillContext / fillResultData 中预加载一次，整个文件恒定，无需逐行查询
-            if (extraTitle != null) {
+        if (mapping.getSourceField() == null) return null;
+
+        // 支持多选来源字段：以逗号（中英文均可）拼接，各字段取值后用逗号拼接映射到标准字段
+        String[] sourceFields = mapping.getSourceField().split("[,，]", -1);
+        String sourceType = mapping.getSourceType();
+        List<String> values = new ArrayList<>();
+
+        for (String rawField : sourceFields) {
+            String sourceField = rawField.trim();
+            if (StrUtil.isBlank(sourceField)) continue;
+
+            String value = null;
+            // 优先按 mapping 声明的 sourceType 查找
+            if ("extra_data".equals(sourceType) && extraData != null && extraTitle != null) {
                 for (int i = 1; i <= 20; i++) {
-                    if (sourceField.equals(extraTitle.getColTitle(i))) return extraData.getColData(i);
+                    if (sourceField.equals(extraTitle.getColTitle(i))) { value = extraData.getColData(i); break; }
+                }
+            } else if ("temp_data".equals(sourceType) && title != null && tempData != null) {
+                for (int i = 1; i <= 10; i++) {
+                    if (sourceField.equals(title.getColTitle(i))) { value = tempData.getColData(i); break; }
                 }
             }
+            // 兜底：跨类型查找（支持不同来源类型字段拼接到同一标准字段）
+            if (value == null && title != null && tempData != null) {
+                for (int i = 1; i <= 10; i++) {
+                    if (sourceField.equals(title.getColTitle(i))) { value = tempData.getColData(i); break; }
+                }
+            }
+            if (value == null && extraData != null && extraTitle != null) {
+                for (int i = 1; i <= 20; i++) {
+                    if (sourceField.equals(extraTitle.getColTitle(i))) { value = extraData.getColData(i); break; }
+                }
+            }
+
+            if (value != null && !StrUtil.isBlank(value)) {
+                values.add(value.trim());
+            }
         }
-        return null;
+
+        if (values.isEmpty()) return null;
+        return String.join(",", values);
     }
 }

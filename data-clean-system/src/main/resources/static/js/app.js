@@ -59,7 +59,7 @@ async function logout() {
 // ==================== 工具函数 ====================
 
 function $(sel) { return document.querySelector(sel); }
-function $$(sel) { return document.querySelectorAll(sel); }
+function $$(sel) { return Array.from(document.querySelectorAll(sel)); }
 
 async function api(url, options = {}) {
     const config = {
@@ -3089,68 +3089,144 @@ function renderMappingTable() {
         return;
     }
 
-    // 构建下拉选项 HTML
-    const noneOption = '<option value="">-- 不映射 --</option>';
-    let dataFileOptions = '';
-    dataFileCols.forEach(c => {
-        dataFileOptions += `<option value="temp_data|${c.title.replace(/"/g, '&quot;')}">${c.title}</option>`;
-    });
-    let extraDataOptions = '';
-    extraDataCols.forEach(c => {
-        extraDataOptions += `<option value="extra_data|${c.title.replace(/"/g, '&quot;')}">${c.title}</option>`;
-    });
-
-    const allSourceOptions = noneOption;
-    const groupedOptions = dataFileOptions + extraDataOptions;
-
-    // 构建映射查找表：targetField -> {sourceField, sourceType}
-    const mappingMap = {};
+    // 构建映射查找表：targetField -> 已选中的来源字段集合（支持多选，按字段名匹配，跨类型回显）
+    const existingFieldSet = {};
+    const existingTypeSet = {};
     existingMappings.forEach(m => {
-        if (m.targetField) {
-            mappingMap[m.targetField] = { sourceField: m.sourceField, sourceType: m.sourceType };
+        if (m.targetField && m.sourceField) {
+            m.sourceField.split("[,，]").forEach(f => {
+                const t = f.trim();
+                if (t) {
+                    if (!existingFieldSet[m.targetField]) existingFieldSet[m.targetField] = new Set();
+                    existingFieldSet[m.targetField].add(t);
+                }
+            });
+            if (m.sourceType) {
+                if (!existingTypeSet[m.targetField]) existingTypeSet[m.targetField] = new Set();
+                existingTypeSet[m.targetField].add(m.sourceType);
+            }
         }
     });
+
+    // 收集所有来源字段（带类型），供复选框渲染
+    const buildItems = (cols, type) => cols.map(c => ({
+        title: c.title,
+        type: type,
+        value: type + '|' + c.title
+    }));
+    const dataFileItems = buildItems(dataFileCols, 'temp_data');
+    const extraDataItems = buildItems(extraDataCols, 'extra_data');
 
     let html = '<table class="mf-table"><thead><tr>';
     html += '<th style="width:180px">标准字段</th>';
-    html += '<th>映射来源</th>';
+    html += '<th>映射来源（可多选）</th>';
     html += '</tr></thead><tbody>';
 
     standardFields.forEach(sf => {
-        const existing = mappingMap[sf.title];
+        const eset = existingFieldSet[sf.title] || new Set();
+        const etypes = existingTypeSet[sf.title] || new Set();
+        // 推断该标准字段的 sourceType（含 temp 与 extra 时以是否有 extra 决定；用于保存时判断多类型）
+        let dominantType = 'temp_data';
+        if (etypes.has('extra_data') && !etypes.has('temp_data')) dominantType = 'extra_data';
+
         html += '<tr>';
         html += `<td><strong>${sf.title}</strong>${sf.isMust ? '<span class="mf-required-badge">*必填</span>' : ''}</td>`;
-        html += '<td><select class="mf-source-select" data-target="' + sf.title.replace(/"/g, '&quot;') + '">';
-        html += noneOption;
-
-        // 数据文件列分组
-        if (dataFileCols.length > 0) {
-            html += '<optgroup label="── 数据文件列 ──">';
-            dataFileCols.forEach(c => {
-                const val = 'temp_data|' + c.title.replace(/"/g, '&quot;');
-                const selected = existing && existing.sourceType === 'temp_data' && existing.sourceField === c.title ? ' selected' : '';
-                html += `<option value="${val}"${selected}>${c.title}</option>`;
+        html += '<td>';
+        html += `<div class="mf-multiselect" data-target="${sf.title.replace(/"/g, '&quot;')}" data-dominant-type="${dominantType}">`;
+        html += '<div class="mf-ms-control"><span class="mf-ms-text">-- 不映射 --</span><span class="mf-ms-arrow">▾</span></div>';
+        html += '<div class="mf-ms-panel" style="display:none">';
+        // "不映射" 互斥项
+        html += `<label class="mf-cb-item mf-cb-none"><input type="checkbox" class="mf-cb" value="" /> 不映射</label>`;
+        if (dataFileItems.length > 0) {
+            html += '<div class="mf-ms-group">── 数据文件列 ──</div>';
+            dataFileItems.forEach(it => {
+                const checked = eset.has(it.title) ? ' checked' : '';
+                html += `<label class="mf-cb-item"><input type="checkbox" class="mf-cb" value="${it.value.replace(/"/g, '&quot;')}"${checked} /> ${it.title}</label>`;
             });
-            html += '</optgroup>';
         }
-
-        // 补充数据列分组
-        if (extraDataCols.length > 0) {
-            html += '<optgroup label="── 补充数据列 ──">';
-            extraDataCols.forEach(c => {
-                const val = 'extra_data|' + c.title.replace(/"/g, '&quot;');
-                const selected = existing && existing.sourceType === 'extra_data' && existing.sourceField === c.title ? ' selected' : '';
-                html += `<option value="${val}"${selected}>${c.title}</option>`;
+        if (extraDataItems.length > 0) {
+            html += '<div class="mf-ms-group">── 补充数据列 ──</div>';
+            extraDataItems.forEach(it => {
+                const checked = eset.has(it.title) ? ' checked' : '';
+                html += `<label class="mf-cb-item"><input type="checkbox" class="mf-cb" value="${it.value.replace(/"/g, '&quot;')}"${checked} /> ${it.title}</label>`;
             });
-            html += '</optgroup>';
         }
-
-        html += '</select></td>';
+        html += '</div>'; // panel
+        html += '</div>'; // multiselect
+        html += '</td>';
         html += '</tr>';
     });
 
     html += '</tbody></table>';
     $('#mfTableContainer').innerHTML = html;
+
+    // 初始化下拉多选交互
+    initMultiSelect();
+    $$('.mf-multiselect').forEach(updateMultiSelectText);
+}
+
+/**
+ * 初始化下拉多选组件的交互逻辑（事件委托，只绑定一次）
+ * - 点击控制条展开/收起面板
+ * - 复选框互斥：勾选具体字段自动取消"不映射"；勾选"不映射"取消全部具体字段
+ * - 点击页面其他区域收起面板
+ */
+function initMultiSelect() {
+    const container = $('#mfTableContainer');
+    if (!container || container._mfMsBound) return;
+    container._mfMsBound = true;
+
+    container.addEventListener('click', (e) => {
+        const ms = e.target.closest('.mf-multiselect');
+        if (!ms) return;
+        const control = e.target.closest('.mf-ms-control');
+        const panel = ms.querySelector('.mf-ms-panel');
+        const cb = e.target.closest('.mf-cb');
+
+        if (control && !cb) {
+            // 点击控制条：切换面板显隐
+            const isOpen = panel.style.display !== 'none';
+            // 收起其他已展开的面板
+            $$('.mf-multiselect .mf-ms-panel').forEach(p => { if (p !== panel) p.style.display = 'none'; });
+            panel.style.display = isOpen ? 'none' : 'block';
+            return;
+        }
+
+        if (cb) {
+            const noneCb = ms.querySelector('.mf-cb-none input');
+            if (cb.classList.contains('mf-cb-none') || cb.parentElement.classList.contains('mf-cb-none')) {
+                // 勾选"不映射"时取消其它具体字段
+                ms.querySelectorAll('.mf-cb:not(.mf-cb-none)').forEach(c => { c.checked = false; });
+            } else {
+                // 勾选具体字段时取消"不映射"
+                if (noneCb) noneCb.checked = false;
+            }
+            updateMultiSelectText(ms);
+        }
+    });
+
+    // 点击页面其他区域收起所有面板
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.mf-multiselect')) {
+            $$('.mf-multiselect .mf-ms-panel').forEach(p => { p.style.display = 'none'; });
+        }
+    });
+}
+
+/**
+ * 根据勾选状态刷新多选控制条文本
+ */
+function updateMultiSelectText(ms) {
+    const sel = ms.querySelector('.mf-ms-text');
+    if (!sel) return;
+    const checked = Array.from(ms.querySelectorAll('.mf-cb:not(.mf-cb-none)')).filter(c => c.checked);
+    if (checked.length === 0) {
+        sel.textContent = '-- 不映射 --';
+        sel.classList.remove('mf-ms-active');
+    } else {
+        sel.textContent = checked.map(c => c.parentElement.textContent.trim()).join('、');
+        sel.classList.add('mf-ms-active');
+    }
 }
 
 /**
@@ -3207,57 +3283,53 @@ async function autoMapInModal() {
         return;
     }
 
-    const selects = $$('.mf-source-select');
+    const multiselects = $$('.mf-multiselect');
     let exactCount = 0;
     let containsCount = 0;
     let fuzzyCount = 0;
     let skippedCount = 0;
 
-    selects.forEach(sel => {
-        const targetField = sel.getAttribute('data-target');
+    multiselects.forEach(ms => {
+        const targetField = ms.getAttribute('data-target');
         if (!targetField) return;
 
         const normalizedTarget = normalizeForMatch(targetField);
 
-        // 1. 精确匹配（去除空格后忽略大小写），与后端 findBestFieldMatch 一致
+        // 先清空已有勾选（自动映射为覆盖式）
+        ms.querySelectorAll('.mf-cb').forEach(c => { c.checked = false; });
+        let matched = null;
+
+        // 1. 精确匹配
         const exactMatch = allSourceCols.find(c => c.normalized === normalizedTarget);
-        if (exactMatch) {
-            sel.value = `${exactMatch.sourceType}|${exactMatch.title}`;
-            exactCount++;
-            return;
-        }
-
-        // 2. 包含匹配：源字段包含目标字段 或 目标字段包含源字段（与后端一致）
-        const containsMatch = allSourceCols.find(c =>
-            c.normalized.length > 0 && (
-                c.normalized.includes(normalizedTarget) || normalizedTarget.includes(c.normalized)
-            )
-        );
-        if (containsMatch) {
-            sel.value = `${containsMatch.sourceType}|${containsMatch.title}`;
-            containsCount++;
-            return;
-        }
-
-        // 3. 前两步都未匹配 → 用编辑距离做模糊推荐（仅限前端自动映射的补充能力）
-        let bestMatch = null;
-        let bestScore = 0;
-
-        for (const col of allSourceCols) {
-            const score = stringSimilarity(targetField, col.title);
-            if (score > bestScore) {
-                bestScore = score;
-                bestMatch = col;
+        if (exactMatch) { matched = exactMatch; exactCount++; }
+        else {
+            // 2. 包含匹配
+            const containsMatch = allSourceCols.find(c =>
+                c.normalized.length > 0 && (
+                    c.normalized.includes(normalizedTarget) || normalizedTarget.includes(c.normalized)
+                )
+            );
+            if (containsMatch) { matched = containsMatch; containsCount++; }
+            else {
+                // 3. 模糊推荐
+                let bestMatch = null;
+                let bestScore = 0;
+                for (const col of allSourceCols) {
+                    const score = stringSimilarity(targetField, col.title);
+                    if (score > bestScore) { bestScore = score; bestMatch = col; }
+                }
+                if (bestMatch && bestScore >= 0.4) { matched = bestMatch; fuzzyCount++; }
+                else { skippedCount++; }
             }
         }
 
-        // 相似度阈值 >= 0.4 才推荐，避免乱匹配
-        if (bestMatch && bestScore >= 0.4) {
-            sel.value = `${bestMatch.sourceType}|${bestMatch.title}`;
-            fuzzyCount++;
-        } else {
-            // 无法匹配时保留现有的映射值，不覆盖
-            skippedCount++;
+        if (matched) {
+            const val = `${matched.sourceType}|${matched.title}`;
+            const cb = ms.querySelector(`.mf-cb[value="${val.replace(/"/g, '&quot;')}"]`);
+            if (cb) {
+                cb.checked = true;
+                updateMultiSelectText(ms);
+            }
         }
     });
 
@@ -3269,27 +3341,36 @@ async function autoMapInModal() {
 }
 
 function collectMappingsFromSelects() {
-    const selects = $$('.mf-source-select');
+    const multiselects = $$('.mf-multiselect');
     const mappings = [];
-    selects.forEach(sel => {
-        const targetField = sel.getAttribute('data-target');
-        const val = sel.value;
-        if (val) {
-            const parts = val.split('|');
-            mappings.push({
-                sourceType: parts[0],
-                sourceField: parts.slice(1).join('|'),
-                targetField: targetField,
-            });
-        } else {
-            // 显式"不映射"：保留 targetField，sourceField 留空，
-            // 后端据此删除该字段的旧映射并清空结果数据中已填充的值
-            mappings.push({
-                sourceType: '',
-                sourceField: '',
-                targetField: targetField,
-            });
+    multiselects.forEach(ms => {
+        const targetField = ms.getAttribute('data-target');
+        if (!targetField) return;
+
+        const checked = Array.from(ms.querySelectorAll('.mf-cb:not(.mf-cb-none)')).filter(c => c.checked);
+        if (checked.length === 0) {
+            // 显式"不映射"
+            mappings.push({ sourceType: '', sourceField: '', targetField: targetField });
+            return;
         }
+
+        // 收集所有勾选的来源字段，逗号拼接
+        const sourceFields = [];
+        const types = new Set();
+        checked.forEach(c => {
+            const parts = c.value.split('|');
+            const type = parts[0];
+            const field = parts.slice(1).join('|');
+            sourceFields.push(field);
+            types.add(type);
+        });
+        // 若存在 extra_data 类型来源，则 sourceType 记为 extra_data（后端有跨类型兜底，仅用于标识主类型）
+        const sourceType = types.has('extra_data') ? 'extra_data' : 'temp_data';
+        mappings.push({
+            sourceType: sourceType,
+            sourceField: sourceFields.join(','),
+            targetField: targetField,
+        });
     });
     return mappings;
 }
