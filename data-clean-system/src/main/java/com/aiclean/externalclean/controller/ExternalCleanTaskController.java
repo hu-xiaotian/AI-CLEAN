@@ -24,7 +24,6 @@ import javax.servlet.http.HttpServletResponse;
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/external-clean")
 @Tag(name = "外部数据清洗模块", description = "调用外部清洗服务、接收回调、结果采纳与修正")
 public class ExternalCleanTaskController {
 
@@ -34,7 +33,7 @@ public class ExternalCleanTaskController {
         this.taskService = taskService;
     }
 
-    @PostMapping("/tasks")
+    @PostMapping("/api/external-clean/tasks")
     @Operation(summary = "提交外部清洗任务", description = "选定已导入文件（及可选行），提交外部清洗服务")
     public R<ExternalCleanTaskEntity> submitTask(@RequestBody SubmitExternalCleanTaskRequest request) {
         try {
@@ -48,7 +47,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @GetMapping("/tasks")
+    @GetMapping("/api/external-clean/tasks")
     @Operation(summary = "任务分页列表", description = "按状态筛选分页查询")
     public R<IPage<ExternalCleanTaskEntity>> listTasks(@RequestParam(defaultValue = "1") int page,
                                                        @RequestParam(defaultValue = "10") int size,
@@ -58,7 +57,7 @@ public class ExternalCleanTaskController {
         return R.success(taskService.listTasks(page, size, status, sortField, sortOrder));
     }
 
-    @GetMapping("/tasks/{taskId}")
+    @GetMapping("/api/external-clean/tasks/{taskId}")
     @Operation(summary = "任务详情", description = "返回任务状态与统计")
     public R<ExternalCleanTaskEntity> getTask(@PathVariable String taskId) {
         ExternalCleanTaskEntity task = taskService.getTask(taskId);
@@ -66,7 +65,7 @@ public class ExternalCleanTaskController {
         return R.success(task);
     }
 
-    @PostMapping("/tasks/{taskId}/progress")
+    @PostMapping("/api/external-clean/tasks/{taskId}/progress")
     @Operation(summary = "主动查询外部任务进展", description = "调用外部 /api/v1/clean/{task_id} 获取进度并回写数据库，供前端定时刷新")
     public R<ExternalCleanTaskEntity> refreshProgress(@PathVariable String taskId) {
         try {
@@ -78,7 +77,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @GetMapping("/tasks/{taskId}/rows")
+    @GetMapping("/api/external-clean/tasks/{taskId}/rows")
     @Operation(summary = "任务结果行分页", description = "可按 needsReview=1 过滤待复核行")
     public R<IPage<ExternalCleanTaskRowEntity>> listRows(@PathVariable String taskId,
                                                          @RequestParam(defaultValue = "1") int page,
@@ -87,7 +86,7 @@ public class ExternalCleanTaskController {
         return R.success(taskService.listRows(taskId, page, size, needsReview));
     }
 
-    @PostMapping("/tasks/{taskId}/cancel")
+    @PostMapping("/api/external-clean/tasks/{taskId}/cancel")
     @Operation(summary = "取消任务")
     public R<Void> cancelTask(@PathVariable String taskId) {
         try {
@@ -100,7 +99,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @PostMapping("/tasks/{taskId}/retry")
+    @PostMapping("/api/external-clean/tasks/{taskId}/retry")
     @Operation(summary = "失败任务重试")
     public R<ExternalCleanTaskEntity> retryTask(@PathVariable String taskId) {
         try {
@@ -112,7 +111,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @PostMapping("/tasks/{taskId}/rows/{rowIndex}/adopt")
+    @PostMapping("/api/external-clean/tasks/{taskId}/rows/{rowIndex}/adopt")
     @Operation(summary = "采纳单行结果")
     public R<Void> adoptRow(@PathVariable String taskId, @PathVariable int rowIndex) {
         try {
@@ -123,7 +122,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @PostMapping("/tasks/{taskId}/adopt-all")
+    @PostMapping("/api/external-clean/tasks/{taskId}/adopt-all")
     @Operation(summary = "采纳全部已完成行")
     public R<Void> adoptAll(@PathVariable String taskId) {
         try {
@@ -134,7 +133,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @PostMapping("/tasks/{taskId}/rows/{rowIndex}/reject")
+    @PostMapping("/api/external-clean/tasks/{taskId}/rows/{rowIndex}/reject")
     @Operation(summary = "驳回单行")
     public R<Void> rejectRow(@PathVariable String taskId, @PathVariable int rowIndex,
                              @RequestParam(required = false) String comment) {
@@ -146,7 +145,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @PostMapping("/tasks/{taskId}/rows/{rowIndex}/correct")
+    @PostMapping("/api/external-clean/tasks/{taskId}/rows/{rowIndex}/correct")
     @Operation(summary = "修正单行结果")
     public R<Void> correctRow(@PathVariable String taskId, @PathVariable int rowIndex,
                               @RequestBody TaskRowCorrectRequest request) {
@@ -158,7 +157,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @GetMapping("/tasks/{taskId}/export")
+    @GetMapping("/api/external-clean/tasks/{taskId}/export")
     @Operation(summary = "按分类导出结果 Excel", description = "按分类分 Sheet，每个 Sheet 表头为 extractedAttrsJson 属性列（缺失属性补空列），内容为扁平化列表")
     public void exportTaskRows(@PathVariable String taskId, HttpServletResponse response) {
         try {
@@ -184,7 +183,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @PostMapping("/tasks/{taskId}/rows/{rowIndex}/fill-missing")
+    @PostMapping("/api/external-clean/tasks/{taskId}/rows/{rowIndex}/fill-missing")
     @Operation(summary = "填充缺失属性", description = "将手工填入的缺失属性合并进 extractedAttrsJson，并从 missingAttrsJson 移除已填充项")
     public R<Void> fillMissing(@PathVariable String taskId, @PathVariable int rowIndex,
                               @RequestBody Map<String, String> filled) {
@@ -196,7 +195,7 @@ public class ExternalCleanTaskController {
         }
     }
 
-    @DeleteMapping("/tasks/{taskId}")
+    @DeleteMapping("/api/external-clean/tasks/{taskId}")
     @Operation(summary = "删除任务及关联记录", description = "删除任务及其关联的结果行、回调日志。仅允许终态或待处理任务删除，进行中任务请先取消")
     public R<Void> deleteTask(@PathVariable String taskId) {
         try {
@@ -206,6 +205,32 @@ public class ExternalCleanTaskController {
             return R.notFound(e.getMessage());
         } catch (IllegalStateException e) {
             return R.error(e.getMessage());
+        }
+    }
+
+    @PostMapping("/api/v1/clean/{task_id}/pause")
+    @Operation(summary = "暂停清洗任务", description = "调用外部清洗服务暂停接口，与提交异步清洗接口地址一致")
+    public R<Void> pauseTask(@PathVariable("task_id") String taskId) {
+        try {
+            taskService.pauseTask(taskId);
+            return R.success("已暂停");
+        } catch (IllegalStateException e) {
+            return R.error(409, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            return R.notFound(e.getMessage());
+        }
+    }
+
+    @PostMapping("/api/v1/clean/{task_id}/resume")
+    @Operation(summary = "继续清洗任务", description = "调用外部清洗服务继续接口，与提交异步清洗接口地址一致")
+    public R<Void> resumeTask(@PathVariable("task_id") String taskId) {
+        try {
+            taskService.resumeTask(taskId);
+            return R.success("已继续");
+        } catch (IllegalStateException e) {
+            return R.error(409, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            return R.notFound(e.getMessage());
         }
     }
 }

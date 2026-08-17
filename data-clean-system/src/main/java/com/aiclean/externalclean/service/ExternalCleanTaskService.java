@@ -1014,6 +1014,44 @@ public class ExternalCleanTaskService {
         return task;
     }
 
+    // ===================== 暂停 / 继续 =====================
+
+    /**
+     * 暂停清洗任务：调用外部服务暂停接口，仅 processing 状态可暂停，本地状态同步置为 paused。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void pauseTask(String taskId) {
+        ExternalCleanTaskEntity task = requireTask(taskId);
+        if (!"processing".equals(task.getStatus())) {
+            throw new IllegalStateException("仅 processing 状态可暂停，当前状态(" + task.getStatus() + ")");
+        }
+        if ("async".equals(task.getMode())) {
+            if (!apiClient.pauseTask(taskId)) {
+                throw new IllegalStateException("调用外部暂停接口失败");
+            }
+        }
+        task.setStatus("paused");
+        taskMapper.updateById(task);
+    }
+
+    /**
+     * 继续清洗任务：调用外部服务继续接口，仅 paused 状态可继续，本地状态同步恢复为 processing。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void resumeTask(String taskId) {
+        ExternalCleanTaskEntity task = requireTask(taskId);
+        if (!"paused".equals(task.getStatus())) {
+            throw new IllegalStateException("仅 paused 状态可继续，当前状态(" + task.getStatus() + ")");
+        }
+        if ("async".equals(task.getMode())) {
+            if (!apiClient.resumeTask(taskId)) {
+                throw new IllegalStateException("调用外部继续接口失败");
+            }
+        }
+        task.setStatus("processing");
+        taskMapper.updateById(task);
+    }
+
     // ===================== 兜底轮询 =====================
 
     /**

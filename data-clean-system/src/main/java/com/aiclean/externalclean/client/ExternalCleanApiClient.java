@@ -198,4 +198,36 @@ public class ExternalCleanApiClient {
             return false;
         }
     }
+
+    /**
+     * 暂停外部任务（与外部异步清洗接口地址一致）
+     */
+    public boolean pauseTask(String taskId) {
+        String url = baseUrl() + "/api/v1/clean/" + taskId + "/pause";
+        HttpEntity<String> entity = new HttpEntity<>(headers());
+        try {
+            org.springframework.http.ResponseEntity<String> resp =
+                    restTemplate.exchange(url, org.springframework.http.HttpMethod.POST, entity, String.class);
+            return resp.getStatusCode().is2xxSuccessful();
+        } catch (Exception e) {
+            log.warn("暂停外部任务 {} 失败: {}", taskId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 继续外部任务（与外部异步清洗接口地址一致）
+     */
+    public boolean resumeTask(String taskId) {
+        String url = baseUrl() + "/api/v1/clean/" + taskId + "/resume";
+        HttpEntity<String> entity = new HttpEntity<>(headers());
+        try {
+            org.springframework.http.ResponseEntity<String> resp =
+                    restTemplate.exchange(url, org.springframework.http.HttpMethod.POST, entity, String.class);
+            return resp.getStatusCode().is2xxSuccessful();
+        } catch (Exception e) {
+            log.warn("继续外部任务 {} 失败: {}", taskId, e.getMessage());
+            return false;
+        }
+    }
 }

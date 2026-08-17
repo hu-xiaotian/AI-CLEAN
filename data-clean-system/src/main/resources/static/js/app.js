@@ -6075,7 +6075,13 @@ function ecTaskActions(t) {
     // 状态不为「已完成」时，查看结果按钮不可点击
     const viewDisabled = (t.status !== 'completed') ? 'disabled' : '';
     let h = '<button class="btn btn-sm btn-info" ' + viewDisabled + ' onclick="ecViewRows(\'' + t.taskId + '\')">查看结果</button> ';
-    if (t.status === 'processing' || t.status === 'submitting' || t.status === 'pending' || t.status === 'queued') {
+    // 进行中：显示「暂停」；已暂停：显示「继续」
+    if (t.status === 'processing') {
+        h += '<button class="btn btn-sm btn-warning" onclick="ecPauseTask(\'' + t.taskId + '\')">暂停</button> ';
+    } else if (t.status === 'paused') {
+        h += '<button class="btn btn-sm btn-success" onclick="ecResumeTask(\'' + t.taskId + '\')">继续</button> ';
+    }
+    if (t.status === 'processing' || t.status === 'submitting' || t.status === 'pending' || t.status === 'queued' || t.status === 'paused') {
         h += '<button class="btn btn-sm btn-default" onclick="ecCancelTask(\'' + t.taskId + '\')">取消</button> ';
     }
     if (t.status === 'failed' || t.status === 'callback_timeout') {
@@ -6472,6 +6478,26 @@ async function ecDeleteTask(taskId) {
     } catch (e) { showToast('删除失败：' + e.message, 'error'); }
 }
 
+// 暂停清洗任务（调用外部接口 /api/v1/clean/{task_id}/pause）
+async function ecPauseTask(taskId) {
+    if (!confirm('确认暂停任务 ' + taskId + '？')) return;
+    try {
+        await api('/v1/clean/' + encodeURIComponent(taskId) + '/pause', { method: 'POST' });
+        showToast('已暂停', 'success');
+        ecLoadTasks(ecTaskPage);
+    } catch (e) { showToast('暂停失败：' + e.message, 'error'); }
+}
+
+// 继续清洗任务（调用外部接口 /api/v1/clean/{task_id}/resume）
+async function ecResumeTask(taskId) {
+    if (!confirm('确认继续任务 ' + taskId + '？')) return;
+    try {
+        await api('/v1/clean/' + encodeURIComponent(taskId) + '/resume', { method: 'POST' });
+        showToast('已继续', 'success');
+        ecLoadTasks(ecTaskPage);
+    } catch (e) { showToast('继续失败：' + e.message, 'error'); }
+}
+
 function ecStartAutoRefresh() {
     if (ecAutoTimer) clearInterval(ecAutoTimer);
     ecAutoTimer = setInterval(function () {
@@ -6549,8 +6575,8 @@ function ecApplyTaskProgress(task) {
 
 // ===== 展示辅助 =====
 function ecTaskStatusBadge(s) {
-    const map = { pending: 'badge-default', submitting: 'badge-info', processing: 'badge-info', queued: 'badge-default', completed: 'badge-success', failed: 'badge-danger', cancelled: 'badge-default', callback_timeout: 'badge-warning' };
-    const label = { pending: '待提交', submitting: '提交中', processing: '处理中', queued: '队列中', completed: '已完成', failed: '失败', cancelled: '已取消', callback_timeout: '回调超时' };
+    const map = { pending: 'badge-default', submitting: 'badge-info', processing: 'badge-info', queued: 'badge-default', paused: 'badge-warning', completed: 'badge-success', failed: 'badge-danger', cancelled: 'badge-default', callback_timeout: 'badge-warning' };
+    const label = { pending: '待提交', submitting: '提交中', processing: '处理中', queued: '队列中', paused: '已暂停', completed: '已完成', failed: '失败', cancelled: '已取消', callback_timeout: '回调超时' };
     return '<span class="badge ' + (map[s] || 'badge-default') + '">' + (label[s] || s) + '</span>';
 }
 function ecRowStatusBadge(s) {
