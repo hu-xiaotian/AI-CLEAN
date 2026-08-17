@@ -6086,9 +6086,22 @@ function ecTaskActions(t) {
     }
     if (t.status === 'failed' || t.status === 'callback_timeout') {
         h += '<button class="btn btn-sm btn-warning" onclick="ecRetryTask(\'' + t.taskId + '\')">重试</button> ';
+        h += '<button class="btn btn-sm btn-default" onclick="ecShowError(\'' + t.taskId + '\')">失败原因</button> ';
     }
     h += '<button class="btn btn-sm btn-danger" onclick="ecDeleteTask(\'' + t.taskId + '\')">删除</button> ';
     return h;
+}
+
+// 查看任务失败原因（errorMessage）
+async function ecShowError(taskId) {
+    let msg = '';
+    try {
+        const detail = await api('/external-clean/tasks/' + encodeURIComponent(taskId));
+        msg = (detail && detail.errorMessage) ? detail.errorMessage : '无失败原因信息';
+    } catch (e) {
+        msg = '获取失败原因失败：' + (e.message || e);
+    }
+    showModal('失败原因 - ' + taskId, '<div style="white-space:pre-wrap;word-break:break-all;padding:8px 0;color:var(--text-primary)">' + esc(msg) + '</div>');
 }
 
 // 查看任务结果（弹出页面）
