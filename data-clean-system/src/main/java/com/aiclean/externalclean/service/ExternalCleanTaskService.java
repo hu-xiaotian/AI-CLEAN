@@ -255,7 +255,10 @@ public class ExternalCleanTaskService {
 //                throw new RuntimeException(task.getErrorMessage(), e);
 //            }
 //        } else {
-        boolean submitted = apiClient.submitAsync(task.getTaskId(), callbackUrl, columnsList, options);
+        // 提交外部智能体前，清理列值中的引号/控制字符，避免破坏请求 JSON 结构
+        // （本地行快照仍保留原始数据，仅对外提交的数据做清洗）
+        List<Map<String, String>> safeColumnsList = sanitizeColumnsForJson(columnsList);
+        boolean submitted = apiClient.submitAsync(task.getTaskId(), callbackUrl, safeColumnsList, options);
         if (submitted) {
             task.setStatus("processing");
             task.setSubmittedAt(LocalDateTime.now());
@@ -292,6 +295,33 @@ public class ExternalCleanTaskService {
             }
         }
         return map;
+    }
+
+    /**
+     * 提交外部智能体前，对列值做 JSON 安全清洗：
+     * 去掉双引号（"）以免破坏请求 JSON 的字段边界；同时剔除反斜杠与控制字符（换行/回车/Tab 等），
+     * 避免这些值在 JSON 序列化前/后被错误解析。键（列名）本身不被修改，且不影响本地存储的原始数据。
+     */
+    private List<Map<String, String>> sanitizeColumnsForJson(List<Map<String, String>> columnsList) {
+        List<Map<String, String>> result = new ArrayList<>(columnsList.size());
+        for (Map<String, String> columns : columnsList) {
+            Map<String, String> safe = new LinkedHashMap<>();
+            for (Map.Entry<String, String> e : columns.entrySet()) {
+                safe.put(e.getKey(), sanitizeValue(e.getValue()));
+            }
+            result.add(safe);
+        }
+        return result;
+    }
+
+    private String sanitizeValue(String value) {
+        if (value == null) {
+            return "";
+        }
+        // 去掉双引号，并移除反斜杠与控制字符（\u0000-\u001F）
+        return value.replace("\"", "")
+                .replace("\\", "")
+                .replaceAll("[\\x00-\\x1F]", "");
     }
 
     // ===================== 查询 =====================
