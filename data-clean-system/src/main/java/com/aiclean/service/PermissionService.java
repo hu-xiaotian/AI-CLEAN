@@ -32,4 +32,12 @@ public interface PermissionService {
      * @param permIds   权限ID列表
      */
     void assignPermissions(String roleCode, List<Long> permIds);
+
+    /**
+     * 查询指定用户通过其所有角色继承到的权限编码集合
+     *
+     * @param userId 用户ID
+     * @return 权限编码列表（已去重）
+     */
+    List<String> listPermissionCodesByUserId(Long userId);
 }

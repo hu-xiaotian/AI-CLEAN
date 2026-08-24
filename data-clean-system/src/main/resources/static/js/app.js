@@ -5,6 +5,90 @@ const API = '/api';
 let currentTitleId = null;
 let currentExtraTitleId = null;
 
+// ==================== 页面权限控制 ====================
+let myPermCodes = [];                     // 当前用户拥有的全部权限编码
+let myPagePermsLoaded = false;            // 是否已加载当前用户权限
+
+// 页面 -> 页面级权限编码映射
+const PAGE_PERM_MAP = {
+    'dashboard': 'page:dashboard',
+    'import': 'page:import',
+    'oneclick': 'page:oneclick',
+    'search': 'page:search',
+    'externalclean': 'page:externalclean',
+    'clean': 'page:clean',
+    'extract': 'page:extract',
+    'mapping': 'page:mapping',
+    'result': 'page:result',
+    'unmapped': 'page:unmapped',
+    'rule': 'page:rule',
+    'standard': 'page:standard',
+    'users': 'page:users',
+    'role': 'page:role',
+    'permission': 'page:permission',
+    'oplog': 'page:oplog',
+};
+
+// 当前用户是否有指定权限编码
+function hasPerm(permCode) {
+    if (!permCode) return true;
+    // 管理员默认拥有全部权限
+    const user = getCurrentUser();
+    if (user && user.role === 'admin') return true;
+    return myPermCodes.indexOf(permCode) !== -1;
+}
+
+let _myPermPromise = null;   // 防并发：共享同一个加载 Promise
+// 加载当前用户权限编码（登录后调用一次）
+async function loadMyPermissions() {
+    if (myPagePermsLoaded) return;
+    if (!_myPermPromise) {
+        _myPermPromise = (async () => {
+            try {
+                const codes = await api('/permissions/mine');
+                myPermCodes = codes || [];
+            } catch (e) {
+                // 权限接口异常时不阻塞，保留空权限（管理员不受影响）
+                myPermCodes = [];
+            } finally {
+                myPagePermsLoaded = true;
+            }
+        })();
+    }
+    await _myPermPromise;
+}
+
+// 根据权限控制菜单显隐：无权限的页面菜单隐藏
+function applyMenuPermissionVisibility() {
+    const adminRole = getCurrentUser() && getCurrentUser().role === 'admin';
+    document.querySelectorAll('.nav-item[data-page]').forEach(function (el) {
+        const page = el.getAttribute('data-page');
+        const perm = el.getAttribute('data-perm');
+        let visible = true;
+        if (perm) {
+            visible = adminRole || myPermCodes.indexOf(perm) !== -1;
+        }
+        el.style.display = visible ? '' : 'none';
+    });
+}
+
+// 返回当前用户可访问的第一个页面名（无权限页面被跳过）
+function firstAccessiblePage() {
+    const order = ['dashboard', 'import', 'oneclick', 'search', 'externalclean',
+        'clean', 'extract', 'mapping', 'result', 'unmapped',
+        'rule', 'standard', 'users', 'role', 'permission', 'oplog'];
+    for (let i = 0; i < order.length; i++) {
+        const page = order[i];
+        const perm = PAGE_PERM_MAP[page];
+        const el = document.querySelector('.nav-item[data-page="' + page + '"]');
+        if (el && el.style.display !== 'none' && hasPerm(perm)) {
+            return page;
+        }
+    }
+    // 兜底：全无权限时退回第一个页面
+    return 'import';
+}
+
 // ==================== 认证相关 ====================
 
 const TOKEN_KEY = 'dc_token';
@@ -236,6 +320,15 @@ function confidenceHtml(val) {
 // ==================== 页面切换 ====================
 
 function switchPage(name) {
+    // 页面级权限控制：无权限时跳转到第一个可访问页面
+    const needPerm = PAGE_PERM_MAP[name];
+    if (needPerm && !hasPerm(needPerm)) {
+        const fallback = firstAccessiblePage();
+        if (fallback && fallback !== name) {
+            showToast('您没有访问该页面的权限', 'error');
+            return switchPage(fallback);
+        }
+    }
     $$('.page').forEach(p => p.classList.remove('active'));
     $$('.nav-item').forEach(n => n.classList.remove('active'));
     $(`#page-${name}`).classList.add('active');
@@ -282,7 +375,12 @@ function switchPage(name) {
         'oneclick': () => { loadOneClickPage(); },
         'dashboard': () => { loadDashboardPage(); },
         'externalclean': () => { loadTitlesForSelect('ecTitleId'); ecLoadTasks(1); ecStartAutoRefresh(); },
-        'permission': () => { loadPermissionConfig(); },                // 刷新权限配置
+        'role': () => { loadRoles(1); },                                // 刷新角色列表
+        'permission': () => {                                           // 填充角色下拉并刷新权限配置
+            const target = _pendingPermRole;
+            _pendingPermRole = null;
+            initPermissionPage(target);
+        },
         'oplog': () => { loadOpLogs(1); },                              // 刷新操作日志
     };
     if (loaders[name]) loaders[name]();
@@ -825,7 +923,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const file = e.dataTransfer.files[0];
         if (file) uploadFile(file);
     });
-    switchPage('import');
+    // 初始进入：先应用菜单权限（内部会拉取权限并跳转到首个可访问页面）
+    applyRoleVisibility();
 });
 
 // 渲染侧边栏底部当前用户信息，并从后端刷新最新资料
@@ -845,13 +944,27 @@ function renderCurrentUser() {
     }).catch(() => { /* 忽略：401 已由全局处理 */ });
 }
 
-// 根据当前用户角色控制管理员专属元素的显示
-function applyRoleVisibility() {
+// 根据当前用户角色控制管理员专属元素的显示，并按页面权限控制菜单显隐
+async function applyRoleVisibility() {
     const user = getCurrentUser();
     const isAdmin = user && user.role === 'admin';
+    // 1. 管理员专属元素（data-role="admin"）
     document.querySelectorAll('[data-role="admin"]').forEach(el => {
         el.style.display = isAdmin ? '' : 'none';
     });
+    // 2. 按页面权限控制菜单显隐（拉取当前用户权限编码）
+    if (!myPagePermsLoaded) {
+        await loadMyPermissions();
+    }
+    applyMenuPermissionVisibility();
+    // 3. 若当前激活页面无权限，跳转到第一个可访问页面
+    const activePage = document.querySelector('.page.active');
+    if (activePage) {
+        const activeName = activePage.id.replace('page-', '');
+        if (PAGE_PERM_MAP[activeName] && !hasPerm(PAGE_PERM_MAP[activeName])) {
+            switchPage(firstAccessiblePage());
+        }
+    }
 }
 
 // 修改密码弹窗
@@ -4479,9 +4592,17 @@ function renderUsersTable(users) {
         const statusBadge = u.status === 1
             ? '<span class="badge badge-success">启用</span>'
             : '<span class="badge badge-danger">禁用</span>';
-        const roleBadge = u.role === 'admin'
-            ? '<span class="badge badge-info">管理员</span>'
-            : '<span class="badge badge-default">普通用户</span>';
+        // 角色列：优先展示 sys_user_role 关联的多角色，回退到 role 主角色字段
+        let roleBadge;
+        if (Array.isArray(u.roleNames) && u.roleNames.length) {
+            roleBadge = u.roleNames.map((n, idx) => {
+                const code = (u.roleCodes || [])[idx];
+                const cls = code === 'admin' ? 'badge-info' : 'badge-default';
+                return `<span class="badge ${cls}" style="margin-right:4px">${esc(n)}</span>`;
+            }).join('');
+        } else {
+            roleBadge = '<span class="badge badge-default">未分配</span>';
+        }
         const toggleBtn = u.status === 1
             ? `<button class="btn btn-sm btn-warning" onclick="toggleUserStatus(${u.id}, 0)">禁用</button>`
             : `<button class="btn btn-sm btn-success" onclick="toggleUserStatus(${u.id}, 1)">启用</button>`;
@@ -4500,6 +4621,7 @@ function renderUsersTable(users) {
             <td>
                 <div class="action-btn-group">
                     <button class="btn btn-sm btn-primary" onclick="openUserModal(${u.id})">编辑</button>
+                    <button class="btn btn-sm btn-default" onclick="openAssignRoleModal(${u.id})">分配角色</button>
                     ${toggleBtn}
                     <button class="btn btn-sm btn-default" onclick="resetUserPassword(${u.id})">重置密码</button>
                     ${delBtn}
@@ -4533,10 +4655,27 @@ function updateUsersPagination() {
     $('#userPageBtns').innerHTML = html;
 }
 
-function openUserModal(id) {
+async function openUserModal(id) {
     editingUserId = id || null;
     const u = id ? userCache[id] : null;
     const isEdit = !!u;
+
+    // 加载可选角色列表，供多选分配
+    let roles = [];
+    try {
+        roles = await api('/roles/enabled') || [];
+    } catch (e) {
+        showToast('加载角色列表失败: ' + e.message, 'error');
+    }
+    const ownedCodes = isEdit && Array.isArray(u.roleCodes) ? u.roleCodes : ['user'];
+    const roleCheckboxes = roles.length
+        ? roles.map(r => `<label class="perm-item" style="margin-right:12px">
+                <input type="checkbox" class="u-role-cb" value="${esc(r.roleCode)}" ${ownedCodes.includes(r.roleCode) ? 'checked' : ''}>
+                <span>${esc(r.roleName)}</span>
+                <span class="perm-code">${esc(r.roleCode)}</span>
+            </label>`).join('')
+        : '<span style="color:var(--text-tertiary);font-size:12px">暂无可用角色，请先到「角色管理」创建</span>';
+
     const formHtml = `
         <div class="form-group" style="margin-bottom:14px">
             <label>用户名</label>
@@ -4560,18 +4699,17 @@ function openUserModal(id) {
                 <input type="text" id="uPhone" class="form-input" value="${isEdit ? esc(u.phone) : ''}" placeholder="手机号">
             </div>
         </div>
-        <div style="display:flex;gap:12px;margin-bottom:20px">
-            <div class="form-group" style="flex:1;margin:0">
-                <label>角色</label>
-                <select id="uRole" class="form-input">
-                    <option value="user" ${isEdit && u.role === 'user' ? 'selected' : ''}>普通用户</option>
-                    <option value="admin" ${isEdit && u.role === 'admin' ? 'selected' : ''}>管理员</option>
-                </select>
+        <div class="form-group" style="margin-bottom:14px">
+            <label>角色（可多选）</label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px;border:1px solid var(--border-color);border-radius:6px">
+                ${roleCheckboxes}
             </div>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:20px">
             <div class="form-group" style="flex:1;margin:0">
                 <label>状态</label>
                 <select id="uStatus" class="form-input">
-                    <option value="1" ${isEdit && u.status === 1 ? 'selected' : ''}>启用</option>
+                    <option value="1" ${!isEdit || u.status === 1 ? 'selected' : ''}>启用</option>
                     <option value="0" ${isEdit && u.status === 0 ? 'selected' : ''}>禁用</option>
                 </select>
             </div>
@@ -4590,10 +4728,13 @@ async function saveUser() {
     const realName = $('#uRealName').value.trim();
     const email = $('#uEmail').value.trim();
     const phone = $('#uPhone').value.trim();
-    const role = $('#uRole').value;
     const status = parseInt($('#uStatus').value);
+    const roleCodes = Array.from(document.querySelectorAll('.u-role-cb:checked')).map(cb => cb.value);
     if (!username) { showToast('请输入用户名', 'error'); return; }
-    const body = { username, realName, email, phone, role, status };
+    if (roleCodes.length === 0) { showToast('请至少选择一个角色', 'error'); return; }
+    // role 为主角色，含 admin 时优先 admin，兼容后端历史字段
+    const role = roleCodes.includes('admin') ? 'admin' : roleCodes[0];
+    const body = { username, realName, email, phone, role, status, roleCodes };
     if (password) body.password = password;
     try {
         if (editingUserId) {
@@ -6647,16 +6788,316 @@ function ecAttrsPreview(json) {
     return s.length > 50 ? s.substring(0, 50) + '…' : s;
 }
 
+// ==================== 角色管理 ====================
+let rolePageState = { page: 1, size: 10, total: 0, pages: 1, keyword: '' };
+let roleCache = {};
+let editingRoleId = null;
+
+function queryRoles(page) {
+    const input = $('#roleSearchInput');
+    rolePageState.keyword = input ? input.value.trim() : '';
+    loadRoles(page || 1);
+}
+
+function resetRoleSearch() {
+    const input = $('#roleSearchInput');
+    if (input) input.value = '';
+    rolePageState.keyword = '';
+    loadRoles(1);
+}
+
+async function loadRoles(page) {
+    if (page) rolePageState.page = page;
+    const { page: curPage, size, keyword } = rolePageState;
+    try {
+        const qs = 'page=' + curPage + '&size=' + size
+            + (keyword ? '&keyword=' + encodeURIComponent(keyword) : '');
+        const data = await api('/roles?' + qs);
+        rolePageState.total = data.total || 0;
+        rolePageState.pages = data.pages || 1;
+        renderRoleTable(data.records || []);
+        updateRolePagination();
+    } catch (e) {
+        showToast('加载角色列表失败: ' + e.message, 'error');
+    }
+}
+
+function renderRoleTable(roles) {
+    const tbody = $('#roleTbody');
+    const count = $('#roleRecordCount');
+    if (!tbody) return;
+    if (!roles || roles.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-hint">暂无角色</td></tr>';
+        if (count) count.textContent = '共 0 条';
+        return;
+    }
+    if (count) count.textContent = '共 ' + rolePageState.total + ' 条';
+    roleCache = {};
+    const start = (rolePageState.page - 1) * rolePageState.size;
+    tbody.innerHTML = roles.map(function (r, i) {
+        roleCache[r.id] = r;
+        const builtIn = r.builtIn === 1;
+        const statusBadge = r.status === 1
+            ? '<span class="badge badge-success">启用</span>'
+            : '<span class="badge badge-danger">禁用</span>';
+        const nameCell = esc(r.roleName) + (builtIn ? ' <span class="badge badge-info">内置</span>' : '');
+        const toggleBtn = r.status === 1
+            ? '<button class="btn btn-sm btn-warning" ' + (builtIn ? 'disabled title="内置角色不可禁用"' : '') + ' onclick="toggleRoleStatus(' + r.id + ',0)">禁用</button>'
+            : '<button class="btn btn-sm btn-success" onclick="toggleRoleStatus(' + r.id + ',1)">启用</button>';
+        const delBtn = builtIn
+            ? '<button class="btn btn-sm btn-danger" disabled title="内置角色不可删除">删除</button>'
+            : '<button class="btn btn-sm btn-danger" onclick="deleteRole(' + r.id + ')">删除</button>';
+        return '<tr data-id="' + r.id + '">'
+            + '<td style="text-align:center;color:var(--text-secondary)">' + (start + i + 1) + '</td>'
+            + '<td>' + r.id + '</td>'
+            + '<td><code>' + esc(r.roleCode) + '</code></td>'
+            + '<td>' + nameCell + '</td>'
+            + '<td style="text-align:center">' + (r.userCount || 0) + '</td>'
+            + '<td style="text-align:center">' + (r.permCount || 0) + '</td>'
+            + '<td>' + esc(r.description || '-') + '</td>'
+            + '<td>' + statusBadge + '</td>'
+            + '<td><div class="action-btn-group">'
+            + '<button class="btn btn-sm btn-primary" onclick="openRoleModal(' + r.id + ')">编辑</button>'
+            + '<button class="btn btn-sm btn-default" onclick="gotoRolePermission(\'' + esc(r.roleCode) + '\')">配置权限</button>'
+            + '<button class="btn btn-sm btn-default" onclick="viewRoleUsers(\'' + esc(r.roleCode) + '\',\'' + esc(r.roleName) + '\')">查看用户</button>'
+            + toggleBtn
+            + delBtn
+            + '</div></td>'
+            + '</tr>';
+    }).join('');
+}
+
+function updateRolePagination() {
+    const { page, size, total, pages } = rolePageState;
+    if ($('#rolePageInfo')) $('#rolePageInfo').textContent = '共 ' + total + ' 条';
+    if ($('#roleCurPage')) $('#roleCurPage').textContent = page;
+    if ($('#roleTotalPages')) $('#roleTotalPages').textContent = pages;
+    const box = $('#rolePageBtns');
+    if (!box) return;
+    let html = '';
+    html += '<button class="btn btn-sm" ' + (page <= 1 ? 'disabled' : '') + ' onclick="loadRoles(1)">首页</button>';
+    html += '<button class="btn btn-sm" ' + (page <= 1 ? 'disabled' : '') + ' onclick="loadRoles(' + (page - 1) + ')">上一页</button>';
+    const maxBtns = 5;
+    let startPage = Math.max(1, page - Math.floor(maxBtns / 2));
+    let endPage = Math.min(pages, startPage + maxBtns - 1);
+    if (endPage - startPage < maxBtns - 1) startPage = Math.max(1, endPage - maxBtns + 1);
+    for (let i = startPage; i <= endPage; i++) {
+        html += '<button class="btn btn-sm ' + (i === page ? 'btn-primary' : '') + '" onclick="loadRoles(' + i + ')">' + i + '</button>';
+    }
+    html += '<button class="btn btn-sm" ' + (page >= pages ? 'disabled' : '') + ' onclick="loadRoles(' + (page + 1) + ')">下一页</button>';
+    html += '<button class="btn btn-sm" ' + (page >= pages ? 'disabled' : '') + ' onclick="loadRoles(' + pages + ')">末页</button>';
+    html += ' <span style="font-size:12px;margin-left:8px">每页 ' + size + ' 条</span>';
+    box.innerHTML = html;
+}
+
+// 新建/编辑角色弹窗
+function openRoleModal(id) {
+    editingRoleId = id || null;
+    const r = id ? roleCache[id] : null;
+    const isEdit = !!r;
+    const builtIn = isEdit && r.builtIn === 1;
+    const html = ''
+        + '<div class="form-group" style="margin-bottom:14px">'
+        + '<label>角色编码</label>'
+        + '<input type="text" id="rRoleCode" class="form-input" value="' + (isEdit ? esc(r.roleCode) : '') + '"'
+        + ' placeholder="字母开头，可含数字下划线，如 auditor" ' + (builtIn ? 'readonly' : '') + '>'
+        + (builtIn ? '<small style="color:var(--text-tertiary)">内置角色编码不可修改</small>' : '')
+        + '</div>'
+        + '<div class="form-group" style="margin-bottom:14px">'
+        + '<label>角色名称</label>'
+        + '<input type="text" id="rRoleName" class="form-input" value="' + (isEdit ? esc(r.roleName) : '') + '" placeholder="如 审核员">'
+        + '</div>'
+        + '<div class="form-group" style="margin-bottom:14px">'
+        + '<label>角色描述</label>'
+        + '<input type="text" id="rDescription" class="form-input" value="' + (isEdit ? esc(r.description || '') : '') + '" placeholder="角色职责说明">'
+        + '</div>'
+        + '<div style="display:flex;gap:12px;margin-bottom:20px">'
+        + '<div class="form-group" style="flex:1;margin:0"><label>排序号</label>'
+        + '<input type="number" id="rSort" class="form-input" value="' + (isEdit ? (r.sort == null ? 99 : r.sort) : 99) + '"></div>'
+        + '<div class="form-group" style="flex:1;margin:0"><label>状态</label>'
+        + '<select id="rStatus" class="form-input">'
+        + '<option value="1" ' + (!isEdit || r.status === 1 ? 'selected' : '') + '>启用</option>'
+        + '<option value="0" ' + (isEdit && r.status === 0 ? 'selected' : '') + '>禁用</option>'
+        + '</select></div>'
+        + '</div>'
+        + '<div style="display:flex;justify-content:flex-end;gap:8px">'
+        + '<button class="btn btn-default" onclick="closeModal()">取消</button>'
+        + '<button class="btn btn-primary" onclick="saveRole()">确定</button>'
+        + '</div>';
+    showModal(isEdit ? '编辑角色' : '新建角色', html);
+}
+
+async function saveRole() {
+    const roleCode = $('#rRoleCode').value.trim();
+    const roleName = $('#rRoleName').value.trim();
+    const description = $('#rDescription').value.trim();
+    const sort = parseInt($('#rSort').value) || 99;
+    const status = parseInt($('#rStatus').value);
+    if (!roleCode) { showToast('请输入角色编码', 'error'); return; }
+    if (!roleName) { showToast('请输入角色名称', 'error'); return; }
+    const body = { roleCode, roleName, description, sort, status };
+    try {
+        if (editingRoleId) {
+            await api('/roles/' + editingRoleId, { method: 'PUT', body });
+            showToast('更新成功');
+        } else {
+            await api('/roles', { method: 'POST', body });
+            showToast('创建成功');
+        }
+        closeModal();
+        loadRoles(editingRoleId ? rolePageState.page : 1);
+    } catch (e) {
+        showToast(e.message || '保存失败', 'error');
+    }
+}
+
+async function deleteRole(id) {
+    if (!confirm('确定删除该角色？删除后其权限配置也会一并清除。')) return;
+    try {
+        await api('/roles/' + id, { method: 'DELETE' });
+        showToast('删除成功');
+        loadRoles(rolePageState.page);
+    } catch (e) {
+        showToast(e.message || '删除失败', 'error');
+    }
+}
+
+async function toggleRoleStatus(id, status) {
+    try {
+        await api('/roles/' + id + '/status?status=' + status, { method: 'POST' });
+        showToast(status === 1 ? '已启用' : '已禁用');
+        loadRoles(rolePageState.page);
+    } catch (e) {
+        showToast(e.message || '操作失败', 'error');
+    }
+}
+
+// 从角色列表跳转到权限配置页，并自动选中该角色
+// 用 _pendingPermRole 传递目标角色，避免 switchPage 的 loader 与此处重复加载
+let _pendingPermRole = null;
+function gotoRolePermission(roleCode) {
+    _pendingPermRole = roleCode;
+    switchPage('permission');
+}
+
+// 查看某角色下已分配的用户
+async function viewRoleUsers(roleCode, roleName) {
+    try {
+        const users = await api('/roles/' + encodeURIComponent(roleCode) + '/users') || [];
+        let body;
+        if (users.length === 0) {
+            body = '<p class="empty-hint" style="padding:24px">该角色下暂无用户</p>';
+        } else {
+            body = '<div class="table-container"><table class="data-table"><thead><tr>'
+                + '<th style="width:70px">用户ID</th><th>用户名</th><th>姓名</th><th style="width:80px">状态</th>'
+                + '</tr></thead><tbody>'
+                + users.map(function (u) {
+                    return '<tr><td>' + u.userId + '</td><td>' + esc(u.username) + '</td>'
+                        + '<td>' + esc(u.realName || '-') + '</td>'
+                        + '<td>' + (u.status === 1
+                            ? '<span class="badge badge-success">启用</span>'
+                            : '<span class="badge badge-danger">禁用</span>') + '</td></tr>';
+                }).join('')
+                + '</tbody></table></div>';
+        }
+        body += '<div style="display:flex;justify-content:flex-end;margin-top:16px">'
+            + '<button class="btn btn-default" onclick="closeModal()">关闭</button></div>';
+        showModal('角色「' + esc(roleName) + '」下的用户（' + users.length + '）', body);
+    } catch (e) {
+        showToast('查询失败: ' + e.message, 'error');
+    }
+}
+
+// 给用户分配角色弹窗（从用户管理页调用）
+async function openAssignRoleModal(userId) {
+    const u = userCache[userId];
+    try {
+        const roles = await api('/roles/enabled') || [];
+        const owned = await api('/users/' + userId + '/roles') || [];
+        if (roles.length === 0) {
+            showModal('分配角色', '<p class="empty-hint" style="padding:24px">暂无可用角色，请先到「角色管理」创建。</p>'
+                + '<div style="display:flex;justify-content:flex-end"><button class="btn btn-default" onclick="closeModal()">关闭</button></div>');
+            return;
+        }
+        const list = roles.map(function (r) {
+            return '<label class="perm-item" style="display:flex;align-items:center;gap:8px;padding:8px 0">'
+                + '<input type="checkbox" class="assign-role-cb" value="' + esc(r.roleCode) + '" '
+                + (owned.indexOf(r.roleCode) >= 0 ? 'checked' : '') + '>'
+                + '<span style="min-width:120px">' + esc(r.roleName) + '</span>'
+                + '<code class="perm-code">' + esc(r.roleCode) + '</code>'
+                + '<span style="color:var(--text-tertiary);font-size:12px">' + esc(r.description || '') + '</span>'
+                + '</label>';
+        }).join('');
+        const html = '<p style="color:var(--text-secondary);font-size:13px;margin-bottom:8px">'
+            + '为用户 <strong>' + esc(u ? u.username : userId) + '</strong> 选择角色（可多选，保存后立即生效，用户需重新登录刷新权限）</p>'
+            + '<div style="max-height:320px;overflow-y:auto;border:1px solid var(--border-color);border-radius:6px;padding:8px">'
+            + list + '</div>'
+            + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">'
+            + '<button class="btn btn-default" onclick="closeModal()">取消</button>'
+            + '<button class="btn btn-primary" onclick="submitAssignRoles(' + userId + ')">保存</button>'
+            + '</div>';
+        showModal('分配角色', html);
+    } catch (e) {
+        showToast('加载角色失败: ' + e.message, 'error');
+    }
+}
+
+async function submitAssignRoles(userId) {
+    const codes = Array.from(document.querySelectorAll('.assign-role-cb:checked')).map(function (cb) { return cb.value; });
+    if (codes.length === 0) { showToast('请至少选择一个角色', 'error'); return; }
+    try {
+        await api('/roles/user/' + userId + '/assign', { method: 'POST', body: codes });
+        showToast('角色已分配');
+        closeModal();
+        loadUsers(userPageState.page);
+    } catch (e) {
+        showToast(e.message || '分配失败', 'error');
+    }
+}
+
 // ==================== 权限配置 ====================
 let permissionModuleMap = {};            // 全部权限（模块 -> 权限列表）
 let permissionRoleChecked = new Set();   // 当前角色已勾选的权限ID
 
+// 初始化权限配置页：填充角色下拉框后加载权限
+// @param preferRoleCode 可选，指定默认选中的角色编码
+async function initPermissionPage(preferRoleCode) {
+    const sel = $('#permRoleSelect');
+    if (!sel) return;
+    try {
+        const roles = await api('/permissions/roles') || [];
+        if (roles.length === 0) {
+            sel.innerHTML = '<option value="">暂无角色</option>';
+            $('#permissionConfigArea').innerHTML =
+                '<p class="empty-hint" style="padding:40px">暂无角色，请先到「角色管理」创建角色。</p>';
+            return;
+        }
+        sel.innerHTML = roles.map(function (r) {
+            return '<option value="' + escapeHtml(r.roleCode) + '">'
+                + escapeHtml(r.roleName) + '（' + escapeHtml(r.roleCode) + '）</option>';
+        }).join('');
+        // 优先选中指定角色，否则保留原选中项
+        if (preferRoleCode && roles.some(function (r) { return r.roleCode === preferRoleCode; })) {
+            sel.value = preferRoleCode;
+        }
+        await loadPermissionConfig();
+    } catch (e) {
+        sel.innerHTML = '<option value="">加载失败</option>';
+        showToast('加载角色列表失败：' + e.message, 'error');
+    }
+}
+
 // 加载权限配置：先拉全部权限，再拉当前角色已分配权限
 async function loadPermissionConfig() {
-    const roleCode = $('#permRoleSelect') ? $('#permRoleSelect').value : 'admin';
+    const sel = $('#permRoleSelect');
+    const roleCode = sel ? sel.value : '';
     const area = $('#permissionConfigArea');
     if (!area) return;
-    area.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-tertiary)">加载中…</p>';
+    if (!roleCode) {
+        area.innerHTML = '<p class="empty-hint" style="padding:40px">请先选择角色</p>';
+        return;
+    }
+    area.innerHTML = '<p class="empty-hint" style="padding:40px">加载中…</p>';
     try {
         const all = await api('/permissions/all');
         permissionModuleMap = all || {};
@@ -6664,8 +7105,25 @@ async function loadPermissionConfig() {
         permissionRoleChecked = new Set(checkedIds || []);
         renderPermissionConfig(roleCode);
     } catch (e) {
-        area.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-danger)">加载失败：' + escapeHtml(e.message) + '</p>';
+        area.innerHTML = '<p style="text-align:center;padding:40px;color:var(--danger-color,#e54545)">加载失败：' + escapeHtml(e.message) + '</p>';
     }
+}
+
+// 全选 / 清空当前角色的权限勾选
+function togglePermAll(checked) {
+    document.querySelectorAll('#permissionConfigArea .perm-checkbox').forEach(function (cb) {
+        cb.checked = !!checked;
+    });
+    updatePermCheckedCount();
+}
+
+// 更新"已选 N 项"计数
+function updatePermCheckedCount() {
+    const el = $('#permCheckedCount');
+    if (!el) return;
+    const n = document.querySelectorAll('#permissionConfigArea .perm-checkbox:checked').length;
+    const total = document.querySelectorAll('#permissionConfigArea .perm-checkbox').length;
+    el.textContent = '已选 ' + n + ' / ' + total + ' 项';
 }
 
 // 渲染按模块分组的权限表格
@@ -6673,10 +7131,10 @@ function renderPermissionConfig(roleCode) {
     const area = $('#permissionConfigArea');
     const modules = Object.keys(permissionModuleMap);
     if (modules.length === 0) {
-        area.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-tertiary)">暂无权限数据，请先执行 permission-init SQL 初始化权限点。</p>';
+        area.innerHTML = '<p class="empty-hint" style="padding:40px">暂无权限数据，请先执行 permission-init SQL 初始化权限点。</p>';
         return;
     }
-    let html = '<table class="data-table"><thead><tr>'
+    let html = '<div class="table-container"><table class="data-table"><thead><tr>'
         + '<th style="width:160px">模块</th>'
         + '<th>权限功能</th>'
         + '</tr></thead><tbody>';
@@ -6694,13 +7152,20 @@ function renderPermissionConfig(roleCode) {
                 + '</label></td></tr>';
         });
     });
-    html += '</tbody></table>';
+    html += '</tbody></table></div>';
     area.innerHTML = html;
+
+    // 勾选变化时实时更新计数
+    area.querySelectorAll('.perm-checkbox').forEach(function (cb) {
+        cb.addEventListener('change', updatePermCheckedCount);
+    });
+    updatePermCheckedCount();
 }
 
 // 保存当前角色的权限配置
 async function savePermissionConfig() {
-    const roleCode = $('#permRoleSelect') ? $('#permRoleSelect').value : 'admin';
+    const roleCode = $('#permRoleSelect') ? $('#permRoleSelect').value : '';
+    if (!roleCode) { showToast('请先选择角色', 'error'); return; }
     const boxes = document.querySelectorAll('#permissionConfigArea .perm-checkbox:checked');
     const permIds = Array.from(boxes).map(function (b) { return Number(b.value); });
     try {
@@ -6751,7 +7216,12 @@ function renderOpLogTable(list) {
         tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无数据</td></tr>';
         return;
     }
-    const actionMap = { 'upload': '文件上传', 'delete': '删除数据', 'clean': '启动清洗', 'export': '导出结果' };
+    const actionMap = {
+        'upload': '文件上传', 'delete': '删除数据', 'clean': '启动清洗', 'export': '导出结果',
+        'user:create': '新增用户', 'user:update': '编辑用户', 'user:delete': '删除用户',
+        'user:assignRole': '分配角色', 'role:create': '新建角色', 'role:update': '编辑角色',
+        'role:delete': '删除角色', 'perm:assign': '分配权限'
+    };
     let html = '';
     list.forEach(function (log) {
         const status = log.status === 1

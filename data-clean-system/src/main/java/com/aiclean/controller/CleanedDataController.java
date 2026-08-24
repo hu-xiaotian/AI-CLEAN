@@ -1,5 +1,6 @@
 package com.aiclean.controller;
 
+import com.aiclean.annotation.RequirePermission;
 import com.aiclean.common.R;
 import com.aiclean.entity.CleanedDataEntity;
 import com.aiclean.model.SearchCondition;
@@ -31,6 +32,7 @@ public class CleanedDataController {
      */
     @PostMapping("/search")
     @Operation(summary = "搜索清洗数据", description = "根据查询条件搜索清洗后的数据")
+    @RequirePermission("page:search")
     public R<List<CleanedDataEntity>> searchCleanedData(@RequestBody SearchCondition condition) {
         try {
             List<CleanedDataEntity> dataList = dataCleaningService.searchCleanedData(condition);
@@ -46,6 +48,7 @@ public class CleanedDataController {
      */
     @GetMapping("/statistics")
     @Operation(summary = "获取清洗统计数据", description = "获取数据清洗的统计信息")
+    @RequirePermission("page:dashboard")
     public R<Map<String, Object>> getCleaningStatistics(
             @RequestParam(value = "titleId", required = false) Long titleId) {
         try {
@@ -62,6 +65,7 @@ public class CleanedDataController {
      */
     @GetMapping("/quality-report")
     @Operation(summary = "获取数据质量报告", description = "获取数据质量分析报告")
+    @RequirePermission("page:dashboard")
     public R<Map<String, Object>> getQualityReport(
             @RequestParam(value = "titleId", required = false) Long titleId) {
         try {

@@ -1,5 +1,6 @@
 package com.aiclean.controller;
 
+import com.aiclean.annotation.RequirePermission;
 import com.aiclean.common.R;
 import com.aiclean.common.UserContext;
 import com.aiclean.entity.ExportBatchEntity;
@@ -38,6 +39,7 @@ public class ExportController {
      */
     @PostMapping("/by-categories")
     @Operation(summary = "按分类导出数据", description = "根据分类ID列表导出数据")
+    @RequirePermission("data:clean:export")
     public R<ExportBatchEntity> exportByCategories(@RequestBody ExportRequestVO request) {
         try {
             if (request == null || !request.isValid()) {
@@ -140,6 +142,7 @@ public class ExportController {
      */
     @GetMapping("/download/{batchId}")
     @Operation(summary = "下载导出文件", description = "下载指定批次的导出文件")
+    @RequirePermission("data:clean:export")
     public void downloadExportFile(@PathVariable Long batchId, HttpServletResponse response) {
         try {
             String filePath = exportService.downloadExportFile(batchId);

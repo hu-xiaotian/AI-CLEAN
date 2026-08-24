@@ -1,5 +1,6 @@
 package com.aiclean.controller;
 
+import com.aiclean.annotation.RequirePermission;
 import com.aiclean.common.R;
 import com.aiclean.entity.*;
 import com.aiclean.model.SearchCondition;
@@ -66,6 +67,7 @@ public class DataCleaningController {
 
     @GetMapping("/parse-rules/active")
     @Operation(summary = "获取所有启用的解析规则")
+    @RequirePermission("page:rule")
     public R<List<ParseRuleEntity>> getActiveParseRules() {
         return R.success(dataCleaningService.getActiveParseRules());
     }
@@ -74,6 +76,7 @@ public class DataCleaningController {
 
     @PostMapping("/extract-extra")
     @Operation(summary = "提取全描述属性")
+    @RequirePermission("page:extract")
     public R<ExtraDataTitleEntity> extractExtraData(@RequestParam Long titleId, @RequestParam Long parseRuleId,
                                                      @RequestParam(required = false) String customName) {
         return R.success(dataCleaningService.extractExtraData(titleId, parseRuleId, customName));
@@ -167,6 +170,7 @@ public class DataCleaningController {
 
     @PostMapping("/ai-classify-check")
     @Operation(summary = "AI 辅助分类检测", description = "将已清洗数据的分类结果与 main_data_category 标准库比对，给出准确性评分；useAi=true 且已配置 AI 时调用大模型，否则用规则校验。不执行 AI 部分可由 useAi=false 控制。")
+    @RequirePermission("page:clean")
     public R<Map<String, Object>> aiClassifyCheck(@RequestParam Long titleId,
                                                    @RequestParam(required = false, defaultValue = "false") Boolean useAi) {
         return R.success(dataCleaningService.aiClassifyCheck(titleId, useAi));
@@ -204,6 +208,7 @@ public class DataCleaningController {
 
     @PostMapping("/auto-map-fields")
     @Operation(summary = "自动映射字段（根据清洗数据的分类编码自动匹配标准字段表头）")
+    @RequirePermission("page:mapping")
     public R<List<FieldMappingAuditEntity>> autoMapFields(@RequestParam Long tempDataTitleId,
                                                           @RequestParam(required = false) Long extraDataTitleId,
                                                           @RequestParam(required = false) Long standardTitleId) {
@@ -278,6 +283,7 @@ public class DataCleaningController {
 
     @PostMapping("/result-data/search")
     @Operation(summary = "搜索结果数据")
+    @RequirePermission("page:result")
     public R<List<ResultDataEntity>> searchResultData(@RequestBody SearchCondition condition) {
         return R.success(dataCleaningService.searchResultData(condition));
     }
@@ -356,6 +362,7 @@ public class DataCleaningController {
 
     @GetMapping("/dashboard-statistics")
     @Operation(summary = "获取看板统计信息", description = "返回量化指标（文件数、总条数、成功/失败、分类匹配/不匹配）及饼图所需的分布数据；不传 titleId 时统计全部")
+    @RequirePermission("page:dashboard")
     public R<Map<String, Object>> getDashboardStatistics(@RequestParam(required = false) Long titleId) {
         return R.success(dataCleaningService.getDashboardStatistics(titleId));
     }
@@ -382,6 +389,7 @@ public class DataCleaningController {
 
     @PostMapping("/cleaned-data/search")
     @Operation(summary = "搜索清洗数据")
+    @RequirePermission("page:search")
     public R<List<CleanedDataEntity>> searchCleanedData(@RequestBody SearchCondition condition) {
         return R.success(dataCleaningService.searchCleanedData(condition));
     }
@@ -444,6 +452,7 @@ public class DataCleaningController {
 
     @GetMapping("/standard-titles/page")
     @Operation(summary = "分页查询标准字段表头", description = "支持按分类编码关键字搜索，用于标准列表页面分页展示")
+    @RequirePermission("page:standard")
     public R<IPage<StandardTitleEntity>> pageStandardTitles(@RequestParam(defaultValue = "1") long page,
                                                             @RequestParam(defaultValue = "10") long size,
                                                             @RequestParam(required = false) String keyword,
@@ -501,6 +510,7 @@ public class DataCleaningController {
 
     @GetMapping("/unmapped-results")
     @Operation(summary = "查询未映射的清洗结果", description = "查询已清洗但尚未被映射填充到结果数据中的记录")
+    @RequirePermission("page:unmapped")
     public R<List<CleanedDataEntity>> getUnmappedResults(@RequestParam Long titleId) {
         return R.success(dataCleaningService.getUnmappedResults(titleId));
     }

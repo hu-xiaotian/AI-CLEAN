@@ -51,4 +51,10 @@ public class UserFormVO implements Serializable {
      * 状态：1=启用，0=禁用
      */
     private Integer status;
+
+    /**
+     * 分配给该用户的角色编码列表（可多选）。
+     * <p>为 null 时表示本次不修改角色关联；传空数组表示清空角色。</p>
+     */
+    private java.util.List<String> roleCodes;
 }

@@ -1,5 +1,6 @@
 package com.aiclean.controller;
 
+import com.aiclean.annotation.RequirePermission;
 import com.aiclean.common.R;
 import com.aiclean.entity.SysOperationLog;
 import com.aiclean.entity.TempDataTitleEntity;
@@ -41,6 +42,7 @@ public class DataImportController {
      */
     @GetMapping("/titles")
     @Operation(summary = "获取已导入文件列表", description = "返回最近导入的Excel文件列表")
+    @RequirePermission("page:import")
     public R<List<TempDataTitleEntity>> listTitles() {
         List<TempDataTitleEntity> titles = tempDataTitleMapper.selectRecent(100);
         return R.success(titles);
@@ -61,6 +63,7 @@ public class DataImportController {
      */
     @PostMapping("/upload")
     @Operation(summary = "上传文件", description = "上传 Excel 或 CSV 文件并解析为临时数据")
+    @RequirePermission("data:import:upload")
     public R<TempDataTitleEntity> uploadExcel(
             @RequestParam("file") MultipartFile file) {
         long start = System.currentTimeMillis();
@@ -139,6 +142,7 @@ public class DataImportController {
      */
     @DeleteMapping("/title/{id}")
     @Operation(summary = "删除导入数据", description = "级联删除导入文件、原始数据、清洗结果、字段映射、结果数据等所有关联内容")
+    @RequirePermission("data:import:delete")
     public R<Void> deleteTitle(@PathVariable Long id) {
         long start = System.currentTimeMillis();
         try {

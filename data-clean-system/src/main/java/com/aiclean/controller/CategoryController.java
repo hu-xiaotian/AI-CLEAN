@@ -1,5 +1,6 @@
 package com.aiclean.controller;
 
+import com.aiclean.annotation.RequirePermission;
 import com.aiclean.common.R;
 import com.aiclean.entity.CategoryEntity;
 import com.aiclean.service.CategoryService;
@@ -92,6 +93,7 @@ public class CategoryController {
      */
     @GetMapping("/tree")
     @Operation(summary = "获取分类树", description = "获取完整的分类树形结构")
+    @RequirePermission("page:clean")
     public R<List<CategoryEntity>> getCategoryTree(
             @RequestParam(value = "parentId", required = false) Long parentId) {
         try {

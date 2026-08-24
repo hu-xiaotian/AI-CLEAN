@@ -1,5 +1,6 @@
 package com.aiclean.controller;
 
+import com.aiclean.annotation.RequirePermission;
 import com.aiclean.common.R;
 import com.aiclean.entity.SysOperationLog;
 import com.aiclean.mapper.SysOperationLogMapper;
@@ -35,6 +36,7 @@ public class OperationLogController {
      */
     @GetMapping
     @Operation(summary = "分页查询操作日志", description = "支持按操作人、操作类型、模块、时间范围筛选")
+    @RequirePermission("page:oplog")
     public R<IPage<SysOperationLog>> page(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "15") long size,

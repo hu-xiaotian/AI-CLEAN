@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Clean 数据清洗系统 · 系统架构报告</title>
+<style>
+  :root{
+    --primary:#1f3a5f;
+    --primary-light:#2c5282;
+    --accent:#2b6cb0;
+    --bg:#f7f9fc;
+    --card:#ffffff;
+    --border:#d9e2ec;
+    --text:#1a202c;
+    --muted:#5a6b7b;
+    --ai:#7c3aed;
+    --ai-bg:#f3ebff;
+    --rule:#0d9488;
+    --rule-bg:#e6f7f4;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:"Microsoft YaHei","PingFang SC","Segoe UI",Helvetica,Arial,sans-serif;
+    color:var(--text);
+    background:var(--bg);
+    line-height:1.75;
+    font-size:15px;
+  }
+  .cover{
+    background:linear-gradient(135deg,var(--primary) 0%,var(--primary-light) 100%);
+    color:#fff;
+    padding:64px 48px;
+    text-align:center;
+  }
+  .cover h1{font-size:34px;margin:0 0 12px;letter-spacing:2px;font-weight:700;}
+  .cover .sub{font-size:17px;opacity:.9;letter-spacing:1px;}
+  .cover .meta{margin-top:28px;font-size:13px;opacity:.8;}
+  .container{max-width:1080px;margin:0 auto;padding:40px 48px 80px;}
+  section{margin-bottom:56px;}
+  h2{
+    font-size:23px;color:var(--primary);
+    border-left:6px solid var(--accent);
+    padding-left:14px;margin:0 0 8px;font-weight:700;
+  }
+  h2 .num{
+    display:inline-block;background:var(--primary);color:#fff;
+    width:34px;height:34px;line-height:34px;text-align:center;
+    border-radius:6px;font-size:17px;margin-right:12px;vertical-align:middle;
+  }
+  h3{font-size:18px;color:var(--primary-light);margin:28px 0 10px;font-weight:600;}
+  p.lead{color:var(--muted);margin:4px 0 24px;font-size:14.5px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:22px 26px;box-shadow:0 2px 8px rgba(31,58,95,.05);}
+
+  /* 分层架构 */
+  .layer{margin-bottom:14px;border-radius:10px;overflow:hidden;border:1px solid var(--border);}
+  .layer-head{background:var(--primary);color:#fff;padding:12px 20px;font-weight:600;font-size:16px;display:flex;justify-content:space-between;align-items:center;}
+  .layer-head .tag{font-size:12px;background:rgba(255,255,255,.18);padding:3px 10px;border-radius:20px;}
+  .layer-body{background:#fff;padding:16px 20px;display:flex;flex-wrap:wrap;gap:10px;}
+  .comp{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 14px;font-size:13.5px;color:var(--text);}
+  .comp small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px;}
+  .flow-arrow{text-align:center;color:var(--accent);font-size:20px;margin:-2px 0;}
+
+  /* 清洗流程 */
+  .flow{display:flex;flex-direction:column;gap:0;}
+  .step{display:flex;align-items:stretch;gap:0;}
+  .step-box{flex:1;background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px 18px;}
+  .step-box .t{font-weight:600;color:var(--primary);font-size:15px;}
+  .step-box .d{font-size:13px;color:var(--muted);margin-top:4px;}
+  .step-num{background:var(--accent);color:#fff;width:30px;min-width:30px;display:flex;align-items:center;justify-content:center;border-radius:50%;font-weight:700;margin-right:14px;font-size:14px;}
+  .branch{margin:10px 0 10px 44px;border-left:3px dashed var(--accent);padding-left:18px;}
+  .branch .b{background:var(--rule-bg);border:1px solid #bfe9e2;color:#0b6b61;border-radius:8px;padding:10px 14px;font-size:13.5px;margin-bottom:8px;}
+  .branch .ai-b{background:var(--ai-bg);border:1px solid #e0cffb;color:#6b21a8;}
+
+  /* 算法卡片 */
+  .algo{margin-bottom:22px;border-radius:10px;border:1px solid var(--border);overflow:hidden;}
+  .algo-head{padding:14px 20px;font-weight:700;font-size:16px;color:#fff;display:flex;align-items:center;gap:10px;}
+  .algo-rule .algo-head{background:var(--rule);}
+  .algo-ai .algo-head{background:var(--ai);}
+  .algo-body{background:#fff;padding:18px 22px;}
+  .algo-body ul{margin:6px 0 0;padding-left:20px;}
+  .algo-body li{margin-bottom:9px;font-size:14px;}
+  .algo-body li b{color:var(--primary-light);}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:14px;margin-left:6px;vertical-align:middle;}
+  .pill.rule{background:var(--rule-bg);color:#0b6b61;}
+  .pill.ai{background:var(--ai-bg);color:#6b21a8;}
+  .note{background:#fffaf0;border:1px solid #f0d9a8;border-radius:8px;padding:12px 16px;font-size:13px;color:#8a6d3b;margin-top:14px;}
+  footer{text-align:center;color:var(--muted);font-size:12.5px;padding:30px;border-top:1px solid var(--border);}
+  @media print{
+    body{background:#fff;font-size:13px;}
+    .layer-head,.cover{ -webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    section{page-break-inside:avoid;}
+  }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>AI Clean 数据清洗系统</h1>
+  <div class="sub">系统架构报告 · 分层架构 / 数据清洗流程 / 核心算法</div>
+  <div class="meta">版本 1.0 &nbsp;|&nbsp; 编制日期：2026-07-18 &nbsp;|&nbsp; 适用场景：技术评审与项目汇报</div>
+</div>
+
+<div class="container">
+
+  <!-- 1. 分层架构 -->
+  <section>
+    <h2><span class="num">1</span>系统分层架构</h2>
+    <p class="lead">系统采用经典的多层架构模式，自上而下分为表现层、接入控制层、业务服务层、核心算法层、数据访问层与数据存储层。各层职责清晰、边界明确，核心算法与具体业务解耦，可独立替换与扩展。</p>
+
+    <div class="layer">
+      <div class="layer-head">表现层 · 前端工作台 <span class="tag">Web 工作台</span></div>
+      <div class="layer-body">
+        <div class="comp">数据看板<small>指标总览与可视化</small></div>
+        <div class="comp">数据导入<small>Excel 上传与表头映射</small></div>
+        <div class="comp">分步清洗<small>智能分类 / 属性提取 / 结果</small></div>
+        <div class="comp">标准库管理<small>分类体系维护</small></div>
+        <div class="comp">审核工作台<small>任务领取与处理</small></div>
+        <div class="comp">导出与对话<small>多格式导出 / AI 问答</small></div>
+      </div>
+    </div>
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-head">接入控制层 · API 网关 <span class="tag">Controller</span></div>
+      <div class="layer-body">
+        <div class="comp">认证鉴权<small>登录 / JWT / 用户管理</small></div>
+        <div class="comp">数据导入接口</div>
+        <div class="comp">数据清洗接口</div>
+        <div class="comp">分类管理接口</div>
+        <div class="comp">清洗数据查询</div>
+        <div class="comp">审核任务接口</div>
+        <div class="comp">数据导出接口</div>
+        <div class="comp">AI 对话接口</div>
+        <div class="comp">系统管理接口</div>
+      </div>
+    </div>
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-head">业务服务层 · 业务编排 <span class="tag">Service</span></div>
+      <div class="layer-body">
+        <div class="comp">清洗主流程编排<small>流水线调度与状态管理</small></div>
+        <div class="comp">标准分类库索引<small>内存索引与候选召回</small></div>
+        <div class="comp">分类匹配服务</div>
+        <div class="comp">AI 识别与辅助识别</div>
+        <div class="comp">属性提取服务</div>
+        <div class="comp">审核工作流</div>
+        <div class="comp">导出批次管理</div>
+        <div class="comp">质量评分服务</div>
+      </div>
+    </div>
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-head">核心算法层 · 算法引擎 <span class="tag">Algorithm</span></div>
+      <div class="layer-body">
+        <div class="comp">规则分类匹配<small>同义词 / 名称 / 编码 / 语义</small></div>
+        <div class="comp">相似度计算</div>
+        <div class="comp">候选召回排序</div>
+        <div class="comp">规则校验评分</div>
+        <div class="comp">AI 辅助分类<small>大模型复核与兜底</small></div>
+        <div class="comp">AI 属性提取</div>
+        <div class="comp">AI 对话引擎<small>看板对话 / RAG 问答</small></div>
+      </div>
+    </div>
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-head">数据访问层 · 持久化 <span class="tag">Mapper</span></div>
+      <div class="layer-body">
+        <div class="comp">对象关系映射<small>MyBatis Plus</small></div>
+        <div class="comp">双数据源适配<small>MySQL / 达梦</small></div>
+        <div class="comp">类型处理器<small>数据库兼容转换</small></div>
+      </div>
+    </div>
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-head">数据存储层 · 持久化存储 <span class="tag">Storage</span></div>
+      <div class="layer-body">
+        <div class="comp">业务数据库<small>原始数据 / 清洗结果 / 审核</small></div>
+        <div class="comp">标准分类库<small>三级分类 / 同义词</small></div>
+        <div class="comp">关系型数据库<small>MySQL 8.0 / 达梦 8 双引擎</small></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. 数据清洗流程 -->
+  <section>
+    <h2><span class="num">2</span>数据清洗过程图解</h2>
+    <p class="lead">下图描述从原始 Excel 数据到标准化导出数据的端到端处理流水线。其中「属性结构化提取」为可选环节，由 AI 能力增强；其余环节均以规则方式运行，不依赖大模型，保证系统在离线状态下亦可独立完成清洗。</p>
+
+    <div class="card">
+      <div class="flow">
+        <div class="step"><div class="step-num">1</div><div class="step-box"><div class="t">源数据上传</div><div class="d">接收 Excel 文件，完成表头列映射（分类列、全描述列）</div></div></div>
+        <div class="flow-arrow">▼</div>
+        <div class="step"><div class="step-num">2</div><div class="step-box"><div class="t">原始数据暂存</div><div class="d">逐行解析并落库，保留原始记录以备回溯</div></div></div>
+        <div class="flow-arrow">▼</div>
+        <div class="step"><div class="step-num">3</div><div class="step-box"><div class="t">全描述解析</div><div class="d">从自由文本描述中拆分出名称、规格、牌号等结构化键值对</div></div></div>
+        <div class="flow-arrow">▼</div>
+        <div class="step"><div class="step-num">4</div><div class="step-box"><div class="t">属性结构化提取 <span class="pill ai">AI 可选</span></div><div class="d">按标准字段定义，由大模型将描述文本进一步拆解为标准化属性</div></div></div>
+        <div class="flow-arrow">▼</div>
+        <div class="step"><div class="step-num">5</div><div class="step-box"><div class="t">分类匹配定位</div><div class="d">将物料映射至标准分类体系的三级节点，产出匹配来源与置信度</div></div></div>
+        <div class="flow-arrow">▼</div>
+        <div class="step"><div class="step-num">6</div><div class="step-box"><div class="t">标准字段填充</div><div class="d">依据匹配结果回填物资编码、名称、规格等标准字段</div></div></div>
+        <div class="flow-arrow">▼</div>
+        <div class="step"><div class="step-num">7</div><div class="step-box"><div class="t">质量评分与判定</div><div class="d">对清洗结果进行评分，并依据阈值划分数据状态</div></div></div>
+
+        <div class="branch">
+          <div class="b">评分偏低 → 进入「待人工审核」队列，生成审核任务</div>
+          <div class="b">评分合格 → 标记为「已批准」，可进入导出流程</div>
+          <div class="b">评分优秀 → 标记为「可直接导出」，无需二次确认</div>
+          <div class="b ai-b">分类未命中三级节点 → 归入无效数据，单独统计与处理</div>
+        </div>
+        <div class="flow-arrow">▼</div>
+        <div class="step"><div class="step-num">8</div><div class="step-box"><div class="t">人工审核</div><div class="d">审核员领取任务、复核并确认或修改分类结果</div></div></div>
+        <div class="flow-arrow">▼</div>
+        <div class="step"><div class="step-num">9</div><div class="step-box"><div class="t">分类导出</div><div class="d">按标准分类归集，导出为 Excel / CSV / JSON / PDF 多格式文件</div></div></div>
+      </div>
+    </div>
+    <div class="note">说明：清洗任务与 AI 检测任务均通过异步线程执行，并借助实时消息通道向前端推送进度，避免界面阻塞。AI 能力关闭时，系统自动以纯规则模式完成上述全流程。</div>
+  </section>
+
+  <!-- 3. 算法部分 -->
+  <section>
+    <h2><span class="num">3</span>核心算法详解</h2>
+    <p class="lead">系统算法体系划分为三条相对独立的算法线：其一为不依赖大模型的规则清洗算法；其二为 AI 辅助分类算法；其三为 AI 对话算法。三者通过统一接口与业务解耦，可独立演进与替换。</p>
+
+    <!-- 3.1 规则清洗算法 -->
+    <div class="algo algo-rule">
+      <div class="algo-head">3.1 规则清洗算法（不介入 AI）</div>
+      <div class="algo-body">
+        <p style="margin-top:0;">该算法线完全基于确定性规则与内存索引运行，是系统的基础清洗能力，亦作为 AI 不可用时的兜底方案。</p>
+        <ul>
+          <li><b>标准分类库内存索引</b>：系统启动时将全量标准分类（含旧编码、旧名称、同义词）载入内存，构建编码索引、名称索引与分词索引三套哈希结构，支持归一化容错比较与快速检索。</li>
+          <li><b>分层分类匹配</b>：采用多策略综合打分定位三级标准分类，依次覆盖：
+            <ul>
+              <li>同义词优先匹配（置信度最高）；</li>
+              <li>一/二级祖先定位（作为加分信号，不锁定候选集）；</li>
+              <li>全局三级节点统一打分（名称精确 / 名称模糊 / 语义 / 编码 / 附加属性）；</li>
+              <li>名称优先于编码的冲突裁决机制；</li>
+              <li>低于最低置信度阈值则判定为未匹配。</li>
+            </ul>
+          </li>
+          <li><b>相似度计算</b>：默认采用字符二元组（bigram）Jaccard 相似度作为轻量级语义占位实现，无需外部依赖，可替换为词向量或语义模型。</li>
+          <li><b>候选召回排序</b>：依据物料的编码、名称、规格、牌号等维度对标准库做加权哈希打分，取前 K 条候选，为后续匹配与 AI 检测提供检索前置。</li>
+          <li><b>规则校验评分</b>：从编码合法性、名称一致性、层级合法性、单位一致性、描述关键词五个维度做确定性比对，输出 0~100 评分与一致性判定。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 3.2 AI 辅助分类算法 -->
+    <div class="algo algo-ai">
+      <div class="algo-head">3.2 AI 辅助分类算法</div>
+      <div class="algo-body">
+        <p style="margin-top:0;">在系统已产生规则分类结果的基础上，借助大模型对分类结果进行独立复核与修正建议，并内置防幻觉与确定性兜底机制。</p>
+        <ul>
+          <li><b>候选召回</b>：先由规则算法召回标准库候选子集（仅发送候选而非全表，控制调用成本），注入提示词。</li>
+          <li><b>大模型比对判定</b>：构造分类检测提示词，要求模型仅返回结构化结果（评分、是否匹配、建议编码、理由），由大模型在候选集中独立判断分类合理性。</li>
+          <li><b>反向校验防幻觉</b>：当系统编码不在标准库中时，强制判定为不匹配并要求模型从候选中选出正确编码；编码存在时仍须依据物料内容独立判断，避免"存在即正确"的误确认。</li>
+          <li><b>确定性兜底判定</b>：不盲信模型返回的布尔值，而是以标准库做确定性比对得出最终匹配结论；模型失效或异常时自动回退至规则校验评分。</li>
+          <li><b>分类修正闭环</b>：将模型推荐的标准分类回填至数据，并按规则重新评分保存，形成"AI 建议 → 人工或自动采纳"的闭环。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 3.3 AI 对话算法 -->
+    <div class="algo algo-ai">
+      <div class="algo-head">3.3 AI 对话算法</div>
+      <div class="algo-body">
+        <p style="margin-top:0;">面向业务人员的自然语言交互能力，包含通用看板分析对话与基于标准分类库的检索增强问答两条路径。</p>
+        <ul>
+          <li><b>看板分析对话</b>：通用多轮对话接口，以"数据清洗分析助手"为系统角色，用于解读统计指标、失败原因与分类匹配情况，支持可用性探测。</li>
+          <li><b>标准分类库检索增强问答（RAG-lite）</b>：为避免直接文本转 SQL 的风险，采用检索增强生成范式：
+            <ul>
+              <li>检索阶段：从用户问题中识别并召回标准分类记录（编码精确 / 前缀、层级识别、关键词检索、列举型兜底）；</li>
+              <li>上下文构建：将命中记录注入系统提示词，约束模型仅依据该上下文作答，不得编造；</li>
+              <li>多轮对话：携带完整对话历史调用大模型，返回回复内容与命中来源记录。</li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="note">设计原则：规则清洗算法与 AI 算法通过统一接口隔离，AI 调用集中收敛、可一键关闭。关闭 AI 后系统完全以规则模式运行，核心清洗能力不受影响，保障系统可用性与可演进性。</div>
+  </section>
+
+</div>
+
+<footer>
+  AI Clean 数据清洗系统 · 架构报告 &nbsp;|&nbsp; 本文档用于技术评审与项目汇报，内容依据系统实际架构整理
+</footer>
+
+</body>
+</html>

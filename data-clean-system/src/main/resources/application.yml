@@ -6,15 +6,15 @@ spring:
   # 数据源配置
   datasource:
     # 开发环境使用MySQL (生产环境使用达梦)
-    #driver-class-name: com.mysql.cj.jdbc.Driver
-    #url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&sessionVariables=transaction_isolation='READ-COMMITTED'}
-    #username: ${DB_USERNAME:root}
-    #password: ${DB_PASSWORD:Mysql123456.}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&sessionVariables=transaction_isolation='READ-COMMITTED'}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:Mysql123456.}
     # 达梦数据库配置示例:
-    driver-class-name: dm.jdbc.driver.DmDriver
-    url: jdbc:dm://203.83.238.245:19770?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
-    username: SYSDBA
-    password: Dameng123456
+    #driver-class-name: dm.jdbc.driver.DmDriver
+    #url: jdbc:dm://203.83.238.245:19770?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
+    #username: SYSDBA
+    #password: Dameng123456
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5

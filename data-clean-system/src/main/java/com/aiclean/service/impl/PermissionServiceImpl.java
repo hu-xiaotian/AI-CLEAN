@@ -27,6 +27,7 @@ public class PermissionServiceImpl implements PermissionService {
 
     private final SysPermissionMapper permissionMapper;
     private final SysRolePermissionMapper rolePermissionMapper;
+    private final com.aiclean.mapper.SysUserRoleMapper userRoleMapper;
 
     @Override
     public Map<String, List<SysPermission>> listPermissionsGroupedByModule() {
@@ -72,5 +73,44 @@ public class PermissionServiceImpl implements PermissionService {
             }
         }
         log.info("角色 [{}] 权限已更新，共分配 {} 项", roleCode, permIds == null ? 0 : permIds.size());
+    }
+
+    @Override
+    public List<String> listPermissionCodesByUserId(Long userId) {
+        if (userId == null) {
+            return java.util.Collections.emptyList();
+        }
+        // 1. 查出用户的全部角色编码
+        List<String> roleCodes = userRoleMapper.selectList(
+                        new LambdaQueryWrapper<com.aiclean.entity.SysUserRole>()
+                                .eq(com.aiclean.entity.SysUserRole::getUserId, userId))
+                .stream()
+                .map(com.aiclean.entity.SysUserRole::getRoleCode)
+                .distinct()
+                .collect(Collectors.toList());
+        if (roleCodes.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+
+        // 2. 查出这些角色关联的权限ID
+        List<Long> permIds = rolePermissionMapper.selectList(
+                        new LambdaQueryWrapper<SysRolePermission>()
+                                .in(SysRolePermission::getRoleCode, roleCodes))
+                .stream()
+                .map(SysRolePermission::getPermId)
+                .distinct()
+                .collect(Collectors.toList());
+        if (permIds.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+
+        // 3. 转换为权限编码
+        return permissionMapper.selectList(new LambdaQueryWrapper<SysPermission>()
+                        .in(SysPermission::getId, permIds)
+                        .eq(SysPermission::getStatus, 1))
+                .stream()
+                .map(SysPermission::getPermCode)
+                .distinct()
+                .collect(Collectors.toList());
     }
 }
