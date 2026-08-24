@@ -1639,3 +1639,26 @@ th.sortable-id .sort-arrow {
     .ai-clean-subtitle { top: 17%; }
 }
 
+/* ===== 权限配置页 ===== */
+.perm-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    margin: 3px 6px 3px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text);
+    transition: border-color .15s ease, background .15s ease;
+}
+.perm-item:hover { border-color: var(--accent); }
+.perm-item input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+.perm-code {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono, monospace);
+}
+

@@ -282,6 +282,8 @@ function switchPage(name) {
         'oneclick': () => { loadOneClickPage(); },
         'dashboard': () => { loadDashboardPage(); },
         'externalclean': () => { loadTitlesForSelect('ecTitleId'); ecLoadTasks(1); ecStartAutoRefresh(); },
+        'permission': () => { loadPermissionConfig(); },                // 刷新权限配置
+        'oplog': () => { loadOpLogs(1); },                              // 刷新操作日志
     };
     if (loaders[name]) loaders[name]();
 }
@@ -6643,4 +6645,152 @@ function ecAttrsText(json) {
 function ecAttrsPreview(json) {
     const s = ecAttrsText(json);
     return s.length > 50 ? s.substring(0, 50) + '…' : s;
+}
+
+// ==================== 权限配置 ====================
+let permissionModuleMap = {};            // 全部权限（模块 -> 权限列表）
+let permissionRoleChecked = new Set();   // 当前角色已勾选的权限ID
+
+// 加载权限配置：先拉全部权限，再拉当前角色已分配权限
+async function loadPermissionConfig() {
+    const roleCode = $('#permRoleSelect') ? $('#permRoleSelect').value : 'admin';
+    const area = $('#permissionConfigArea');
+    if (!area) return;
+    area.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-tertiary)">加载中…</p>';
+    try {
+        const all = await api('/permissions/all');
+        permissionModuleMap = all || {};
+        const checkedIds = await api('/permissions/role?roleCode=' + encodeURIComponent(roleCode));
+        permissionRoleChecked = new Set(checkedIds || []);
+        renderPermissionConfig(roleCode);
+    } catch (e) {
+        area.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-danger)">加载失败：' + escapeHtml(e.message) + '</p>';
+    }
+}
+
+// 渲染按模块分组的权限表格
+function renderPermissionConfig(roleCode) {
+    const area = $('#permissionConfigArea');
+    const modules = Object.keys(permissionModuleMap);
+    if (modules.length === 0) {
+        area.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-tertiary)">暂无权限数据，请先执行 permission-init SQL 初始化权限点。</p>';
+        return;
+    }
+    let html = '<table class="data-table"><thead><tr>'
+        + '<th style="width:160px">模块</th>'
+        + '<th>权限功能</th>'
+        + '</tr></thead><tbody>';
+    modules.forEach(function (module) {
+        const perms = permissionModuleMap[module] || [];
+        html += '<tr><td rowspan="' + perms.length + '" style="font-weight:600;vertical-align:top">' + escapeHtml(module) + '</td>';
+        perms.forEach(function (p, idx) {
+            if (idx > 0) html += '<tr>';
+            const checked = permissionRoleChecked.has(p.id) ? 'checked' : '';
+            html += '<td>'
+                + '<label class="perm-item">'
+                + '<input type="checkbox" class="perm-checkbox" value="' + p.id + '" ' + checked + '> '
+                + '<span>' + escapeHtml(p.permName || '') + '</span>'
+                + '<code class="perm-code">' + escapeHtml(p.permCode || '') + '</code>'
+                + '</label></td></tr>';
+        });
+    });
+    html += '</tbody></table>';
+    area.innerHTML = html;
+}
+
+// 保存当前角色的权限配置
+async function savePermissionConfig() {
+    const roleCode = $('#permRoleSelect') ? $('#permRoleSelect').value : 'admin';
+    const boxes = document.querySelectorAll('#permissionConfigArea .perm-checkbox:checked');
+    const permIds = Array.from(boxes).map(function (b) { return Number(b.value); });
+    try {
+        await api('/permissions/role/assign?roleCode=' + encodeURIComponent(roleCode), {
+            method: 'POST',
+            body: permIds
+        });
+        showToast('权限配置已保存', 'success');
+    } catch (e) {
+        showToast('保存失败：' + e.message, 'error');
+    }
+}
+
+// ==================== 操作日志 ====================
+let opLogPageState = { page: 1, size: 15, total: 0, pages: 1 };
+
+async function loadOpLogs(page) {
+    if (page) opLogPageState.page = page;
+    const { page: curPage, size } = opLogPageState;
+    const username = $('#opLogUsername') ? $('#opLogUsername').value.trim() : '';
+    const action = $('#opLogAction') ? $('#opLogAction').value : '';
+    const module = $('#opLogModule') ? $('#opLogModule').value : '';
+    const startTime = $('#opLogStartTime') ? $('#opLogStartTime').value.trim() : '';
+    const endTime = $('#opLogEndTime') ? $('#opLogEndTime').value.trim() : '';
+    const params = [];
+    params.push('page=' + curPage);
+    params.push('size=' + size);
+    if (username) params.push('username=' + encodeURIComponent(username));
+    if (action) params.push('action=' + encodeURIComponent(action));
+    if (module) params.push('module=' + encodeURIComponent(module));
+    if (startTime) params.push('startTime=' + encodeURIComponent(startTime));
+    if (endTime) params.push('endTime=' + encodeURIComponent(endTime));
+    try {
+        const data = await api('/operation-logs?' + params.join('&'));
+        renderOpLogTable(data.records || []);
+        opLogPageState.total = data.total || 0;
+        opLogPageState.pages = data.pages || 1;
+        $('#opLogPageInfo').textContent = '共 ' + opLogPageState.total + ' 条';
+        renderOpLogPagination();
+    } catch (e) {
+        showToast('加载操作日志失败：' + e.message, 'error');
+    }
+}
+
+function renderOpLogTable(list) {
+    const tbody = $('#opLogTbody');
+    if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无数据</td></tr>';
+        return;
+    }
+    const actionMap = { 'upload': '文件上传', 'delete': '删除数据', 'clean': '启动清洗', 'export': '导出结果' };
+    let html = '';
+    list.forEach(function (log) {
+        const status = log.status === 1
+            ? '<span class="badge badge-success">成功</span>'
+            : '<span class="badge badge-danger">失败</span>';
+        const duration = log.duration != null ? (log.duration + ' ms') : '-';
+        const actionLabel = actionMap[log.action] || escapeHtml(log.action || '-');
+        html += '<tr>'
+            + '<td>' + escapeHtml(formatDate(log.operateTime)) + '</td>'
+            + '<td>' + escapeHtml(log.realName || log.username || '-') + '</td>'
+            + '<td>' + escapeHtml(log.module || '-') + '</td>'
+            + '<td>' + actionLabel + '</td>'
+            + '<td>' + escapeHtml(log.actionDesc || '-') + '</td>'
+            + '<td>' + status + '</td>'
+            + '<td>' + duration + '</td>'
+            + '<td>' + (log.errorMsg ? escapeHtml(log.errorMsg) : '-') + '</td>'
+            + '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+function renderOpLogPagination() {
+    const btns = $('#opLogPageBtns');
+    if (!btns) return;
+    const { page, pages, size, total } = opLogPageState;
+    let html = '<button class="page-btn" ' + (page <= 1 ? 'disabled' : '') + ' onclick="loadOpLogs(1)">首页</button>';
+    html += '<button class="page-btn" ' + (page <= 1 ? 'disabled' : '') + ' onclick="loadOpLogs(' + (page - 1) + ')">上一页</button>';
+    html += '<span class="page-now">第 ' + page + ' / ' + pages + ' 页</span>';
+    html += '<button class="page-btn" ' + (page >= pages ? 'disabled' : '') + ' onclick="loadOpLogs(' + (page + 1) + ')">下一页</button>';
+    html += '<button class="page-btn" ' + (page >= pages ? 'disabled' : '') + ' onclick="loadOpLogs(' + pages + ')">尾页</button>';
+    btns.innerHTML = html;
+}
+
+function resetOpLogFilter() {
+    if ($('#opLogUsername')) $('#opLogUsername').value = '';
+    if ($('#opLogAction')) $('#opLogAction').value = '';
+    if ($('#opLogModule')) $('#opLogModule').value = '';
+    if ($('#opLogStartTime')) $('#opLogStartTime').value = '';
+    if ($('#opLogEndTime')) $('#opLogEndTime').value = '';
+    opLogPageState.page = 1;
+    loadOpLogs(1);
 }

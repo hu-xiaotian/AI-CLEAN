@@ -4,6 +4,7 @@ import com.aiclean.common.R;
 import com.aiclean.entity.*;
 import com.aiclean.model.SearchCondition;
 import com.aiclean.service.DataCleaningService;
+import com.aiclean.service.OperationLogService;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -31,6 +32,9 @@ public class DataCleaningController {
 
     @Autowired
     private DataCleaningService dataCleaningService;
+
+    @Autowired
+    private OperationLogService operationLogService;
 
     // ==================== 解析规则管理 ====================
 
@@ -108,7 +112,29 @@ public class DataCleaningController {
     public R<String> startCleaning(@RequestParam Long titleId,
                                    @RequestParam(required = false) Long parseRuleId,
                                    @RequestParam(required = false) Boolean useAi) {
-        return R.success(dataCleaningService.startCleaning(titleId, parseRuleId, useAi));
+        long start = System.currentTimeMillis();
+        try {
+            String result = dataCleaningService.startCleaning(titleId, parseRuleId, useAi);
+            operationLogService.record(new SysOperationLog() {{
+                setAction("clean");
+                setModule("数据清洗");
+                setActionDesc("启动数据清洗，titleId=" + titleId + (useAi != null && useAi ? "（AI模式）" : ""));
+                setStatus(1);
+                setDuration(System.currentTimeMillis() - start);
+            }});
+            return R.success(result);
+        } catch (Exception e) {
+            log.error("启动数据清洗失败，titleId={}", titleId, e);
+            operationLogService.record(new SysOperationLog() {{
+                setAction("clean");
+                setModule("数据清洗");
+                setActionDesc("启动数据清洗，titleId=" + titleId);
+                setStatus(0);
+                setErrorMsg(e.getMessage());
+                setDuration(System.currentTimeMillis() - start);
+            }});
+            return R.error("清洗启动失败: " + e.getMessage());
+        }
     }
 
     @GetMapping("/progress/{titleId}")

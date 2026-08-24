@@ -34,6 +34,11 @@ public class UserContext {
         return user == null ? null : user.getRole();
     }
 
+    public static String getRealName() {
+        CurrentUser user = HOLDER.get();
+        return user == null ? null : user.getRealName();
+    }
+
     public static void clear() {
         HOLDER.remove();
     }
@@ -48,5 +53,13 @@ public class UserContext {
         private Long userId;
         private String username;
         private String role;
+        private String realName;
+
+        /**
+         * 兼容旧的 3 参调用（userId, username, role）
+         */
+        public CurrentUser(Long userId, String username, String role) {
+            this(userId, username, role, null);
+        }
     }
 }

@@ -1,9 +1,11 @@
 package com.aiclean.controller;
 
 import com.aiclean.common.R;
+import com.aiclean.entity.SysOperationLog;
 import com.aiclean.entity.TempDataTitleEntity;
 import com.aiclean.mapper.TempDataTitleMapper;
 import com.aiclean.service.DataCleaningService;
+import com.aiclean.service.OperationLogService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +32,9 @@ public class DataImportController {
 
     @Autowired
     private TempDataTitleMapper tempDataTitleMapper;
+
+    @Autowired
+    private OperationLogService operationLogService;
 
     /**
      * 获取已导入文件列表
@@ -58,12 +63,29 @@ public class DataImportController {
     @Operation(summary = "上传文件", description = "上传 Excel 或 CSV 文件并解析为临时数据")
     public R<TempDataTitleEntity> uploadExcel(
             @RequestParam("file") MultipartFile file) {
+        long start = System.currentTimeMillis();
+        String fileName = file.getOriginalFilename();
         try {
-            log.info("开始上传文件: {}", file.getOriginalFilename());
+            log.info("开始上传文件: {}", fileName);
             TempDataTitleEntity result = dataCleaningService.importExcel(file);
+            operationLogService.record(new SysOperationLog() {{
+                setAction("upload");
+                setModule("数据导入");
+                setActionDesc("上传文件：" + fileName);
+                setStatus(1);
+                setDuration(System.currentTimeMillis() - start);
+            }});
             return R.success("文件上传解析成功", result);
         } catch (Exception e) {
             log.error("Excel文件上传解析失败", e);
+            operationLogService.record(new SysOperationLog() {{
+                setAction("upload");
+                setModule("数据导入");
+                setActionDesc("上传文件：" + fileName);
+                setStatus(0);
+                setErrorMsg(e.getMessage());
+                setDuration(System.currentTimeMillis() - start);
+            }});
             return R.error("文件上传解析失败: " + e.getMessage());
         }
     }
@@ -118,12 +140,28 @@ public class DataImportController {
     @DeleteMapping("/title/{id}")
     @Operation(summary = "删除导入数据", description = "级联删除导入文件、原始数据、清洗结果、字段映射、结果数据等所有关联内容")
     public R<Void> deleteTitle(@PathVariable Long id) {
+        long start = System.currentTimeMillis();
         try {
             log.info("删除导入数据，ID: {}", id);
             dataCleaningService.deleteImportTitle(id);
+            operationLogService.record(new SysOperationLog() {{
+                setAction("delete");
+                setModule("数据导入");
+                setActionDesc("删除导入数据，ID=" + id);
+                setStatus(1);
+                setDuration(System.currentTimeMillis() - start);
+            }});
             return R.success("导入数据及所有关联内容已删除");
         } catch (Exception e) {
             log.error("删除导入数据失败，ID: {}", id, e);
+            operationLogService.record(new SysOperationLog() {{
+                setAction("delete");
+                setModule("数据导入");
+                setActionDesc("删除导入数据，ID=" + id);
+                setStatus(0);
+                setErrorMsg(e.getMessage());
+                setDuration(System.currentTimeMillis() - start);
+            }});
             return R.error("删除失败: " + e.getMessage());
         }
     }
