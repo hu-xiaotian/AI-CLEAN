@@ -1,15 +1,36 @@
 -- ============================================
--- AI Clean 数据清洗系统 - 权限配置初始数据
+-- AI Clean 数据清洗系统 - 权限配置表与初始数据
 -- 数据库: MySQL
--- 说明: 初始化系统权限点(sys_permission)及管理员默认权限关联(sys_role_permission)
---       执行前请确认 auth-module.sql 中的 sys_permission / sys_role_permission 表已存在。
+-- 说明: 创建权限表(sys_permission)、角色-权限关联表(sys_role_permission)，
+--       并写入系统权限点及管理员/普通用户的默认权限关联。
 -- ============================================
 
--- 1. 清空已有数据（如重复初始化，先清理，避免主键冲突）
-DELETE FROM sys_role_permission;
-DELETE FROM sys_permission;
+-- 1. 若表已存在则删除（便于重复初始化）
+DROP TABLE IF EXISTS sys_role_permission;
+DROP TABLE IF EXISTS sys_permission;
 
--- 2. 初始化权限点
+-- 2. 权限（功能点）表
+CREATE TABLE sys_permission (
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    perm_code  VARCHAR(100) NOT NULL COMMENT '权限编码，如 data:import:upload',
+    perm_name  VARCHAR(100) COMMENT '权限名称，如 文件上传',
+    module     VARCHAR(50)  COMMENT '所属模块（前端分组用）',
+    sort       INT DEFAULT 0 COMMENT '排序号',
+    status     TINYINT DEFAULT 1 COMMENT '状态：1=启用，0=禁用',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(50) DEFAULT 'system',
+    updated_by VARCHAR(50) DEFAULT 'system'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权限表';
+
+-- 3. 角色-权限关联表
+CREATE TABLE sys_role_permission (
+    id        BIGINT AUTO_INCREMENT PRIMARY KEY,
+    role_code VARCHAR(20) NOT NULL COMMENT '角色编码，如 admin / user',
+    perm_id   BIGINT NOT NULL COMMENT '权限ID'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色-权限关联表';
+
+-- 4. 初始化权限点
 INSERT INTO sys_permission (perm_code, perm_name, module, sort, status, created_at, updated_at, created_by, updated_by) VALUES
 ('data:import:upload',   '文件上传',     '数据导入', 1, 1, NOW(), NOW(), 'system', 'system'),
 ('data:import:delete',   '删除导入数据', '数据导入', 2, 1, NOW(), NOW(), 'system', 'system'),
