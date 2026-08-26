@@ -139,7 +139,7 @@
     </sql>
 
     <select id="searchSimilarMaterials" resultMap="BaseResultMap">
-        SELECT cd.*, mdc.category_name
+        SELECT cd.*, mdc.category_name AS std_category_name
         FROM cleaned_data cd
         LEFT JOIN main_data_category mdc ON cd.category_id = mdc.id
         WHERE 1=1
@@ -160,7 +160,7 @@
     </select>
 
     <select id="searchByConditions" resultMap="BaseResultMap">
-        SELECT cd.*, mdc.category_name
+        SELECT cd.*, mdc.category_name AS std_category_name
         FROM cleaned_data cd
         LEFT JOIN main_data_category mdc ON cd.category_id = mdc.id
         LEFT JOIN temp_data td ON cd.temp_data_id = td.id

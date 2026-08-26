@@ -447,9 +447,12 @@ function resetOcUI() {
     $('#ocCleanError').textContent = '0';
 }
 
-// 步骤一：智能分类（数据清洗）
-function ocDoCleaning(titleId, ruleId, useAi) {
+// 步骤一：智能分类（数据清洗，固定 AI 分类）
+function ocDoCleaning(titleId, ruleId) {
     return new Promise((resolve, reject) => {
+        // 读取页面配置的每批条数（可空，后端用默认 batch-classify-size）
+        const batchSizeRaw = $('#batchSizeInput') && $('#batchSizeInput').value;
+        const batchSize = (batchSizeRaw && Number(batchSizeRaw) > 0) ? Number(batchSizeRaw) : '';
         let settled = false;
         let started = false; // 是否已观测到任务开始（避免复用历史 completed 状态误判）
         let timeout = null;
@@ -462,8 +465,8 @@ function ocDoCleaning(titleId, ruleId, useAi) {
             if (ok) resolve(); else reject(new Error(msg || '清洗失败'));
         };
 
-        // 启动清洗任务
-        fetch(API + `/cleaning/start?titleId=${titleId}&useAi=${useAi}`, { method: 'POST' })
+        // 启动清洗任务（固定 AI 分类，不再传 useAi 开关）
+        fetch(API + `/cleaning/start?titleId=${titleId}&batchSize=${batchSize}`, { method: 'POST' })
             .then(res => safeJson(res, '启动清洗'))
             .then(data => { if (data.code !== 200) throw new Error(data.msg); })
             .catch(e => finish(false, '清洗启动失败: ' + e.message));
@@ -699,11 +702,11 @@ async function runOneClickClean() {
     $('#ocStopBtn').disabled = false;
     resetOcUI();
 
-    // 启用 AI（「启用 AI」勾选）时，弹出全屏 AI 清洗特效动态图
-    const useAi = $('#ocUseAi') && $('#ocUseAi').checked;
+    // 固定 AI 分类：默认启用 AI 特效与进度卡片 AI 动效
+    const useAi = true;
     if (useAi) AiCleanOverlay.show();
 
-    // AI 介入（启用 AI 评分 或 AI 智能提取）时，整体进度卡片启动动态 AI 特效
+    // AI 介入（固定 AI 评分 或 AI 智能提取）时，整体进度卡片启动动态 AI 特效
     const ocAiInvolved = useAi || extractMode === 'ai';
     const ocProgressCard = $('#ocOverallFill') ? $('#ocOverallFill').closest('.card') : null;
     if (ocAiInvolved && ocProgressCard) AiFx.activate(ocProgressCard);
@@ -713,7 +716,7 @@ async function runOneClickClean() {
         // 步骤一：智能分类
         setOcStep('clean', 'running');
         setOcOverall(5, '正在执行：智能分类');
-        await ocDoCleaning(titleId, ruleId, useAi);
+        await ocDoCleaning(titleId, ruleId);
         setOcStep('clean', 'done');
         setOcOverall(35, '已完成：智能分类');
 
@@ -733,10 +736,8 @@ async function runOneClickClean() {
         showToast('一键数据清洗全部完成！');
         ocSuccess = true;
 
-        // 清洗完成：自动跳转到「智能分类」页，展示清洗记录
-        // 注：启用 AI 仅执行「智能分类（AI 分类）」，不再自动触发「AI 辅助分类检测」
+        // 清洗完成：自动跳转到「智能分类」页，展示清洗记录（清洗固定启用 AI 智能分类）
         ocPendingTitleId = titleId;
-        ocPendingAiCheck = false;
         switchPage('clean');
     } catch (e) {
         // 标记当前进行中的步骤为失败
@@ -1826,9 +1827,8 @@ async function loadCleanStats() {
     }
 }
 
-// 一键清洗完成后，切换到智能分类页时携带的上下文（待加载的文件与是否自动触发 AI 检测）
+// 一键清洗完成后，切换到智能分类页时携带的上下文（待加载的文件）
 let ocPendingTitleId = null;
-let ocPendingAiCheck = false;
 
 // 刷新智能分类页：加载下拉、统计，并展示已清洗记录与 AI 辅助评分
 async function refreshCleanPage() {
@@ -1837,6 +1837,9 @@ async function refreshCleanPage() {
     loadCleanStats();
     loadRulesForSelect('cleanRuleId');
     await loadTitlesForSelect('cleanTitleId');
+    // 回显批次分类每批条数默认值（与后端 app.ai.batch-classify-size 保持一致；用户可改）
+    const bsEl = document.getElementById('batchSizeInput');
+    if (bsEl && !bsEl.value) bsEl.value = '5';
     // 一键清洗完成后跳转到本页时，自动选中对应的数据文件
     if (ocPendingTitleId != null) {
         const ct = document.getElementById('cleanTitleId');
@@ -1845,13 +1848,7 @@ async function refreshCleanPage() {
     }
     const titleId = $('#cleanTitleId').value;
     if (titleId) loadCleanedRecords(titleId);
-    // 一键清洗若启用了 AI 辅助评分，自动触发 AI 辅助分类检测以展示逐条评分
-    if (ocPendingAiCheck) {
-        ocPendingAiCheck = false;
-        const cu = document.getElementById('cleanUseAi');
-        if (cu) cu.checked = true;
-        aiClassifyCheck();
-    }
+    // 清洗固定启用 AI 智能分类，无需再触发 AI 辅助分类检测
 }
 
 // 加载已清洗记录（按数据文件），并在智能分类页展示 AI 辅助评分结果
@@ -1872,7 +1869,7 @@ async function loadCleanedRecords(titleId) {
         renderCleanedRecords(list || []);
     } catch (e) {
         console.error('加载清洗结果记录失败:', e);
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">加载失败：' + (e && e.message ? e.message : e) + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="empty-hint">加载失败：' + (e && e.message ? e.message : e) + '</td></tr>';
     }
 }
 
@@ -1881,7 +1878,7 @@ function renderCleanedRecords(list) {
     const tbody = $('#cleanedRecordsTbody');
     const summary = $('#cleanedRecordsSummary');
     if (!list || list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无清洗结果记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="empty-hint">暂无清洗结果记录</td></tr>';
         if (summary) summary.textContent = '共 0 条';
         return;
     }
@@ -1892,18 +1889,32 @@ function renderCleanedRecords(list) {
         const score = d.qualityScore != null ? Number(d.qualityScore).toFixed(1) : '-';
         const scoreClass = d.qualityScore != null ? (d.qualityScore >= 80 ? 'badge-success' : d.qualityScore >= 60 ? 'badge-warning' : 'badge-danger') : '';
         const name = d.materialName ? (d.materialName.length > 24 ? d.materialName.substring(0, 24) + '…' : d.materialName) : '-';
-        const reason = d.aiReason ? d.aiReason : '-';
         const reasonCell = d.aiReason
             ? '<div class="reason-cell" title="' + escapeHtml(d.aiReason) + '">' + escapeHtml(d.aiReason) + '</div>'
             : '<span class="empty-hint">-</span>';
+        const startT = d.cleanStartTime ? fmtLocalTime(d.cleanStartTime) : '-';
+        const endT = d.cleanEndTime ? fmtLocalTime(d.cleanEndTime) : '-';
+        // 原始数据查看按钮
+        const viewBtn = '<button class="btn btn-xs btn-outline" onclick="viewCleanedSource(' + d.tempDataId + ',' + d.id + ')">查看</button>';
+        // 分类名称（单击可编辑）+ 分类编码
+        const catNameCell = '<span class="cat-edit" title="单击修改分类（搜索选择标准分类）" onclick="openCategoryEditor(' + d.id + ', this)">' +
+            escapeHtml(d.categoryName || '-') + '</span>';
+        // 备注（可编辑）
+        const remark = d.reviewComment || '';
+        const remarkCell = '<span class="cat-remark" title="点击修改备注" onclick="editCleanedRemark(' + d.id + ', this)">' +
+            (remark ? escapeHtml(remark) : '<span class="empty-hint">-</span>') + '</span>';
         html += '<tr>' +
             '<td>' + idx + '</td>' +
+            '<td>' + viewBtn + '</td>' +
             '<td>' + (d.materialCode || '-') + '</td>' +
             '<td title="' + (d.materialName || '') + '">' + name + '</td>' +
-            '<td>' + (d.categoryName || '-') + '</td>' +
+            '<td>' + catNameCell + '</td>' +
             '<td>' + (d.categoryCode || '-') + '</td>' +
             '<td><span class="badge ' + scoreClass + '">' + score + '</span></td>' +
+            '<td>' + remarkCell + '</td>' +
             '<td>' + reasonCell + '</td>' +
+            '<td>' + startT + '</td>' +
+            '<td>' + endT + '</td>' +
             '<td>' + statusBadge(statusCleanText(d.status)) + '</td>' +
         '</tr>';
         if (d.qualityScore != null) { sum += d.qualityScore; scored++; }
@@ -1911,6 +1922,127 @@ function renderCleanedRecords(list) {
     tbody.innerHTML = html;
     const avg = scored ? (sum / scored).toFixed(1) : '-';
     if (summary) summary.textContent = '共 ' + list.length + ' 条 ｜ 平均 AI 辅助评分 ' + avg;
+}
+
+// ==================== 智能分类人工修正 ====================
+
+/** 查看清洗数据的原始数据 */
+function viewCleanedSource(tempDataId, cleanedDataId) {
+    if (!tempDataId) { showToast('该记录没有关联的原始数据', 'warning'); return; }
+    viewSourceData(tempDataId);
+}
+
+/** 编辑备注（修改原因） */
+async function editCleanedRemark(id, el) {
+    const cur = el.innerText === '-' ? '' : el.innerText;
+    const remark = prompt('请输入备注（修改原因）：', cur);
+    if (remark === null) return;
+    await saveCleanedCategory(id, null, null, remark, el);
+}
+
+/** 保存单条分类修正（可只改分类、只改备注、或都改）；状态自动置为已修改 */
+async function saveCleanedCategory(id, categoryCode, categoryName, remark, el) {
+    try {
+        const params = new URLSearchParams();
+        if (categoryCode != null && categoryCode !== '') params.append('categoryCode', categoryCode);
+        if (categoryName != null && categoryName !== '') params.append('categoryName', categoryName);
+        if (remark != null && remark !== '') params.append('remark', remark);
+        const url = '/cleaning/cleaned-data/' + id + (params.toString() ? '?' + params.toString() : '');
+        // 使用统一 api()：自动携带登录 Token，并统一判断 data.code，避免裸 fetch 缺鉴权导致保存失败
+        const res = await api(url, { method: 'PUT' });
+        if (!res) throw new Error('保存失败：无返回');
+        showToast('已保存，状态改为已修改', 'success');
+        const titleId = $('#cleanTitleId').value;
+        if (titleId) loadCleanedRecords(titleId);
+    } catch (e) {
+        showToast('保存失败：' + e.message, 'error');
+    }
+}
+
+/** 打开分类名称编辑框：搜索下拉模糊匹配名称/编码，选择后保存（可同时填写修改原因备注） */
+function openCategoryEditor(id, el) {
+    const curName = el.innerText === '-' ? '' : el.innerText;
+    const row = el.closest('tr');
+    // 从当前行取：分类编码、备注、物料名（供搜索参考）
+    const cells = row ? row.querySelectorAll('td') : [];
+    const curCode = cells.length > 5 ? cells[5].innerText.trim() : '';
+    const curRemark = cells.length > 7 ? (cells[7].innerText === '-' ? '' : cells[7].innerText.trim()) : '';
+
+    let html = '<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">在下方搜索并选择标准分类，或填写备注后保存；当前分类：' +
+        escapeHtml(curName) + '（' + escapeHtml(curCode) + '）</p>';
+    html += '<input id="catSearchInput" class="form-input" placeholder="输入分类名称或分类代码进行模糊搜索…" value="' + escapeHtml(curName) + '" oninput="onCatSearchInput(this.value)"/>';
+    html += '<div id="catSearchResult" style="max-height:240px;overflow-y:auto;border:1px solid var(--border,#ddd);border-radius:6px;margin-top:8px">' +
+        '<p style="padding:12px;color:var(--text-secondary);font-size:13px">输入关键词后列出候选分类</p></div>';
+    html += '<div style="margin-top:10px"><label style="font-size:12px;color:var(--text-secondary)">备注（修改原因）：</label>' +
+        '<textarea id="catRemarkInput" class="form-input" style="min-height:48px;margin-top:4px" placeholder="填写本次修改的原因，便于追溯">' + escapeHtml(curRemark) + '</textarea></div>';
+    html += '<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">' +
+        '<button class="btn btn-outline" onclick="closeModal()">取消</button>' +
+        '<button class="btn btn-primary" id="catSaveBtn" onclick="saveSelectedCategory(' + id + ')">保存修改</button></div>';
+
+    showModal('修改分类', html);
+    // 重置已选分类
+    window.__catSelCode = null;
+    window.__catSelName = null;
+    // 初始加载候选（默认按当前分类名搜索）
+    onCatSearchInput(curName);
+}
+
+/** 分类搜索输入实时触发 */
+let _catSearchTimer = null;
+async function onCatSearchInput(kw) {
+    clearTimeout(_catSearchTimer);
+    _catSearchTimer = setTimeout(async () => {
+        const box = $('#catSearchResult');
+        if (!box) return;
+        if (!kw || !kw.trim()) {
+            box.innerHTML = '<p style="padding:12px;color:var(--text-secondary);font-size:13px">输入关键词后列出候选分类</p>';
+            return;
+        }
+        try {
+            const res = await api('/cleaning/category-search?keyword=' + encodeURIComponent(kw.trim()) + '&limit=20');
+            // 注意：api() 已解包返回 data 本体（此处即为分类数组），不能用 res.data（会是 undefined，导致搜索结果永远为空）
+            const list = res || [];
+            if (list.length === 0) {
+                box.innerHTML = '<p style="padding:12px;color:var(--text-secondary);font-size:13px">未找到匹配的标准分类</p>';
+                return;
+            }
+            box.innerHTML = list.map(c => {
+                const selected = (c.categoryCode === window.__catSelCode ? ' style="background:var(--accent);color:#fff"' : '');
+                return '<div class="cat-search-item" data-code="' + escapeHtml(c.categoryCode) + '" data-name="' + escapeHtml(c.categoryName) + '" ' +
+                    'onclick="selectCatItem(this)" ' + selected + '>' +
+                    '<span class="cat-code">' + escapeHtml(c.categoryCode) + '</span>' +
+                    '<span class="cat-name">' + escapeHtml(c.categoryName) + '</span>' +
+                    '<span class="cat-path">' + escapeHtml(c.categoryFullPath || '') + '</span></div>';
+            }).join('');
+        } catch (e) {
+            box.innerHTML = '<p style="padding:12px;color:var(--danger);font-size:13px">搜索失败：' + e.message + '</p>';
+        }
+    }, 300);
+}
+
+/** 选中一条候选分类 */
+function selectCatItem(el) {
+    window.__catSelCode = el.getAttribute('data-code');
+    window.__catSelName = el.getAttribute('data-name');
+    $$('#catSearchResult .cat-search-item').forEach(x => x.style.background = '');
+    el.style.background = 'var(--accent)';
+    el.style.color = '#fff';
+    // 把输入框内容同步为已选分类，避免后续输入重渲染冲掉选中态
+    const input = $('#catSearchInput');
+    if (input) input.value = (window.__catSelCode || '') + ' ' + (window.__catSelName || '');
+    const box = $('#catSearchResult');
+    if (box) box.innerHTML = '<p style="padding:10px;color:var(--accent);font-size:13px">已选择：' +
+        escapeHtml(window.__catSelCode || '') + ' ' + escapeHtml(window.__catSelName || '') + '（可再次输入关键词重新搜索）</p>';
+}
+
+/** 保存选中的分类（若无选择分类则仅保存备注/不改变分类） */
+async function saveSelectedCategory(id) {
+    const code = window.__catSelCode || null;
+    const name = window.__catSelName || null;
+    const remarkInput = $('#catRemarkInput');
+    const remark = remarkInput ? remarkInput.value : null;
+    await saveCleanedCategory(id, code, name, remark);
+    closeModal();
 }
 
 // 智能分类页切换数据文件时联动加载已清洗记录
@@ -1922,13 +2054,15 @@ function onCleanTitleChange() {
 async function startCleaning() {
     const titleId = $('#cleanTitleId').value;
     if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
-    const useAi = $('#cleanUseAi') && $('#cleanUseAi').checked;
+    // 清洗逻辑固定启用 AI 智能分类（待分类数据 + top-K 相关标准分类交由大模型识别并给出理由）
+    const useAi = true;
+    // 读取页面配置的每批条数（可空，后端用默认 batch-classify-size）
+    const batchSizeRaw = $('#batchSizeInput').value;
+    const batchSize = (batchSizeRaw && Number(batchSizeRaw) > 0) ? Number(batchSizeRaw) : '';
 
-    // AI 介入时启动动态 AI 特效（纯规则清洗不触发，保持克制）
-    if (useAi) {
-        const clCard = document.getElementById('cleanLiveCard');
-        if (clCard) AiFx.activate(clCard);
-    }
+    // AI 介入时启动动态 AI 特效
+    const clCard = document.getElementById('cleanLiveCard');
+    if (clCard) AiFx.activate(clCard);
 
     // 断开之前的连接
     disconnectWebSocket();
@@ -1941,7 +2075,6 @@ async function startCleaning() {
     $('#liveTotal').textContent = '0';
     $('#liveSuccess').textContent = '0';
     $('#liveError').textContent = '0';
-        $('#cleanLiveTbody').innerHTML = '<tr><td colspan="7" class="empty-hint">连接中…</td></tr>';
     $('#cleanStatus').style.display = 'block';
     $('#cleanStatus').innerHTML = '<p style="font-size:13px;color:var(--text-secondary)">正在连接清洗服务…</p>';
 
@@ -1949,7 +2082,7 @@ async function startCleaning() {
     connectWebSocket(titleId, function connected() {
         // WebSocket 连接成功后，调用清洗 API
         $('#cleanStatus').innerHTML = '<p style="font-size:13px;color:var(--accent)">清洗任务已启动，正在处理…</p>';
-        fetch(API + `/cleaning/start?titleId=${titleId}&useAi=${useAi}`, { method: 'POST' })
+        fetch(API + `/cleaning/start?titleId=${titleId}&batchSize=${batchSize}`, { method: 'POST' })
             .then(res => safeJson(res, '启动清洗'))
             .then(data => {
                 if (data.code !== 200) throw new Error(data.msg);
@@ -1959,342 +2092,6 @@ async function startCleaning() {
                 showToast('清洗启动失败: ' + e.message, 'error');
             });
     });
-}
-
-// AI 辅助分类检测：将已清洗数据的分类结果与 main_data_category 标准库比对，给出评分
-// 改为异步 + WebSocket 进度推送：检测过程中实时显示进度条、统计与逐条明细，避免同步阻塞导致页面无响应。
-let aiCheckStompClient = null;
-let aiCheckSubscription = null;
-let aiCheckAccum = null;
-
-async function aiClassifyCheck() {
-    const titleId = $('#cleanTitleId').value;
-    if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
-    const useAi = $('#cleanUseAi') && $('#cleanUseAi').checked;
-    const btn = document.getElementById('aiCheckBtn');
-    if (btn) { btn.disabled = true; btn.textContent = '检测中…'; }
-
-    // 重置累计状态
-    aiCheckAccum = { details: [], total: 0, matched: 0, mismatch: 0, sum: 0 };
-
-    // 展示卡片与进度区
-    $('#aiCheckCard').style.display = 'block';
-    $('#aiCheckProgressCard').style.display = 'block';
-    $('#aiCheckFill').style.width = '0%';
-    $('#aiCheckFill').textContent = '0%';
-    $('#aiCheckCurrent').textContent = '0';
-    $('#aiCheckTotal').textContent = '0';
-    $('#aiCheckMatched').textContent = '0';
-    $('#aiCheckMismatch').textContent = '0';
-    $('#aiCheckStatus').textContent = '正在连接检测服务…';
-    $('#aiCheckSummary').textContent = '';
-    $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">检测中，请稍候…</td></tr>';
-
-    // 启动动态 AI 特效
-    const aiCheckCardEl = document.getElementById('aiCheckCard');
-    if (aiCheckCardEl) AiFx.activate(aiCheckCardEl);
-
-    const bb = document.getElementById('batchApplyBtn');
-    if (bb) bb.style.display = 'none';
-
-    // 建立 WebSocket 连接，连接成功后启动异步检测任务
-    disconnectAiCheckWebSocket();
-    const socket = new SockJS('/ws-cleaning');
-    aiCheckStompClient = Stomp.over(socket);
-    aiCheckStompClient.debug = null;
-    aiCheckStompClient.connect({}, function () {
-        aiCheckSubscription = aiCheckStompClient.subscribe('/topic/ai-classify-check/' + titleId, function (message) {
-            handleAiCheckMessage(JSON.parse(message.body));
-        });
-        fetch(API + `/cleaning/ai-classify-check-async?titleId=${titleId}&useAi=${useAi}`, { method: 'POST' })
-            .then(res => safeJson(res, 'AI 分类检测'))
-            .then(data => {
-                if (data.code !== 200) throw new Error(data.msg || '启动失败');
-                $('#aiCheckStatus').textContent = '检测任务已启动，正在处理…';
-            })
-            .catch(e => {
-                $('#aiCheckStatus').textContent = '启动失败: ' + e.message;
-                showToast('检测启动失败: ' + e.message, 'error');
-                if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
-            });
-    }, function (error) {
-        $('#aiCheckStatus').textContent = '实时连接失败，无法显示进度';
-        showToast('实时连接失败，无法显示进度', 'error');
-        if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
-    });
-}
-
-// 处理 AI 分类检测的 WebSocket 进度消息
-function handleAiCheckMessage(msg) {
-    const type = msg.type;
-    const aiCheckCardEl = document.getElementById('aiCheckCard');
-    const total = msg.total || 0;
-    const current = msg.current || 0;
-    const percent = msg.progressPercent || 0;
-    const btn = document.getElementById('aiCheckBtn');
-
-    if (type === 'start') {
-        aiCheckAccum.total = total;
-        $('#aiCheckTotal').textContent = total;
-        $('#aiCheckFill').style.width = '0%';
-        $('#aiCheckFill').textContent = '0%';
-        $('#aiCheckStatus').textContent = '检测开始，共 ' + total + ' 条数据';
-        $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">检测中，请稍候…</td></tr>';
-        return;
-    }
-
-    if (type === 'progress') {
-        const d = msg.detail;
-        if (d) {
-            aiCheckAccum.details.push(d);
-            if (d.matched) aiCheckAccum.matched++; else aiCheckAccum.mismatch++;
-            aiCheckAccum.sum += (d.score != null ? d.score : 0);
-            appendAiCheckRow(aiCheckAccum.details.length, d);
-        }
-        $('#aiCheckFill').style.width = percent + '%';
-        $('#aiCheckFill').textContent = percent + '%';
-        $('#aiCheckCurrent').textContent = current;
-        $('#aiCheckTotal').textContent = total;
-        $('#aiCheckMatched').textContent = aiCheckAccum.matched;
-        $('#aiCheckMismatch').textContent = aiCheckAccum.mismatch;
-        $('#aiCheckStatus').textContent = '检测中… ' + current + '/' + total + ' (一致 ' + aiCheckAccum.matched + ', 不一致 ' + aiCheckAccum.mismatch + ')';
-        return;
-    }
-
-    if (type === 'complete') {
-        const total2 = msg.total != null ? msg.total : aiCheckAccum.total;
-        const matched2 = msg.matchedCount != null ? msg.matchedCount : aiCheckAccum.matched;
-        const mismatch2 = msg.mismatchCount != null ? msg.mismatchCount : aiCheckAccum.mismatch;
-        const avg = msg.avgScore != null ? Number(msg.avgScore).toFixed(1)
-            : (aiCheckAccum.total ? (aiCheckAccum.sum / aiCheckAccum.total).toFixed(1) : '-');
-        $('#aiCheckFill').style.width = '100%';
-        $('#aiCheckFill').textContent = '100%';
-        $('#aiCheckCurrent').textContent = total2;
-        $('#aiCheckMatched').textContent = matched2;
-        $('#aiCheckMismatch').textContent = mismatch2;
-
-        if (msg.message) {
-            $('#aiCheckStatus').textContent = msg.message;
-            $('#aiCheckSummary').textContent = msg.message;
-            $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">暂无数据</td></tr>';
-            if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
-            if (aiCheckCardEl && aiCheckCardEl.classList.contains('ai-active')) AiFx.deactivate(aiCheckCardEl);
-            // 检测完成后自动刷新智能分类界面记录列表
-            const ctId = $('#cleanTitleId').value;
-            if (ctId) loadCleanedRecords(ctId);
-            setTimeout(disconnectAiCheckWebSocket, 2000);
-            showToast(msg.message, 'warning');
-            return;
-        }
-
-        $('#aiCheckStatus').textContent = '检测完成，共 ' + total2 + ' 条';
-        // 用累计明细组装完整结果并渲染（保持 apply/batch 所需的 lastAiCheckData 一致）
-        const data = {
-            total: total2,
-            avgScore: avg,
-            matchedCount: matched2,
-            mismatchCount: mismatch2,
-            useAi: msg.useAi,
-            details: aiCheckAccum.details
-        };
-        lastAiCheckData = data;
-        renderAiCheck(data);
-        showToast('检测完成', 'success');
-        if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
-        if (aiCheckCardEl && aiCheckCardEl.classList.contains('ai-active')) AiFx.deactivate(aiCheckCardEl);
-        // AI 辅助分类检测完成后自动刷新智能分类界面（清洗结果记录含最新评分与理由）
-        const ctId = $('#cleanTitleId').value;
-        if (ctId) loadCleanedRecords(ctId);
-        setTimeout(disconnectAiCheckWebSocket, 2000);
-        return;
-    }
-
-    if (type === 'error') {
-        $('#aiCheckStatus').textContent = '检测异常终止: ' + (msg.message || '');
-        $('#aiCheckSummary').textContent = '检测异常终止: ' + (msg.message || '');
-        showToast('检测异常终止', 'error');
-        if (btn) { btn.disabled = false; btn.textContent = 'AI 辅助分类检测'; }
-        if (aiCheckCardEl && aiCheckCardEl.classList.contains('ai-active')) AiFx.deactivate(aiCheckCardEl);
-        setTimeout(disconnectAiCheckWebSocket, 2000);
-    }
-}
-
-// 向 AI 分类检测明细表追加一行（与 renderAiCheck 的渲染逻辑保持一致）
-function appendAiCheckRow(index, d) {
-    const tbody = $('#aiCheckTbody');
-    if (tbody.firstElementChild && tbody.firstElementChild.querySelector('.empty-hint')) {
-        tbody.innerHTML = '';
-    }
-    const tr = document.createElement('tr');
-    tr.setAttribute('data-detail-id', d.id);
-    const score = d.score != null ? Number(d.score).toFixed(1) : '-';
-    const scoreClass = d.score != null ? (d.score >= 80 ? 'badge-success' : d.score >= 60 ? 'badge-warning' : 'badge-danger') : '';
-    const matchedBadge = d.matched
-        ? '<span class="badge badge-success">一致</span>'
-        : '<span class="badge badge-danger">不一致</span>';
-    const sysCat = [d.categoryCode, d.categoryName].filter(Boolean).join(' / ');
-    const suggest = (d.matched || !d.bestMatchCode) ? '-' : `<strong>${d.bestMatchCode}</strong>${d.bestMatchName ? '（' + d.bestMatchName + '）' : ''}`;
-    const actionTd = (d.matched || !d.bestMatchCode)
-        ? ''
-        : `<button class="btn btn-sm btn-primary" onclick="applyClassifyFix(${d.id}, '${d.bestMatchCode}')">应用</button>`;
-    tr.innerHTML =
-        '<td>' + (d.materialCode || '-') + '</td>' +
-        '<td>' + (d.materialName || '-') + '</td>' +
-        '<td>' + (sysCat || '-') + '</td>' +
-        '<td><span class="badge ' + scoreClass + '">' + score + '</span></td>' +
-        '<td>' + matchedBadge + '</td>' +
-        '<td>' + suggest + '</td>' +
-        '<td style="font-size:12px">' + (d.reason || '-') + '</td>' +
-        '<td>' + actionTd + '</td>';
-    tbody.appendChild(tr);
-}
-
-// 断开 AI 分类检测的 WebSocket 连接
-function disconnectAiCheckWebSocket() {
-    if (aiCheckSubscription) {
-        try { aiCheckSubscription.unsubscribe(); } catch (e) {}
-        aiCheckSubscription = null;
-    }
-    if (aiCheckStompClient) {
-        try { aiCheckStompClient.disconnect(); } catch (e) {}
-        aiCheckStompClient = null;
-    }
-}
-
-let lastAiCheckData = null;
-
-function renderAiCheck(d) {
-    lastAiCheckData = d;
-    $('#aiCheckCard').style.display = 'block';
-    const total = d.total || 0;
-    const avg = d.avgScore != null ? Number(d.avgScore).toFixed(1) : '-';
-    const matched = d.matchedCount || 0;
-    const mismatch = d.mismatchCount || 0;
-    const mode = d.useAi ? 'AI 大模型比对' : '规则校验（未启用 AI）';
-    if (d.message) {
-        $('#aiCheckSummary').textContent = d.message;
-        $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">暂无数据</td></tr>';
-        return;
-    }
-    $('#aiCheckSummary').innerHTML =
-        `共 <strong>${total}</strong> 条 ｜ 平均评分 <strong>${avg}</strong> ｜ 一致 <strong style="color:var(--success)">${matched}</strong> ｜ 不一致 <strong style="color:var(--danger)">${mismatch}</strong> ｜ 模式：${mode}`;
-
-    const details = d.details || [];
-    if (!details.length) {
-        $('#aiCheckTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">暂无明细</td></tr>';
-        return;
-    }
-    let html = '';
-    for (const r of details) {
-        const score = r.score != null ? Number(r.score).toFixed(1) : '-';
-        const scoreClass = r.score != null ? (r.score >= 80 ? 'badge-success' : r.score >= 60 ? 'badge-warning' : 'badge-danger') : '';
-        const matchedBadge = r.matched
-            ? '<span class="badge badge-success">一致</span>'
-            : '<span class="badge badge-danger">不一致</span>';
-        const sysCat = [r.categoryCode, r.categoryName].filter(Boolean).join(' / ');
-        const suggest = (r.matched || !r.bestMatchCode) ? '-' : `<strong>${r.bestMatchCode}</strong>${r.bestMatchName ? '（' + r.bestMatchName + '）' : ''}`;
-        // 仅“不一致且有推荐编码”的行显示「应用」按钮
-        const actionTd = (r.matched || !r.bestMatchCode)
-            ? ''
-            : `<button class="btn btn-sm btn-primary" onclick="applyClassifyFix(${r.id}, '${r.bestMatchCode}')">应用</button>`;
-        html += `<tr data-detail-id="${r.id}">
-            <td>${r.materialCode || '-'}</td>
-            <td>${r.materialName || '-'}</td>
-            <td>${sysCat || '-'}</td>
-            <td><span class="badge ${scoreClass}">${score}</span></td>
-            <td>${matchedBadge}</td>
-            <td>${suggest}</td>
-            <td style="font-size:12px">${r.reason || '-'}</td>
-            <td>${actionTd}</td>
-        </tr>`;
-    }
-    $('#aiCheckTbody').innerHTML = html;
-    // 存在“不一致且有推荐编码”的行时显示批量应用按钮
-    const hasFixable = details.some(r => !r.matched && r.bestMatchCode);
-    const bb = document.getElementById('batchApplyBtn');
-    if (bb) bb.style.display = hasFixable ? 'inline-block' : 'none';
-}
-
-// 应用推荐编码：替换错误分类并保存，成功后局部刷新该行与汇总
-function applyClassifyFix(id, code) {
-    if (!window.confirm(`确认将分类替换为推荐编码 ${code}？`)) return;
-    fetch(API + `/cleaning/apply-classify-fix?id=${id}&targetCode=${encodeURIComponent(code)}`, { method: 'POST' })
-        .then(res => safeJson(res, '应用分类修正'))
-        .then(data => {
-            if (data.code !== 200) throw new Error(data.msg || '应用失败');
-            showToast('已应用推荐编码 ' + code, 'success');
-            const d = data.data || {};
-            // 更新本地明细并重新渲染（保持汇总计数正确）
-            const det = (lastAiCheckData && lastAiCheckData.details || []).find(x => x.id === id);
-            if (det) {
-                det.matched = true;
-                det.score = d.score;
-                det.categoryCode = d.categoryCode;
-                det.categoryName = d.categoryName;
-                det.bestMatchCode = null;
-                det.bestMatchName = null;
-                det.reason = '已应用推荐编码 ' + code;
-            }
-            recomputeAiCheckSummary(lastAiCheckData);
-            renderAiCheck(lastAiCheckData);
-        })
-        .catch(e => showToast('应用失败: ' + e.message, 'error'));
-}
-
-// 批量应用全部建议：将当前检测结果中所有“不一致且有推荐编码”的行一次性替换并保存
-function batchApplyClassifyFix() {
-    if (!lastAiCheckData || !lastAiCheckData.details) return;
-    const items = lastAiCheckData.details
-        .filter(r => !r.matched && r.bestMatchCode)
-        .map(r => ({ id: r.id, code: r.bestMatchCode }));
-    if (!items.length) { showToast('没有可应用的建议', 'warning'); return; }
-    const titleId = $('#cleanTitleId').value;
-    if (!titleId) { showToast('请选择数据文件', 'warning'); return; }
-    if (!window.confirm(`确认批量应用 ${items.length} 条推荐编码？`)) return;
-    fetch(API + `/cleaning/apply-classify-fix-batch?titleId=${encodeURIComponent(titleId)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(items)
-    })
-        .then(res => safeJson(res, '批量应用分类修正'))
-        .then(data => {
-            if (data.code !== 200) throw new Error(data.msg || '批量应用失败');
-            const d = data.data || {};
-            showToast(`已应用 ${d.applied} 条，跳过 ${d.skipped} 条，失败 ${d.failed} 条`, d.failed > 0 ? 'warning' : 'success');
-            // 用返回结果更新本地明细并重新渲染
-            const map = {};
-            (d.items || []).forEach(it => { if (it.id != null) map[it.id] = it; });
-            (lastAiCheckData.details || []).forEach(r => {
-                const it = map[r.id];
-                if (it && !it.error) {
-                    r.matched = true;
-                    r.score = it.score;
-                    r.categoryCode = it.categoryCode;
-                    r.categoryName = it.categoryName;
-                    r.bestMatchCode = null;
-                    r.bestMatchName = null;
-                    r.reason = '已应用推荐编码 ' + (it.categoryCode || '');
-                }
-            });
-            recomputeAiCheckSummary(lastAiCheckData);
-            renderAiCheck(lastAiCheckData);
-        })
-        .catch(e => showToast('批量应用失败: ' + e.message, 'error'));
-}
-
-// 依据 details 重新计算汇总（总数/平均分/一致数/不一致数）
-function recomputeAiCheckSummary(d) {
-    if (!d) return;
-    const details = d.details || [];
-    let sum = 0, matched = 0, mismatch = 0;
-    for (const r of details) {
-        sum += (r.score != null ? r.score : 0);
-        if (r.matched) matched++; else mismatch++;
-    }
-    d.total = details.length;
-    d.avgScore = details.length ? Math.round(sum / details.length * 10) / 10.0 : 0;
-    d.matchedCount = matched;
-    d.mismatchCount = mismatch;
 }
 
 function connectWebSocket(titleId, onConnected) {
@@ -2313,7 +2110,6 @@ function connectWebSocket(titleId, onConnected) {
         console.error('WebSocket 连接失败:', error);
         // WebSocket 连接失败降级为轮询模式
         $('#cleanStatus').innerHTML = '<p style="color:var(--warning);font-size:13px">实时连接失败，使用轮询模式</p>';
-        $('#cleanLiveTbody').innerHTML = '<tr><td colspan="7" class="empty-hint">实时连接失败，清洗在后台进行中…</td></tr>';
         // 仍然触发回调以启动清洗
         if (onConnected) onConnected();
     });
@@ -2350,13 +2146,7 @@ function handleCleaningMessage(msg) {
 
     if (type === 'start') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--accent);font-size:13px">清洗开始，共 ' + total + ' 条数据</p>';
-        $('#cleanLiveTbody').innerHTML = '';
     } else if (type === 'progress') {
-        // 追加一行清洗结果
-        const rowData = msg.data;
-        if (rowData) {
-            appendCleanRow(current, rowData);
-        }
         $('#cleanStatus').innerHTML = '<p style="color:var(--accent);font-size:13px">清洗中… ' + current + '/' + total + ' (成功 ' + success + ', 失败 ' + error + ')</p>';
     } else if (type === 'complete') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--success);font-size:13px">清洗完成，共处理 ' + total + ' 条 (成功 ' + success + ', 失败 ' + error + ')</p>';
@@ -2382,35 +2172,11 @@ function handleCleaningMessage(msg) {
     }
 }
 
-function appendCleanRow(index, data) {
-    const tbody = $('#cleanLiveTbody');
-    // 移除空提示行
-    if (tbody.firstElementChild && tbody.firstElementChild.querySelector('.empty-hint')) {
-        tbody.innerHTML = '';
-    }
-
-    const tr = document.createElement('tr');
-    const score = data.qualityScore != null ? data.qualityScore.toFixed(1) : '-';
-    const statusText = statusCleanText(data.status);
-    const scoreClass = data.qualityScore != null ? (data.qualityScore >= 80 ? 'badge-success' : data.qualityScore >= 60 ? 'badge-warning' : 'badge-danger') : '';
-
-    tr.innerHTML = 
-        '<td>' + index + '</td>' +
-        '<td>' + (data.materialCode || '-') + '</td>' +
-        '<td title="' + (data.materialName || '') + '">' + (data.materialName ? (data.materialName.length > 20 ? data.materialName.substring(0, 20) + '...' : data.materialName) : '-') + '</td>' +
-        '<td>' + (data.categoryName || '-') + '</td>' +
-        '<td>' + (data.categoryCode || '-') + '</td>' +
-        '<td><span class="badge ' + scoreClass + '">' + score + '</span></td>' +
-        '<td>' + statusBadge(statusText) + '</td>';
-
-    // 最新数据插到顶部
-    tbody.insertBefore(tr, tbody.firstChild);
-}
-
 function statusCleanText(status) {
     const map = {
-        'EXPORT_READY': '可导出', 'APPROVED': '已审核',
-        'NEEDS_REVIEW': '待审核', 'PROCESSED': '已处理',
+        'EXPORT_READY': '已审核', 'APPROVED': '已审核',
+        'NEEDS_REVIEW': '待审核', 'REVIEWING': '审核中',
+        'MODIFIED': '已修改', 'PROCESSED': '已处理',
         'REJECTED': '已驳回', 'DRAFT': '草稿'
     };
     return map[status] || status || '-';
@@ -2970,6 +2736,15 @@ function escapeHtml(str) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+// 格式化后端返回的 LocalDateTime（形如 2026-08-25T10:00:00 / 带毫秒 / 带时区）为 2026-08-25 10:00:00
+function fmtLocalTime(s) {
+    if (!s) return '-';
+    s = String(s).replace('T', ' ');
+    // 去掉可能的毫秒与时区后缀
+    s = s.replace(/\.\d+/, '').replace(/[Zz]$/, '').replace(/[+\-]\d{2}:?\d{2}$/, '');
+    return s;
 }
 
 function renderFailedResults(list) {
@@ -5291,32 +5066,6 @@ async function buildClassifyContextPrompt() {
 // 与后端 AiChatController.DEFAULT_SYSTEM_PROMPT 保持一致
 const AI_CHAT_SYSTEM_PROMPT = '你是一名专业的数据清洗分析助手，帮助用户解读数据统计看板中的指标、失败原因与分类匹配情况，用简洁、可操作的中文给出分析与建议。';
 
-// 带超时的「AI 辅助分类检测」调用（useAi=true 触发 AI 识别）。
-// 该检测可能逐行调用大模型，耗时较长，故设置客户端超时，避免聊天长时间挂起。
-async function classifyCheckWithTimeout(titleId, timeoutMs = 180000) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-        const headers = { 'Content-Type': 'application/json' };
-        const token = getToken();
-        if (token) headers['Authorization'] = 'Bearer ' + token;
-        const res = await fetch(API + `/cleaning/ai-classify-check?titleId=${titleId}&useAi=true`, {
-            method: 'POST',
-            headers,
-            signal: ctrl.signal,
-        });
-        if (res.status === 401) { redirectToLogin(); throw new Error('登录已过期，请重新登录'); }
-        const text = await res.text();
-        if (!text || !text.trim()) throw new Error('分类检测未返回数据，可能请求超时');
-        const data = JSON.parse(text);
-        if (data.code === 401) { redirectToLogin(); throw new Error(data.msg || '登录已过期'); }
-        if (data.code !== 200) throw new Error(data.msg || '分类检测失败');
-        return data.data;
-    } finally {
-        clearTimeout(timer);
-    }
-}
-
 // 从用户输入中识别"某段文字属于哪一类"的意图，返回待分类的文字（无法识别则返回 null）。
 // 支持：① "XXX属于/是/归到/归入哪类/哪个分类"；② "分类/归类/识别分类：XXX"。
 function extractClassifyText(text) {
@@ -5360,7 +5109,7 @@ async function classifyTextWithTimeout(text, timeoutMs = 180000) {
         const headers = { 'Content-Type': 'application/json' };
         const token = getToken();
         if (token) headers['Authorization'] = 'Bearer ' + token;
-        const url = API + '/cleaning/classify-text?text=' + encodeURIComponent(text) + '&useAi=true';
+        const url = API + '/cleaning/classify-text?text=' + encodeURIComponent(text);
         const res = await fetch(url, { method: 'POST', headers, signal: ctrl.signal });
         if (res.status === 401) { redirectToLogin(); throw new Error('登录已过期，请重新登录'); }
         const body = await res.text();

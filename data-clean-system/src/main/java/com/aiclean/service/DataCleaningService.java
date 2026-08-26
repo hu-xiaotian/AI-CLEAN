@@ -34,27 +34,23 @@ public interface DataCleaningService {
     String startAiExtract(Long titleId, String customName);
     Map<String, Object> getAiExtractProgress(Long titleId);
 
-    // ===== 分类匹配 =====
-    CleanedDataEntity matchAndClean(Long tempDataId, Long extraDataTitleId, Long parseRuleId, Boolean useAi);
+    // ===== 分类匹配（固定 AI 分类，无规则分类开关） =====
+    CleanedDataEntity matchAndClean(Long tempDataId, Long extraDataTitleId, Long parseRuleId);
 
-    // ===== AI 辅助分类检测（基于 main_data_category 标准库比对）=====
-    Map<String, Object> aiClassifyCheck(Long titleId, Boolean useAi);
-    /** 文本分类识别：复用 AI 辅助分类检测逻辑，对一段物料描述文字进行 AI 识别，返回推荐分类/编码/理由 */
-    Map<String, Object> classifyText(String text, Boolean useAi);
-    /** 异步执行 AI 辅助分类检测，通过 WebSocket 主题 /topic/ai-classify-check/{titleId} 实时推送进度与明细 */
-    String aiClassifyCheckAsync(Long titleId, Boolean useAi);
+    // ===== 文本分类识别（供 AI 聊天使用）：对一段物料描述文字进行 AI 识别，返回推荐分类/编码/理由 =====
+    Map<String, Object> classifyText(String text);
 
-    // ===== 应用分类修正：将清洗数据的分类替换为推荐的标准编码并保存 =====
-    Map<String, Object> applyClassifyFix(Long id, String targetCode);
-
-    // ===== 批量应用分类修正：对一组 {id, code} 逐条替换并保存 =====
-    Map<String, Object> applyClassifyFixBatch(Long titleId, List<Map<String, Object>> items);
-
-    // ===== 数据清洗 =====
-    String startCleaning(Long titleId, Long parseRuleId, Boolean useAi);
+    // ===== 数据清洗（固定 AI 分类，无 useAi 开关） =====
+    String startCleaning(Long titleId, Long parseRuleId, Integer batchSize);
     Map<String, Object> getCleaningProgress(Long titleId);
     void stopCleaning(Long titleId);
     CleanedDataEntity recleanData(Long cleanedDataId);
+
+    // ===== 智能分类人工修正 =====
+    /** 修改单条清洗数据的分类（重新匹配标准库三级）与备注，状态置为已修改；分类为空则仅保存备注 */
+    CleanedDataEntity updateCleanedDataCategory(Long id, String categoryCode, String categoryName, String remark);
+    /** 模糊搜索标准分类（按名称/编码，供智能分类页双击分类名称下拉选择），返回三级分类 */
+    List<Map<String, Object>> searchCategories(String keyword, int limit);
 
     // ===== 字段映射 =====
     List<FieldMappingAuditEntity> autoMapFields(Long tempDataTitleId, Long extraDataTitleId, Long standardTitleId);

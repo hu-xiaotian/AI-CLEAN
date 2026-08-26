@@ -19,13 +19,13 @@ import java.util.Date;
 @Slf4j
 public class JwtUtil {
 
-    @Value("${app.security.jwt.secret}")
+    @Value("${app.security.jwt.secret:ai-clean-secret-key-2024-jwt-hs256-signing-key-please-change-in-prod}")
     private String secret;
 
     /**
      * 过期时间（毫秒）
      */
-    @Value("${app.security.jwt.expiration}")
+    @Value("${app.security.jwt.expiration:86400000}")
     private long expiration;
 
     /**

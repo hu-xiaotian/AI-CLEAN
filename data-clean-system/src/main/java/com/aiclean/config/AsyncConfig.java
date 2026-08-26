@@ -11,7 +11,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 /**
  * 异步与并行执行器配置。
  * - cleaningExecutor：供 Sharding Agent 并行清洗分片使用。
- * - taskExecutor：Spring @Async 默认异步执行器（startCleaning / startAiExtract / aiClassifyCheckAsync 等）。
+ * - taskExecutor：Spring @Async 默认异步执行器（startCleaning / startAiExtract 等）。
  */
 @Configuration
 @EnableAsync
@@ -39,7 +39,7 @@ public class AsyncConfig {
 
     /**
      * @Async 默认线程池（Spring 约定：名为 taskExecutor 的 Bean 作为默认异步执行器）。
-     * 用于 startCleaning / startAiExtract / aiClassifyCheckAsync 等 @Async 方法，
+     * 用于 startCleaning / startAiExtract 等 @Async 方法，
      * 避免使用 SimpleAsyncTaskExecutor（每次创建新线程，无池化限制）。
      */
     @Bean(name = "taskExecutor")

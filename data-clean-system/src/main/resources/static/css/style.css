@@ -960,6 +960,46 @@ th.sortable-id .sort-arrow {
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+/* 智能分类：分类名称可双击编辑 */
+.cat-edit {
+    cursor: pointer;
+    color: var(--accent);
+    border-bottom: 1px dashed var(--accent);
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: background .15s;
+}
+.cat-edit:hover { background: rgba(56, 140, 255, .1); }
+.cat-remark {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 12px;
+    display: inline-block;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: background .15s;
+}
+.cat-remark:hover { background: rgba(56, 140, 255, .1); }
+
+/* 分类搜索下拉项 */
+.cat-search-item {
+    display: flex;
+    gap: 10px;
+    padding: 8px 10px;
+    cursor: pointer;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border, #eee);
+    align-items: center;
+}
+.cat-search-item:hover { background: rgba(56, 140, 255, .12); }
+.cat-search-item .cat-code { font-weight: 600; color: var(--accent); min-width: 70px; }
+.cat-search-item .cat-name { flex: 1; }
+.cat-search-item .cat-path { color: var(--text-tertiary); font-size: 12px; }
 .table-container { overflow-x: auto; }
 
 /* -------- View Info -------- */

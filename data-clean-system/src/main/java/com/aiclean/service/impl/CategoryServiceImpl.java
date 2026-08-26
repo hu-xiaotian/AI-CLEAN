@@ -3,6 +3,7 @@ package com.aiclean.service.impl;
 import com.aiclean.entity.CategoryEntity;
 import com.aiclean.mapper.CategoryMapper;
 import com.aiclean.service.CategoryService;
+import com.aiclean.service.SemanticCategoryLibrary;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +25,9 @@ public class CategoryServiceImpl implements CategoryService {
 
     @Autowired
     private CategoryMapper categoryMapper;
+
+    @Autowired
+    private SemanticCategoryLibrary semanticLib;
 
     @Override
     @Transactional
@@ -78,6 +82,9 @@ public class CategoryServiceImpl implements CategoryService {
         // 插入数据库
         categoryMapper.insert(category);
         
+        // 同步刷新语义向量（新分类向量化并写库；新分类尚不在标准库内存索引，需直接传实体）
+        semanticLib.refreshCategory(category);
+        
         log.info("分类创建成功, ID: {}", category.getId());
         return category;
     }
@@ -98,12 +105,14 @@ public class CategoryServiceImpl implements CategoryService {
         }
         
         // 验证编码是否修改且是否可用
+        boolean codeChanged = false;
         if (StringUtils.isNotBlank(category.getCategoryCode()) 
                 && !category.getCategoryCode().equals(existing.getCategoryCode())) {
             if (!validateCategoryCode(category.getCategoryCode())) {
                 throw new IllegalArgumentException("分类编码已存在: " + category.getCategoryCode());
             }
             // 编码变更需要重新计算所有子节点的路径
+            codeChanged = true;
             String oldFullPath = existing.getFullPath();
             String newFullPath = oldFullPath.substring(0, oldFullPath.lastIndexOf("/") + 1) + category.getCategoryCode();
             
@@ -136,6 +145,13 @@ public class CategoryServiceImpl implements CategoryService {
         existing.setUpdatedAt(LocalDateTime.now());
         categoryMapper.updateById(existing);
         
+        // 同步刷新语义向量：编码变更影响整棵子树路径，刷新整棵子树；否则仅刷新本分类
+        if (codeChanged) {
+            semanticLib.refreshCategoryTree(existing.getId());
+        } else {
+            semanticLib.refreshCategory(existing);
+        }
+        
         log.info("分类更新成功, ID: {}", existing.getId());
         return existing;
     }
@@ -156,11 +172,25 @@ public class CategoryServiceImpl implements CategoryService {
             throw new IllegalStateException("无法删除分类: " + checkResult.get("message"));
         }
         
+        // 删除前收集整棵子树分类ID（用于同步清理语义向量）
+        List<CategoryEntity> subtree = semanticLib.getStdLibSubtree(categoryId);
+        List<Long> subtreeIds = new ArrayList<>();
+        if (subtree != null) {
+            for (CategoryEntity c : subtree) {
+                if (c != null && c.getId() != null) subtreeIds.add(c.getId());
+            }
+        }
+
         // 物理删除
         categoryMapper.deleteById(categoryId);
         
         // 同时物理删除所有子分类
         deleteChildCategories(categoryId);
+        
+        // 同步移除整棵子树的语义向量（含本分类）
+        for (Long id : subtreeIds) {
+            semanticLib.removeCategory(id);
+        }
         
         log.info("分类删除成功, ID: {}", categoryId);
     }
@@ -290,6 +320,9 @@ public class CategoryServiceImpl implements CategoryService {
         
         category.setUpdatedAt(LocalDateTime.now());
         categoryMapper.updateById(category);
+        
+        // 同步刷新语义向量：移动改变整棵子树路径，刷新整棵子树
+        semanticLib.refreshCategoryTree(categoryId);
         
         // 重新排序兄弟节点
         if (oldParentId != null) {
@@ -556,6 +589,9 @@ public class CategoryServiceImpl implements CategoryService {
         // 递归重建子节点路径
         rebuildChildPaths(categoryId);
         
+        // 路径变更影响向量，刷新整棵子树语义向量
+        semanticLib.refreshCategoryTree(categoryId);
+        
         log.info("分类路径重建完成, ID: {}", categoryId);
     }
 
@@ -571,6 +607,9 @@ public class CategoryServiceImpl implements CategoryService {
             categoryMapper.updateCategoryHierarchy(root.getId(), 1, fullPath);
             rebuildChildPaths(root.getId());
         }
+        
+        // 所有路径均变更，整体重建语义知识库向量
+        semanticLib.reload();
         
         log.info("所有分类路径重建完成");
     }

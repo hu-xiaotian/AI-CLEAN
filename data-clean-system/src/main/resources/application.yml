@@ -7,7 +7,7 @@ spring:
   datasource:
     # 开发环境使用MySQL (生产环境使用达梦)
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&sessionVariables=transaction_isolation='READ-COMMITTED'}
+    url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&sessionVariables=transaction_isolation='READ-COMMITTED'}
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:Mysql123456.}
     # 达梦数据库配置示例:
@@ -163,8 +163,13 @@ app:
       parallelism: 4
     # 标准库配置（main_data_category 全表比对）
     standard-library:
-      # AI 检测时从全表召回的候选数量（top-K）
-      candidate-top-k: 10
+      # 统一候选召回数量（top-K）：向量语义召回与关键词兜底召回共用此配置，
+      # 直接影响大模型分类时参考的候选条数（默认 3）。改这里即可统一调整。
+      candidate-top-k: 3
+      # 全表向量化时每批交给 Embedding 接口的条数（input 数组，越大初始化越快；注意单请求 token 上限）
+      embedding-batch-size: 50
+      # 向量化并发线程数（并行调用 Embedding 的批数），需注意平台限流与并发额度
+      embedding-concurrency: 4
 
   # 审核工作流配置
   review-workflow:
@@ -204,18 +209,29 @@ app:
     # 是否启用 AI 提取（true/false）
     enabled: true
     # 兼容 OpenAI 的 Chat Completions 接口地址，例如：
-    #   DeepSeek:  https://api.deepseek.com/v1
-    #   通义千问:  http://203.83.238.245:8000/v1
-    base-url: ${AI_BASE_URL:http://203.83.238.245:8000/v1}
-    # API 密钥（密钥含 # 号；Spring 占位符默认值里的 # 不是 YAML 注释，无需引号包裹，
-    # 否则引号会作为密钥的一部分发给 AI 服务导致 401。如需外部注入请用环境变量 AI_API_KEY）
-    api-key: ${AI_API_KEY:BYeIf#SGdmufoQLhT3}
-    # 模型名称，例如 deepseek-chat / qwen-plus 等
-    model: ${AI_MODEL:Qwen2.5-7B}
+    #   DeepSeek:     https://api.deepseek.com/v1
+    #   硅基流动:     https://api.siliconflow.cn/v1
+    #   本地 Qwen:    http://203.83.238.245:8000/v1
+    base-url: ${AI_BASE_URL:https://api.siliconflow.cn/v1}
+    # API 密钥（硅基流动/SiliconFlow 控制台获取，形如 sk-xxxx；也可用环境变量 AI_API_KEY 覆盖。
+    # 密钥含 # 号时无需引号包裹，否则引号会作为密钥一部分导致 401）
+    api-key: ${AI_API_KEY:sk-cxbroychsoxgkrtlxfzzcdfkjxhyzggctcghcyqibvspazki}
+    # 模型名称：硅基流动需带发布方前缀，例如 Qwen/Qwen2.5-7B-Instruct、deepseek-ai/DeepSeek-V3
+    #   本地 Qwen（vLLM/Ollama 兼容模式）: Qwen2.5-7B
+    model: ${AI_MODEL:THUDM/GLM-Z1-9B-0414}
+    # Embedding 模型名称（用于语义知识库/余弦相似度候选召回，OpenAI 兼容 /embeddings 接口）。
+    # 注意：必须使用专门的 Embedding/向量模型（对话模型通常不支持 /embeddings，会导致 400 "Model does not exist"）。
+    # 硅基流动推荐 BAAI/bge-m3；本地 vLLM/Ollama 兼容模式可用 bge-m3 等。可用环境变量 AI_EMBEDDING_MODEL 覆盖。
+    embedding-model: ${AI_EMBEDDING_MODEL:BAAI/bge-m3}
     # 采样温度（0~1，越低越稳定）
     temperature: 0.2
-    # 最大生成 token 数
-    max-tokens: 2048
+    # 最大生成 token 数（批次分类每批 13~20 条，需保证输出不被截断，建议 >= 4096）
+    max-tokens: 4096
+    # 批次分类每批条数（整批一次交给大模型返回数组结果）
+    # 较弱的本地/小模型（如 7B 级）一次性输出 13+ 条 JSON 极易"复述模板"失败，建议设为 3~5
+    batch-classify-size: 5
+    # 批次分类并发线程数（并行调用大模型的批数）
+    batch-classify-concurrency: 4
     # ===== 提示词（可在此自定义）=====
     # 系统提示词：角色设定与输出约束
     system-prompt: |

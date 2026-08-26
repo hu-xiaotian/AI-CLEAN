@@ -152,9 +152,18 @@ public class CleanedDataEntity extends BaseEntity {
     private LocalDateTime exportedAt;
     
     /**
-     * 分类名称（非数据库字段）
+     * 清洗开始时间（整批清洗任务开始时刻）
      */
-    @TableField(exist = false)
+    private LocalDateTime cleanStartTime;
+    
+    /**
+     * 清洗结束时间（整批清洗任务完成时刻）
+     */
+    private LocalDateTime cleanEndTime;
+    
+    /**
+     * 分类名称（冗余存储，便于展示/导出，与 category_code 对应）
+     */
     private String categoryName;
     
     /**

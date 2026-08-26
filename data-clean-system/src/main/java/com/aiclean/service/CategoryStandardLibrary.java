@@ -33,7 +33,7 @@ public class CategoryStandardLibrary {
     private final CategorySynonymMapper categorySynonymMapper;
 
     @Value("${app.data-cleaning.standard-library.candidate-top-k:10}")
-    private int candidateTopK;
+    private int candidateRecallK;
 
     // ===================== 内存索引 =====================
     private volatile List<CategoryEntity> allCategories = new ArrayList<>();
@@ -128,6 +128,193 @@ public class CategoryStandardLibrary {
     public CategoryEntity getByCode(String code) {
         ensureLoaded();
         return codeIndex.get(normalizeCode(code));
+    }
+
+    /**
+     * 解析大模型给出的分类：优先按编码（三级编码）匹配；编码无法匹配时，
+     * 再按归一化分类名称在「三级分类」中匹配（大模型常把名称写对、编码写错）。
+     * 始终只接受三级分类（level==3），避免把一/二级父节点当作最终分类落库。
+     * 都匹配不到返回 null（交由调用方标记为待审核，绝不写入错误编码）。
+     */
+    public CategoryEntity resolveCategory(String code, String name) {
+        ensureLoaded();
+        CategoryEntity byCode = getByCode(code);
+        if (byCode != null) return byCode;
+        if (StrUtil.isBlank(name)) return null;
+        String n = normalize(name);
+        List<CategoryEntity> byName = nameIndex.get(n);
+        if (byName != null && !byName.isEmpty()) {
+            // 优先返回三级分类；若名称同时命中多级，取第一个三级节点
+            CategoryEntity l3 = null;
+            for (CategoryEntity c : byName) {
+                if (c.getLevel() != null && c.getLevel() == 3) {
+                    if (l3 == null) l3 = c;
+                }
+            }
+            if (l3 != null) return l3;
+        }
+        // 精确名称未命中时，做分词 / 包含关系模糊兜底（大模型常把三级名写短，如"不锈钢板" vs "不锈钢板材"）
+        CategoryEntity fuzzy = fuzzyResolveByName(n);
+        if (fuzzy != null) return fuzzy;
+        return null;
+    }
+
+    /** 名称模糊兜底：在大模型给出的名称与标准三级名之间做分词包含匹配，取交集最多的三级分类 */
+    private CategoryEntity fuzzyResolveByName(String normName) {
+        if (StrUtil.isBlank(normName)) return null;
+        Set<String> nameTokens = new LinkedHashSet<>(tokenize(normName));
+        if (nameTokens.isEmpty()) return null;
+        CategoryEntity best = null;
+        int bestHit = 0;
+        for (CategoryEntity c : allCategories) {
+            if (c.getLevel() == null || c.getLevel() != 3) continue;
+            Set<String> stdTokens = new LinkedHashSet<>(tokenize(normalize(c.getCategoryName())));
+            if (stdTokens.isEmpty()) continue;
+            int hit = 0;
+            for (String t : nameTokens) if (stdTokens.contains(t)) hit++;
+            // 标准名包含模型名，或模型名包含标准名（含子串）也计为强匹配
+            String stdName = normalize(c.getCategoryName());
+            boolean sub = stdName.contains(normName) || normName.contains(stdName);
+            if (sub) hit += 3;
+            if (hit > bestHit) {
+                bestHit = hit;
+                best = c;
+            }
+        }
+        // 至少命中一个分词或存在包含关系才采信，避免误命中
+        return (best != null && bestHit > 0) ? best : null;
+    }
+
+    /**
+     * 综合解析：优先使用大模型给出的编码/名称；当二者都无法命中标准库时，
+     * 回退到「物料自身文本（物资名称/全描述）」去标准库做候选召回 + 名称/分词匹配，
+     * 以保证即便模型输出不可用，也能尽量落到合法的三级分类（不再留空）。
+     *
+     * @return 命中的三级标准分类；全部失败返回 null（交由调用方标记待审核）。
+     */
+    public CategoryEntity resolveWithFallback(CleanedDataEntity material, String aiCode, String aiName) {
+        ResolveResult r = resolveWithGrade(material, aiCode, aiName);
+        return r.getCategory();
+    }
+
+    /**
+     * 综合解析（带命中等级）：与 {@link #resolveWithFallback} 同样的解析顺序，但额外返回命中等级，
+     * 供评分使用。评分标准：
+     * <ul>
+     *   <li>100 分：知识库有对应映射且编码/名称完全符合（编码精确命中 / 名称精确命中三级）</li>
+     *   <li>90 分：知识库找到语义相似且各属性基本符合（物料名与标准名强匹配：分词重叠 + 包含关系）</li>
+     *   <li>80 分：知识库找到语义相似且大部分描述对上（模糊匹配命中）</li>
+     *   <li>50 分：知识库找不到对应映射，取最相似分类兜底（经全描述/关键词召回的近似分类）</li>
+     *   <li>0 分：完全未命中</li>
+     * </ul>
+     */
+    public ResolveResult resolveWithGrade(CleanedDataEntity material, String aiCode, String aiName) {
+        ensureLoaded();
+        // 第一优先：大模型给出的编码/名称
+        if (StrUtil.isNotBlank(aiCode) || StrUtil.isNotBlank(aiName)) {
+            // 编码精确命中 → EXACT(100)
+            if (StrUtil.isNotBlank(aiCode)) {
+                CategoryEntity byCode = getByCode(aiCode);
+                if (byCode != null) {
+                    log.info("分类命中：AI编码精确命中标准库，编码={}，名称={}", aiCode, byCode.getCategoryName());
+                    return ResolveResult.of(byCode, MatchGrade.EXACT);
+                }
+            }
+            if (StrUtil.isNotBlank(aiName)) {
+                String n = normalize(aiName);
+                // 名称精确命中三级 → EXACT(100)
+                List<CategoryEntity> byName = nameIndex.get(n);
+                CategoryEntity exactL3 = null;
+                if (byName != null) {
+                    for (CategoryEntity c : byName) {
+                        if (c.getLevel() != null && c.getLevel() == 3) { exactL3 = c; break; }
+                    }
+                }
+                if (exactL3 != null) {
+                    log.info("分类命中：AI名称精确命中标准库三级，名称={}，编码={}", aiName, exactL3.getCategoryCode());
+                    return ResolveResult.of(exactL3, MatchGrade.EXACT);
+                }
+                // 名称模糊命中 → FUZZY(80)
+                CategoryEntity fuzzy = fuzzyResolveByName(n);
+                if (fuzzy != null) {
+                    log.info("分类命中：AI名称模糊命中标准库，名称={}，编码={}", aiName, fuzzy.getCategoryCode());
+                    return ResolveResult.of(fuzzy, MatchGrade.FUZZY);
+                }
+            }
+        }
+
+        if (material == null) return ResolveResult.none();
+        // 第二优先：用物料「物资名称」召回候选并取相关性最高且为三级的
+        List<CategoryStandardLibrary.Candidate> matCands = retrieveCandidates(material, candidateRecallK);
+        CategoryEntity byMatName = topLevel3(matCands);
+        if (byMatName != null) {
+            MatchGrade g = gradeOfMaterialName(material.getMaterialName(), byMatName);
+            log.info("分类兜底：经物料名称召回命中标准库，material={}，命中编码={}，命中名称={}，等级={}",
+                    material.getMaterialName(), byMatName.getCategoryCode(), byMatName.getCategoryName(), g);
+            return ResolveResult.of(byMatName, g);
+        }
+        // 第三优先：用「全描述」召回候选（物资名称拆分词可能不完整，全描述更丰富）→ 视为近似(50)
+        if (StrUtil.isNotBlank(material.getFullDescription())) {
+            CleanedDataEntity probe = new CleanedDataEntity();
+            probe.setMaterialName(material.getFullDescription());
+            probe.setFullDescription(material.getFullDescription());
+            CategoryEntity byDesc = topLevel3(retrieveCandidates(probe, candidateRecallK));
+            if (byDesc != null) {
+                log.info("分类兜底：经全描述召回命中标准库，material={}，命中编码={}，命中名称={}，等级=SIMILAR(50)",
+                        material.getMaterialName(), byDesc.getCategoryCode(), byDesc.getCategoryName());
+                return ResolveResult.of(byDesc, MatchGrade.SIMILAR);
+            }
+        }
+        // 第四优先：直接用物料名称做关键词检索 → 近似(50)
+        if (StrUtil.isNotBlank(material.getMaterialName())) {
+            List<CategoryEntity> kw = searchByKeyword(material.getMaterialName(), 10);
+            CategoryEntity byKw = topLevel3(kw);
+            if (byKw != null) {
+                log.info("分类兜底：经关键词检索命中标准库，material={}，命中编码={}，命中名称={}，等级=SIMILAR(50)",
+                        material.getMaterialName(), byKw.getCategoryCode(), byKw.getCategoryName());
+                return ResolveResult.of(byKw, MatchGrade.SIMILAR);
+            }
+        }
+        return ResolveResult.none();
+    }
+
+    /** 根据物料名与命中的标准分类名称的相似度，判定 STRONG(90) / SIMILAR(50) */
+    private MatchGrade gradeOfMaterialName(String materialName, CategoryEntity matched) {
+        if (StrUtil.isBlank(materialName) || matched == null) return MatchGrade.SIMILAR;
+        String mn = normalize(materialName);
+        String sn = normalize(matched.getCategoryName());
+        if (mn == null || sn == null) return MatchGrade.SIMILAR;
+        // 名称相等 / 互为子串 / 分词高度重叠 → STRONG
+        boolean equal = mn.equals(sn);
+        boolean sub = sn.contains(mn) || mn.contains(sn);
+        int overlap = 0;
+        Set<String> mt = new LinkedHashSet<>(tokenize(mn));
+        Set<String> st = new LinkedHashSet<>(tokenize(sn));
+        for (String t : mt) if (st.contains(t)) overlap++;
+        if (equal || sub) return MatchGrade.STRONG;
+        // 超过一半分词重叠视为 STRONG
+        if (!mt.isEmpty() && overlap * 1.0 / mt.size() >= 0.5) return MatchGrade.STRONG;
+        return MatchGrade.SIMILAR;
+    }
+
+    /** 从候选/结果列表中取相关性最高（或列表中第一个）的三级分类 */
+    private CategoryEntity topLevel3(List<?> list) {
+        if (list == null || list.isEmpty()) return null;
+        CategoryEntity first = null;
+        for (Object o : list) {
+            CategoryEntity c = extractCategory(o);
+            if (c == null) continue;
+            if (c.getLevel() != null && c.getLevel() == 3) return c;
+            if (first == null) first = c;
+        }
+        return first;
+    }
+
+    /** 兼容 Candidate 与 CategoryEntity 两种入参，提取 CategoryEntity */
+    private CategoryEntity extractCategory(Object o) {
+        if (o instanceof CategoryEntity) return (CategoryEntity) o;
+        if (o instanceof Candidate) return ((Candidate) o).getCategory();
+        return null;
     }
 
     /** 按主键查询标准分类 */
@@ -376,6 +563,18 @@ public class CategoryStandardLibrary {
                 for (CategoryEntity c : byTok) if (c.getId() != null) bump(scoreMap, c.getId(), weight * 0.6);
             }
         }
+        // 反向子串包含匹配：物料文本（如「冷轧优质碳素结构钢板」）整段无法切出「钢板」token 时，
+        // 标准库 token「钢板」仍应被召回。对标准库所有 token 做包含判断（>=2 字），命中即加分。
+        if (n.length() >= 2) {
+            for (Map.Entry<String, List<CategoryEntity>> e : tokenIndex.entrySet()) {
+                String stdTok = e.getKey();
+                if (stdTok != null && stdTok.length() >= 2 && n.contains(stdTok)) {
+                    for (CategoryEntity c : e.getValue()) {
+                        if (c.getId() != null) bump(scoreMap, c.getId(), weight * 0.5);
+                    }
+                }
+            }
+        }
     }
 
     private void bump(Map<Long, Double> scoreMap, Long id, double v) {
@@ -487,5 +686,59 @@ public class CategoryStandardLibrary {
         private String bestMatchName;
         /** 说明 */
         private String reason;
+    }
+
+    /** 分类命中等级：决定评分与是否需要人工审核 */
+    public enum MatchGrade {
+        /** 标准库有对应映射，且编码/名称非常符合 → 100 分，可直接导出 */
+        EXACT(100, "完全匹配"),
+        /** 标准库找到语义相似且各属性基本符合 → 90 分，可直接导出 */
+        STRONG(90, "强匹配"),
+        /** 标准库找到语义相似且大部分描述对上 → 80 分，需简单复核 */
+        FUZZY(80, "模糊匹配"),
+        /** 标准库找不到对应映射，取最相似分类兜底 → 50 分，需人工确认 */
+        SIMILAR(50, "近似匹配"),
+        /** 完全未命中 → 0 分，必须人工处理 */
+        NONE(0, "未命中");
+
+        private final int score;
+        private final String label;
+
+        MatchGrade(int score, String label) {
+            this.score = score;
+            this.label = label;
+        }
+
+        public int score() {
+            return score;
+        }
+
+        public String label() {
+            return label;
+        }
+    }
+
+    /** 综合解析结果：命中的标准分类 + 命中等级 */
+    @Data
+    public static class ResolveResult {
+        private CategoryEntity category;
+        private MatchGrade grade;
+        private boolean matched;
+
+        public static ResolveResult of(CategoryEntity category, MatchGrade grade) {
+            ResolveResult r = new ResolveResult();
+            r.category = category;
+            r.grade = grade;
+            r.matched = category != null && grade != null && grade != MatchGrade.NONE;
+            return r;
+        }
+
+        public static ResolveResult none() {
+            ResolveResult r = new ResolveResult();
+            r.category = null;
+            r.grade = MatchGrade.NONE;
+            r.matched = false;
+            return r;
+        }
     }
 }

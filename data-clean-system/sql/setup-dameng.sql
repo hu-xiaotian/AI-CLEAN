@@ -180,6 +180,23 @@ CREATE INDEX idx_mdc_level ON main_data_category(level);
 CREATE INDEX idx_mdc_code ON main_data_category(category_code);
 CREATE INDEX idx_mdc_name ON main_data_category(category_name);
 
+-- 6.1 标准分类语义向量表 (category_vector)
+-- 存储每个标准分类的 Embedding 语义向量，用于基于余弦相似度召回语义最接近的备选分类
+CREATE TABLE category_vector (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    category_id BIGINT NOT NULL,
+    category_code VARCHAR2(50),
+    vector_source CLOB,
+    embedding_model VARCHAR2(100),
+    dimension INT,
+    vector_text CLOB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR2(50) DEFAULT 'system',
+    updated_by VARCHAR2(50) DEFAULT 'system'
+);
+CREATE UNIQUE INDEX uk_cv_category_id ON category_vector(category_id);
+
 -- 7. 标准字段定义表 (standard_field_definition)
 -- 定义每个分类下需要的标准字段
 CREATE TABLE standard_field_definition (
@@ -326,6 +343,7 @@ CREATE TABLE cleaned_data (
     id BIGINT IDENTITY(1,1) PRIMARY KEY,
     category_id BIGINT,
     category_code VARCHAR2(50),
+    category_name VARCHAR2(200),
     category_level INT,
     category_full_path VARCHAR2(500),
     temp_data_id BIGINT NOT NULL,
@@ -351,6 +369,8 @@ CREATE TABLE cleaned_data (
     exported_at TIMESTAMP,
     match_source VARCHAR2(50),
     match_confidence DOUBLE,
+    clean_start_time TIMESTAMP,
+    clean_end_time TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR2(50) DEFAULT 'system',

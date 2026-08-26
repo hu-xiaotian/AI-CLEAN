@@ -111,17 +111,17 @@ public class DataCleaningController {
     // ==================== 数据清洗 ====================
 
     @PostMapping("/start")
-    @Operation(summary = "启动批量数据清洗")
+    @Operation(summary = "启动批量数据清洗（固定 AI 分类）")
     public R<String> startCleaning(@RequestParam Long titleId,
                                    @RequestParam(required = false) Long parseRuleId,
-                                   @RequestParam(required = false) Boolean useAi) {
+                                   @RequestParam(required = false) Integer batchSize) {
         long start = System.currentTimeMillis();
         try {
-            String result = dataCleaningService.startCleaning(titleId, parseRuleId, useAi);
+            String result = dataCleaningService.startCleaning(titleId, parseRuleId, batchSize);
             operationLogService.record(new SysOperationLog() {{
                 setAction("clean");
                 setModule("数据清洗");
-                setActionDesc("启动数据清洗，titleId=" + titleId + (useAi != null && useAi ? "（AI模式）" : ""));
+                setActionDesc("启动数据清洗（AI分类），titleId=" + titleId);
                 setStatus(1);
                 setDuration(System.currentTimeMillis() - start);
             }});
@@ -160,48 +160,33 @@ public class DataCleaningController {
     }
 
     @PostMapping("/match")
-    @Operation(summary = "单条数据分类匹配与清洗")
+    @Operation(summary = "单条数据分类匹配与清洗（固定 AI 分类）")
     public R<CleanedDataEntity> matchAndClean(@RequestParam Long tempDataId,
                                                @RequestParam(required = false) Long extraDataTitleId,
-                                               @RequestParam(required = false) Long parseRuleId,
-                                               @RequestParam(required = false) Boolean useAi) {
-        return R.success(dataCleaningService.matchAndClean(tempDataId, extraDataTitleId, parseRuleId, useAi));
-    }
-
-    @PostMapping("/ai-classify-check")
-    @Operation(summary = "AI 辅助分类检测", description = "将已清洗数据的分类结果与 main_data_category 标准库比对，给出准确性评分；useAi=true 且已配置 AI 时调用大模型，否则用规则校验。不执行 AI 部分可由 useAi=false 控制。")
-    @RequirePermission("page:clean")
-    public R<Map<String, Object>> aiClassifyCheck(@RequestParam Long titleId,
-                                                   @RequestParam(required = false, defaultValue = "false") Boolean useAi) {
-        return R.success(dataCleaningService.aiClassifyCheck(titleId, useAi));
+                                               @RequestParam(required = false) Long parseRuleId) {
+        return R.success(dataCleaningService.matchAndClean(tempDataId, extraDataTitleId, parseRuleId));
     }
 
     @PostMapping("/classify-text")
-    @Operation(summary = "文本分类识别", description = "对一段物料描述文字复用 AI 辅助分类检测逻辑进行 AI 识别，返回推荐的分类名称、分类编码与理由。useAi 默认 true（未配置 AI 时退化为关键词匹配）。")
-    public R<Map<String, Object>> classifyText(@RequestParam String text,
-                                                @RequestParam(required = false, defaultValue = "true") Boolean useAi) {
-        return R.success(dataCleaningService.classifyText(text, useAi));
+    @Operation(summary = "文本分类识别", description = "对一段物料描述文字复用 AI 辅助分类检测逻辑进行 AI 识别，返回推荐的分类名称、分类编码与理由。固定走 AI 分类（未配置 AI 时退化为关键词匹配）。")
+    public R<Map<String, Object>> classifyText(@RequestParam String text) {
+        return R.success(dataCleaningService.classifyText(text));
     }
 
-    @PostMapping("/ai-classify-check-async")
-    @Operation(summary = "AI 辅助分类检测（异步，带进度）", description = "异步执行分类检测，通过 WebSocket 主题 /topic/ai-classify-check/{titleId} 实时推送进度（start/progress/complete/error）与每条明细，避免同步阻塞导致页面无响应。")
-    public R<String> aiClassifyCheckAsync(@RequestParam Long titleId,
-                                          @RequestParam(required = false, defaultValue = "false") Boolean useAi) {
-        return R.success(dataCleaningService.aiClassifyCheckAsync(titleId, useAi));
+    @PutMapping("/cleaned-data/{id}")
+    @Operation(summary = "修改单条清洗数据分类与备注（智能分类人工修正）", description = "按传入的分类编码/名称重新匹配标准库三级并落库，状态置为已修改；可同时填写修改原因备注。")
+    public R<CleanedDataEntity> updateCleanedDataCategory(@PathVariable Long id,
+                                                          @RequestParam(required = false) String categoryCode,
+                                                          @RequestParam(required = false) String categoryName,
+                                                          @RequestParam(required = false) String remark) {
+        return R.success(dataCleaningService.updateCleanedDataCategory(id, categoryCode, categoryName, remark));
     }
 
-    @PostMapping("/apply-classify-fix")
-    @Operation(summary = "应用分类修正", description = "将指定清洗数据的分类替换为推荐的标准分类编码（targetCode）并保存，替换后按标准库规则重新评分。")
-    public R<Map<String, Object>> applyClassifyFix(@RequestParam Long id,
-                                                    @RequestParam String targetCode) {
-        return R.success(dataCleaningService.applyClassifyFix(id, targetCode));
-    }
-
-    @PostMapping("/apply-classify-fix-batch")
-    @Operation(summary = "批量应用分类修正", description = "对一组 {id, code} 逐条将清洗数据的分类替换为推荐的标准分类编码并保存。请求体为 JSON 数组，例如 [{\"id\":1,\"code\":\"100105\"}]。")
-    public R<Map<String, Object>> applyClassifyFixBatch(@RequestParam Long titleId,
-                                                         @RequestBody(required = false) List<Map<String, Object>> items) {
-        return R.success(dataCleaningService.applyClassifyFixBatch(titleId, items));
+    @GetMapping("/category-search")
+    @Operation(summary = "模糊搜索标准分类", description = "按名称/编码模糊检索标准库三级分类，供智能分类页双击分类名称下拉选择")
+    public R<List<Map<String, Object>>> searchCategories(@RequestParam String keyword,
+                                                          @RequestParam(defaultValue = "20") int limit) {
+        return R.success(dataCleaningService.searchCategories(keyword, limit));
     }
 
     // ==================== 字段映射 ====================

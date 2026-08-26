@@ -196,6 +196,24 @@ CREATE INDEX `idx_mdc_level` ON `main_data_category`(`level`);
 CREATE INDEX `idx_mdc_code` ON `main_data_category`(`category_code`);
 CREATE INDEX `idx_mdc_name` ON `main_data_category`(`category_name`);
 
+-- 6.1 标准分类语义向量表 (category_vector)
+-- 存储每个标准分类的 Embedding 语义向量，用于基于余弦相似度召回语义最接近的备选分类
+DROP TABLE IF EXISTS `category_vector`;
+CREATE TABLE `category_vector` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+    `category_id` BIGINT NOT NULL COMMENT '关联标准分类ID(main_data_category.id)',
+    `category_code` VARCHAR(50) DEFAULT NULL COMMENT '关联标准分类编码',
+    `vector_source` TEXT COMMENT '向量化原始文本(分类名称+路径+说明+旧名称)',
+    `embedding_model` VARCHAR(100) DEFAULT NULL COMMENT 'Embedding模型名称',
+    `dimension` INT DEFAULT NULL COMMENT '向量维度',
+    `vector_text` LONGTEXT COMMENT '语义向量(JSON数组字符串)',
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `created_by` VARCHAR(50) DEFAULT 'system' COMMENT '创建人',
+    `updated_by` VARCHAR(50) DEFAULT 'system' COMMENT '更新人',
+    UNIQUE KEY `uk_cv_category_id` (`category_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='标准分类语义向量表';
+
 -- 7. 标准字段定义表 (standard_field_definition)
 -- 定义每个分类下需要的标准字段
 DROP TABLE IF EXISTS `standard_field_definition`;
@@ -350,6 +368,7 @@ CREATE TABLE `cleaned_data` (
                                 `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
                                 `category_id` BIGINT DEFAULT NULL COMMENT '关联分类ID',
                                 `category_code` VARCHAR(50) DEFAULT NULL COMMENT '分类编码',
+                                `category_name` VARCHAR(200) DEFAULT NULL COMMENT '分类名称(冗余存储,与category_code对应)',
                                 `category_level` INT DEFAULT NULL COMMENT '分类层级',
                                 `category_full_path` VARCHAR(500) DEFAULT NULL COMMENT '分类完整路径',
                                 `temp_data_id` BIGINT NOT NULL COMMENT '关联原始数据ID',
@@ -375,12 +394,15 @@ CREATE TABLE `cleaned_data` (
                                 `exported_at` TIMESTAMP NULL DEFAULT NULL COMMENT '导出时间',
                                 `match_source` VARCHAR(50) DEFAULT NULL COMMENT '分类匹配来源(SYNONYM/NAME_EXACT/NAME_FUZZY/CODE_EXACT/CODE_PREFIX/EXTRA_NAME/SEMANTIC/UNMATCHED)',
                                 `match_confidence` DOUBLE DEFAULT NULL COMMENT '分类匹配置信度(0~1)',
+                                `clean_start_time` TIMESTAMP NULL DEFAULT NULL COMMENT '清洗开始时间',
+                                `clean_end_time` TIMESTAMP NULL DEFAULT NULL COMMENT '清洗结束时间',
                                 `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                                 `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                                 `created_by` VARCHAR(50) DEFAULT 'system' COMMENT '创建人',
                                 `updated_by` VARCHAR(50) DEFAULT 'system' COMMENT '更新人'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='清洗后数据表';
 
+CREATE INDEX `idx_cd_category_name` ON `cleaned_data`(`category_name`);
 CREATE INDEX `idx_cd_category_id` ON `cleaned_data`(`category_id`);
 CREATE INDEX `idx_cd_category_code` ON `cleaned_data`(`category_code`);
 CREATE INDEX `idx_cd_category_path` ON `cleaned_data`(`category_full_path`);
