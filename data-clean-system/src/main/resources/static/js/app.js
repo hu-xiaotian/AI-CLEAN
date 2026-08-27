@@ -1878,7 +1878,7 @@ function renderCleanedRecords(list) {
     const tbody = $('#cleanedRecordsTbody');
     const summary = $('#cleanedRecordsSummary');
     if (!list || list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="12" class="empty-hint">暂无清洗结果记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="13" class="empty-hint">暂无清洗结果记录</td></tr>';
         if (summary) summary.textContent = '共 0 条';
         return;
     }
@@ -1892,6 +1892,8 @@ function renderCleanedRecords(list) {
         const reasonCell = d.aiReason
             ? '<div class="reason-cell" title="' + escapeHtml(d.aiReason) + '">' + escapeHtml(d.aiReason) + '</div>'
             : '<span class="empty-hint">-</span>';
+        // AI候选分类（top-k）：解析 JSON 展示编码+名称，悬停显示完整路径
+        const candidateCell = renderAiCandidates(d.aiCandidateCodes);
         const startT = d.cleanStartTime ? fmtLocalTime(d.cleanStartTime) : '-';
         const endT = d.cleanEndTime ? fmtLocalTime(d.cleanEndTime) : '-';
         // 原始数据查看按钮
@@ -1913,6 +1915,7 @@ function renderCleanedRecords(list) {
             '<td><span class="badge ' + scoreClass + '">' + score + '</span></td>' +
             '<td>' + remarkCell + '</td>' +
             '<td>' + reasonCell + '</td>' +
+            '<td>' + candidateCell + '</td>' +
             '<td>' + startT + '</td>' +
             '<td>' + endT + '</td>' +
             '<td>' + statusBadge(statusCleanText(d.status)) + '</td>' +
@@ -2736,6 +2739,31 @@ function escapeHtml(str) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+// 渲染 AI top-k 候选分类（aiCandidateCodes 为 JSON 文本），悬停显示完整路径
+function renderAiCandidates(json) {
+    if (!json) return '<span class="empty-hint">-</span>';
+    var arr;
+    try {
+        arr = typeof json === 'string' ? JSON.parse(json) : json;
+    } catch (e) {
+        return '<span class="empty-hint" title="' + escapeHtml(json) + '">' + escapeHtml(String(json)) + '</span>';
+    }
+    if (!Array.isArray(arr) || arr.length === 0) return '<span class="empty-hint">-</span>';
+    var cells = [];
+    for (var i = 0; i < arr.length; i++) {
+        var it = arr[i] || {};
+        var code = it.code || '';
+        var nm = it.name || '';
+        var desc = it.desc || '';
+        // 展示：编码 名称（说明）拼接，不再显示完整路径
+        var shown = (code ? code + ' ' : '') + nm;
+        if (desc) shown += '（' + desc + '）';
+        cells.push('<span class="cand-item" title="' + escapeHtml(shown) + '">' +
+            escapeHtml(shown) + '</span>');
+    }
+    return '<div class="cand-cell">' + cells.join('') + '</div>';
 }
 
 // 格式化后端返回的 LocalDateTime（形如 2026-08-25T10:00:00 / 带毫秒 / 带时区）为 2026-08-25 10:00:00

@@ -78,9 +78,9 @@ mybatis-plus:
       table-underline: true
     # 刷新mapper 调试神器
     refresh: false
-  # 配置控制台打印完整带参数SQL语句
+  # 关闭 MyBatis 控制台 SQL 打印（避免刷屏），如需调试再改回 StdOutImpl
   configuration:
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
     map-underscore-to-camel-case: true
     cache-enabled: true
     default-executor-type: reuse
@@ -110,7 +110,7 @@ logging:
   level:
     com.aiclean: DEBUG
     org.springframework.web: INFO
-    org.mybatis: DEBUG
+    org.mybatis: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
@@ -218,20 +218,20 @@ app:
     api-key: ${AI_API_KEY:sk-cxbroychsoxgkrtlxfzzcdfkjxhyzggctcghcyqibvspazki}
     # 模型名称：硅基流动需带发布方前缀，例如 Qwen/Qwen2.5-7B-Instruct、deepseek-ai/DeepSeek-V3
     #   本地 Qwen（vLLM/Ollama 兼容模式）: Qwen2.5-7B
-    model: ${AI_MODEL:THUDM/GLM-Z1-9B-0414}
+    model: ${AI_MODEL:THUDM/GLM-4-9B-0414}
     # Embedding 模型名称（用于语义知识库/余弦相似度候选召回，OpenAI 兼容 /embeddings 接口）。
     # 注意：必须使用专门的 Embedding/向量模型（对话模型通常不支持 /embeddings，会导致 400 "Model does not exist"）。
     # 硅基流动推荐 BAAI/bge-m3；本地 vLLM/Ollama 兼容模式可用 bge-m3 等。可用环境变量 AI_EMBEDDING_MODEL 覆盖。
     embedding-model: ${AI_EMBEDDING_MODEL:BAAI/bge-m3}
     # 采样温度（0~1，越低越稳定）
-    temperature: 0.2
+    temperature: 0.7
     # 最大生成 token 数（批次分类每批 13~20 条，需保证输出不被截断，建议 >= 4096）
     max-tokens: 4096
     # 批次分类每批条数（整批一次交给大模型返回数组结果）
     # 较弱的本地/小模型（如 7B 级）一次性输出 13+ 条 JSON 极易"复述模板"失败，建议设为 3~5
-    batch-classify-size: 5
+    batch-classify-size: 2
     # 批次分类并发线程数（并行调用大模型的批数）
-    batch-classify-concurrency: 4
+    batch-classify-concurrency: 2
     # ===== 提示词（可在此自定义）=====
     # 系统提示词：角色设定与输出约束
     system-prompt: |

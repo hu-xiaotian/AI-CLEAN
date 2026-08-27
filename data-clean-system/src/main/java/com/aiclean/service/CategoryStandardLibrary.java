@@ -198,6 +198,64 @@ public class CategoryStandardLibrary {
     }
 
     /**
+     * 仅做「精确匹配」判定，供批次分类的【预检索跳过】阶段使用：
+     * 只有当物料名称能精确命中标准库三级分类时才返回匹配结果，
+     * 否则返回 {@code none()}（交由大模型从语义/相似度检索出的 top-N 候选中判别）。
+     * 与 {@link #resolveWithGrade} 的区别：本方法只认精确命中，不做模糊兜底，
+     * 符合「匹配上了才跳过 AI」的诉求——不精确的都交给大模型从候选里选。
+     */
+    public ResolveResult resolveExactByName(CleanedDataEntity material, String aiName) {
+        ensureLoaded();
+        if (StrUtil.isNotBlank(aiName)) {
+            String n = normalize(aiName);
+            List<CategoryEntity> byName = nameIndex.get(n);
+            if (byName != null) {
+                for (CategoryEntity c : byName) {
+                    if (c.getLevel() != null && c.getLevel() == 3) {
+                        log.info("预检索：名称精确命中标准库三级，名称={}，编码={}", aiName, c.getCategoryCode());
+                        return ResolveResult.of(c, MatchGrade.EXACT);
+                    }
+                }
+            }
+        }
+        return ResolveResult.none();
+    }
+
+    /**
+     * 判断「AI 名称模糊匹配」是否可信，避免把模型给出的具体名称乱配到标准库里的宽泛兜底父类。
+     * 不可信的情形（返回 false）：
+     * <ul>
+     *   <li>命中的标准分类名称以「其他」开头（如「其他其他密封件」），这通常只是占位父类；</li>
+     *   <li>模型名与命中名之间没有实质核心词重叠（仅靠「部件/装置/元件」等宽泛词牵连）。</li>
+     * </ul>
+     * 不可信时，调用方应保留模型原分类并标记待人工校验，而不是写入一个错误的编码。
+     */
+    private boolean isFuzzyTrustworthy(String aiName, CategoryEntity matched) {
+        if (matched == null || StrUtil.isBlank(matched.getCategoryName())) return false;
+        String stdName = normalize(matched.getCategoryName());
+        if (stdName == null) return false;
+        // 兜底父类（以「其他」开头）一律不可信
+        if (stdName.startsWith("其他")) return false;
+        String ai = normalize(aiName);
+        if (ai == null) return false;
+        // 去掉无区分度的宽泛词后，比较「核心词集合」
+        Set<String> aiCore = new LinkedHashSet<>(tokenize(ai));
+        aiCore.removeAll(WIDELY_GENERIC_TOKENS);
+        Set<String> stdCore = new LinkedHashSet<>(tokenize(stdName));
+        stdCore.removeAll(WIDELY_GENERIC_TOKENS);
+        // 任一方去掉宽泛词后为空（如标准名只剩「部件」），说明无可信的实质重叠
+        if (aiCore.isEmpty() || stdCore.isEmpty()) return false;
+        if (aiCore.equals(stdCore)) return true;
+        int overlap = 0;
+        for (String t : aiCore) if (stdCore.contains(t)) overlap++;
+        return overlap >= 1 && (overlap * 1.0 / aiCore.size()) >= 0.5;
+    }
+
+    /** 过于宽泛、无分类区分度的词，模糊匹配时应忽略 */
+    private static final Set<String> WIDELY_GENERIC_TOKENS = new LinkedHashSet<>(java.util.Arrays.asList(
+            "部件", "装置", "元件", "件", "类", "产品", "设备", "材料", "物资", "品", "器材", "配件", "用品"));
+
+    /**
      * 综合解析（带命中等级）：与 {@link #resolveWithFallback} 同样的解析顺序，但额外返回命中等级，
      * 供评分使用。评分标准：
      * <ul>
@@ -210,8 +268,9 @@ public class CategoryStandardLibrary {
      */
     public ResolveResult resolveWithGrade(CleanedDataEntity material, String aiCode, String aiName) {
         ensureLoaded();
+        boolean aiProvided = StrUtil.isNotBlank(aiCode) || StrUtil.isNotBlank(aiName);
         // 第一优先：大模型给出的编码/名称
-        if (StrUtil.isNotBlank(aiCode) || StrUtil.isNotBlank(aiName)) {
+        if (aiProvided) {
             // 编码精确命中 → EXACT(100)
             if (StrUtil.isNotBlank(aiCode)) {
                 CategoryEntity byCode = getByCode(aiCode);
@@ -234,17 +293,23 @@ public class CategoryStandardLibrary {
                     log.info("分类命中：AI名称精确命中标准库三级，名称={}，编码={}", aiName, exactL3.getCategoryCode());
                     return ResolveResult.of(exactL3, MatchGrade.EXACT);
                 }
-                // 名称模糊命中 → FUZZY(80)
+                // 名称模糊命中 → 仅当可信（非兜底父类、与模型名实质相关）才采信 FUZZY(80)，
+                // 否则放弃模糊匹配，交由下方「保留模型原分类」处理，避免把「机械传动部件」乱配到「部件」。
                 CategoryEntity fuzzy = fuzzyResolveByName(n);
-                if (fuzzy != null) {
+                if (fuzzy != null && isFuzzyTrustworthy(aiName, fuzzy)) {
                     log.info("分类命中：AI名称模糊命中标准库，名称={}，编码={}", aiName, fuzzy.getCategoryCode());
                     return ResolveResult.of(fuzzy, MatchGrade.FUZZY);
                 }
             }
+            // 大模型已给出有效分类线索，但标准库无精确/可信匹配：不强行用物料文本召回兜底去覆盖，
+            // 交由调用方保留模型原分类并标记为待人工校验（persistResult 的 AI_UNVERIFIED 分支）。
+            log.info("分类未命中：大模型返回的分类（编码={}，名称={}）在标准库无精确/可信匹配，保留模型原分类待校验",
+                    aiCode, aiName);
+            return ResolveResult.none();
         }
 
         if (material == null) return ResolveResult.none();
-        // 第二优先：用物料「物资名称」召回候选并取相关性最高且为三级的
+        // 第二优先：大模型完全未给分类时，才用物料「物资名称」召回候选兜底（避免覆盖模型有效结果）
         List<CategoryStandardLibrary.Candidate> matCands = retrieveCandidates(material, candidateRecallK);
         CategoryEntity byMatName = topLevel3(matCands);
         if (byMatName != null) {

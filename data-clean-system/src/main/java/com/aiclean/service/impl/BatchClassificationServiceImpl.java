@@ -125,12 +125,49 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
         List<CleanedDataEntity> list = cleanedDataMapper.selectByIds(records);
         Map<Long, CleanedDataEntity> byId = new LinkedHashMap<>();
         for (CleanedDataEntity cd : list) {
-            if (cd != null && cd.getId() != null) byId.put(cd.getId(), cd);
+            if (cd != null && cd.getId() != null)             byId.put(cd.getId(), cd);
+        }
+
+        // ============ 阶段 0：先提取物料名称，再用名称检索标准库 ============
+        // 正确流程：第一步必须先把物料名称从源数据提取出来，再据此检索。
+        //  - 名称能【精确命中】标准库三级分类 → 直接采用，跳过大模型（省成本、结果确定）；
+        //  - 否则把名称检索出的 top-N 相似候选交给大模型，由模型据源数据属性/名称从中选最合适的一个。
+        List<CleanedDataEntity> preResolved = new ArrayList<>();
+        List<Long> ordered = new ArrayList<>();
+        for (Long id : records) {
+            CleanedDataEntity cd = byId.get(id);
+            if (cd == null) continue;
+            // 第一步：统一提取物料名称并补填，保证后续检索/候选召回口径一致
+            String name = MaterialNameResolver.resolve(cd);
+            if (StrUtil.isNotBlank(name)) cd.setMaterialName(name);
+            // 第二步：用名称检索标准库，精确命中则直接采用、跳过 AI
+            CategoryStandardLibrary.ResolveResult pr = stdLib.resolveExactByName(cd, name);
+            if (pr != null && pr.isMatched()) {
+                BatchClassifyResult hit = new BatchClassifyResult();
+                hit.setCategoryCode(pr.getCategory().getCategoryCode());
+                hit.setCategoryName(pr.getCategory().getCategoryName());
+                hit.setScore(100.0);
+                hit.setReason("物料名称精确命中标准库（跳过AI），编码=" + pr.getCategory().getCategoryCode());
+                persistResult(cd, hit, updateStatus, preResolved);
+                log.info("预检索命中（跳过AI）：cleanedDataId={}，名称={}，编码={}，名称={}",
+                        cd.getId(), name, pr.getCategory().getCategoryCode(), pr.getCategory().getCategoryName());
+            } else {
+                ordered.add(id);
+            }
+        }
+        if (!preResolved.isEmpty()) {
+            try {
+                Db.updateBatchById(preResolved, 500);
+            } catch (Exception e) {
+                log.warn("预检索命中批量写库失败，回退逐条写库：{}", e.getMessage());
+                for (CleanedDataEntity cd : preResolved) {
+                    try { cleanedDataMapper.updateById(cd); } catch (Exception ex) { log.error("预检索写库失败 id={}: {}", cd.getId(), ex.getMessage()); }
+                }
+            }
         }
 
         // 按记录顺序拆分批次，每个批次一次性调用大模型；并发执行多个批次，大幅提升分类速度
-        List<Long> ordered = new ArrayList<>();
-        for (Long id : records) if (byId.containsKey(id)) ordered.add(id);
+        // （ordered 里只剩「名称未精确命中、需 AI 从 top-N 候选中判别」的物料）
 
         int size = normalizeBatchSize(batchSize);
         int concurrency = Math.max(1, batchClassifyConcurrency);
@@ -240,17 +277,31 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
 
         String systemPrompt = batchPrompt.getOrDefault("batch.system-prompt",
                 "你是一名严谨的工业品物料数据分类专家，只输出要求的 JSON，不要输出其他内容。");
+        // 系统提示词里的序号占位符 {batchIndex} 替换为实际批次数（仅说明性用途）
+        systemPrompt = systemPrompt.replace("{batchIndex}", String.valueOf(materials.size()));
         String userPrompt = buildBatchUserPrompt(materials);
         if (StrUtil.isBlank(userPrompt)) {
             for (CleanedDataEntity cd : materials) out.add(ruleResultOnly(cd, "批次用户提示词为空，规则校验："));
             return out;
         }
 
-        // 排查用：打印发送给大模型的完整提示词（系统提示词 + 用户提示词），便于定位分类为空的原因
-        log.warn("====== 批次分类发送给大模型的提示词 START（titleId批次, 输入{}条）======", materials.size());
-        log.warn("【系统提示词】\n{}", systemPrompt);
-        log.warn("【用户提示词】\n{}", userPrompt);
-        log.warn("====== 批次分类发送给大模型的提示词 END ======");
+        // 大模型识别侧日志：记录本批每行「识别出的物料名称 + 材质/标准号」，便于核对大模型收到的核心识别信息
+        if (log.isInfoEnabled()) {
+            StringBuilder rec = new StringBuilder();
+            for (int i = 0; i < materials.size(); i++) {
+                CleanedDataEntity cd = materials.get(i);
+                if (cd == null) continue;
+                MaterialNameResolver.MaterialAttributes a = MaterialNameResolver.extractAttributes(cd);
+                if (rec.length() > 0) rec.append(" | ");
+                rec.append(i + 1).append(":名称[").append(StrUtil.nullToEmpty(cd.getMaterialName()))
+                        .append("]材质[").append(String.join("、", a.grades))
+                        .append("]标准[").append(String.join("、", a.standards)).append("]");
+            }
+            log.info("[大模型识别] 发送批次共{}条，各物料识别信息：{}", materials.size(), rec.toString());
+        }
+        // 把发给大模型的【完整最终提示词】（占位符已全部替换）写入文件 + 打印到控制台，
+        // 便于直接复制出来单独问大模型验证效果。文件不受终端截断影响，可拿到完整文本。
+        dumpFullPrompt("批次", systemPrompt, userPrompt);
 
         String aiText;
         long aiStart = System.currentTimeMillis();
@@ -263,6 +314,8 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
             return out;
         }
         long aiCost = System.currentTimeMillis() - aiStart;
+        // 把 AI 原始返回写入文件 + 打印到控制台（完整、可复制）
+        dumpAiReturn("批次", aiText);
         log.info("批次分类 AI 调用完成（原始返回已脱敏）：输入 {} 条，响应耗时 {}ms，AI 原始返回(脱敏)={}",
                 materials.size(), aiCost, maskSensitive(aiText));
         List<BatchClassifyResult> parsed = parseBatchAiResult(aiText);
@@ -358,10 +411,14 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                 + "规格：" + StrUtil.nullToEmpty(cd.getSpecification()) + "\n"
                 + "单位：" + StrUtil.nullToEmpty(cd.getUnit()) + "\n"
                 + "牌号：" + StrUtil.nullToEmpty(cd.getGrade());
+        // 完整打印单条重试发给大模型的提示词（写入文件 + 控制台，便于直接复制）
+        dumpFullPrompt("单条重试(cleanedDataId=" + cd.getId() + ")", systemPrompt, singlePrompt);
         try {
             long s = System.currentTimeMillis();
             String text = aiClientService.chat(systemPrompt, singlePrompt);
             long cost = System.currentTimeMillis() - s;
+            // 把单条重试的 AI 原始返回写入文件 + 控制台
+            dumpAiReturn("单条重试(cleanedDataId=" + cd.getId() + ")", text);
             List<BatchClassifyResult> parsed = parseBatchAiResult(text);
             if (parsed != null && !parsed.isEmpty()) {
                 BatchClassifyResult r = parsed.get(0);
@@ -420,6 +477,44 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
         try {
             String code = r.getCategoryCode();
             String name = r.getCategoryName();
+            // 保留大模型原始分类理由（reason），写入 ai_reason 供参考
+            final String aiModelReason = StrUtil.blankToDefault(r.getReason(), "");
+            // 计算本物料 top-k 候选并保存到 ai_candidate_codes（JSON 文本），供人工复核/编辑分类参考
+            try {
+                List<CategoryEntity> cands = topCandidatesFor(cd, CANDIDATE_SHOW_K);
+                if (cands != null && !cands.isEmpty()) {
+                    StringBuilder cb = new StringBuilder("[");
+                    for (int i = 0; i < cands.size(); i++) {
+                        CategoryEntity cc = cands.get(i);
+                        if (i > 0) cb.append(",");
+                        cb.append("{\"code\":\"").append(StrUtil.nullToEmpty(cc.getCategoryCode()))
+                          .append("\",\"name\":\"").append(StrUtil.nullToEmpty(cc.getCategoryName()))
+                          .append("\",\"path\":\"").append(StrUtil.nullToEmpty(cc.getFullPath()))
+                          .append("\",\"desc\":\"").append(StrUtil.nullToEmpty(cc.getDescription()).replace("\"", "'")).append("\"}");
+                    }
+                    cb.append("]");
+                    cd.setAiCandidateCodes(cb.toString());
+                }
+            } catch (Exception ex) {
+                log.warn("保存 top-k 候选失败，cleanedDataId={}: {}", cd.getId(), ex.getMessage());
+            }
+            // P2-1：大模型判定候选均不符（NEW_CATEGORY）或未给出编码 → 说明标准库缺该类，
+            // 此时不强行兜底归类到错误编码，而是标记「需人工建类/审核」，推动标准库迭代。
+            if (StrUtil.isBlank(code) || "NEW_CATEGORY".equalsIgnoreCase(code)
+                    || "NEW_CATEGORY".equalsIgnoreCase(name)) {
+                cd.setMatchSource("NEW_CATEGORY");
+                cd.setMatchConfidence(0.0);
+                cd.setQualityScore(0.0);
+                cd.setAccuracyScore(0.0);
+                cd.setAiReason("大模型判定标准库候选均不符合，可能存在未收录的新物料类别，需人工确认并扩充标准库（AI名称="
+                        + StrUtil.nullToEmpty(name) + "）");
+                if (updateStatus) cd.setStatus(DataStatus.NEEDS_REVIEW);
+                if (collector != null) collector.add(cd);
+                else transactionTemplate.executeWithoutResult(s -> cleanedDataMapper.updateById(cd));
+                r.setPersisted(true);
+                r.setError(null);
+                return;
+            }
             // 综合解析（带命中等级）：优先用大模型返回的编码/名称匹配标准库；都为空或无效时，
             // 回退到物料自身文本（物资名称/全描述）去标准库召回兜底，保证尽量落到合法三级分类。
             CategoryStandardLibrary.ResolveResult resolve = stdLib.resolveWithGrade(cd, code, name);
@@ -436,34 +531,91 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                 cd.setMatchConfidence(1.0);
                 // 评分标准：完全匹配100 / 强匹配90 / 模糊匹配80 / 近似匹配50
                 score = grade.score();
+                // 默认把大模型原始分类理由写入 ai_reason
+                cd.setAiReason(aiModelReason);
+                // P2-2 反查校验：除 EXACT（名称/编码本就一致）外，若目标分类名在源数据中完全未出现，
+                // 说明可能是模型误选（如把「密封件」判给「部件」），降级为需人工审核，防止硬性误分类。
+                if (grade != CategoryStandardLibrary.MatchGrade.EXACT
+                        && !crossCheck(target.getCategoryName(), cd)) {
+                    cd.setMatchSource("AI_UNVERIFIED");
+                    cd.setMatchConfidence(0.4);
+                    score = CategoryStandardLibrary.MatchGrade.SIMILAR.score();
+                    cd.setAiReason((StrUtil.isNotBlank(aiModelReason) ? "AI理由：" + aiModelReason + "；" : "")
+                            + "反查校验：模型判定为【" + target.getCategoryName() + "】，但该分类名未在物料描述中出现，需人工确认（原AI结果："
+                            + StrUtil.nullToEmpty(name) + "/" + StrUtil.nullToEmpty(code) + "）");
+                }
                 if (log.isInfoEnabled()) log.info("批次分类命中标准库，cleanedDataId={}，AI编码={}，AI名称={}，落库编码={}，落库名称={}，等级={}，评分={}",
                         cd.getId(), code, name, target.getCategoryCode(), target.getCategoryName(), grade, score);
             } else {
-                // 未命中标准库：召回 top-3 备选三级分类，默认按最接近的一个兜底归类，
-                // 不再留空（分类字段填默认最接近项，评分给近似分），aiReason 记录备选三项供人工确认。
+                // 未命中标准库：先召回 top-3 候选三级分类，并对「大模型返回的编码」做候选校验。
+                // 候选校验（用户要求）：大模型返回的编码必须是候选列表中的真实三级编码。
                 List<CategoryEntity> top3 = topCandidatesFor(cd, CANDIDATE_SHOW_K);
                 if (top3 != null && !top3.isEmpty()) {
-                    CategoryEntity fallback = top3.get(0);
-                    cd.setCategoryId(fallback.getId());
-                    cd.setCategoryCode(fallback.getCategoryCode());
-                    cd.setCategoryName(fallback.getCategoryName());
-                    cd.setCategoryLevel(fallback.getLevel());
-                    cd.setCategoryFullPath(fallback.getFullPath());
-                    cd.setMatchSource("UNMATCHED_FALLBACK");
-                    cd.setMatchConfidence(0.0);
-                    score = CategoryStandardLibrary.MatchGrade.SIMILAR.score(); // 近似 50，需人工确认
-                    StringBuilder sb = new StringBuilder();
-                    sb.append("未精确匹配标准库，按语义/关键词最接近默认归入【")
-                            .append(fallback.getCategoryCode()).append(" ").append(fallback.getCategoryName()).append("】；")
-                            .append("备选分类（按相关性）：");
-                    for (int i = 0; i < top3.size(); i++) {
-                        CategoryEntity c = top3.get(i);
-                        sb.append(i + 1).append(". ").append(c.getCategoryCode()).append(" ").append(c.getCategoryName());
-                        if (i < top3.size() - 1) sb.append("；");
+                    Set<String> candCodes = new HashSet<>();
+                    for (CategoryEntity c : top3) candCodes.add(c.getCategoryCode());
+                    // —— 情形A：模型返回了编码但【不在候选列表】（自造/跑偏编码，如 CB-001-03）——
+                    if (StrUtil.isNotBlank(code) && !candCodes.contains(code)) {
+                        cd.setMatchSource("AI_UNVERIFIED");
+                        cd.setMatchConfidence(0.2);
+                        score = CategoryStandardLibrary.MatchGrade.SIMILAR.score(); // 近似 50，需人工确认
+                        StringBuilder sb = new StringBuilder();
+                        sb.append("模型返回编码【").append(code).append(" ").append(StrUtil.nullToEmpty(name))
+                                .append("】不在候选列表中，疑似自造/跑偏，不直接落库，需人工确认；候选分类（按相关性）：");
+                        for (int i = 0; i < top3.size(); i++) {
+                            CategoryEntity c = top3.get(i);
+                            sb.append(i + 1).append(". ").append(c.getCategoryCode()).append(" ").append(c.getCategoryName());
+                            if (i < top3.size() - 1) sb.append("；");
+                        }
+                        cd.setAiReason((StrUtil.isNotBlank(aiModelReason) ? "AI理由：" + aiModelReason + "；" : "") + sb.toString());
+                        if (updateStatus) cd.setStatus(DataStatus.NEEDS_REVIEW);
+                        log.warn("批次分类结果校验：模型返回编码不在候选列表中（自造/跑偏），需人工确认，cleanedDataId={}，AI编码=[{}]，AI名称=[{}]，候选={}",
+                                cd.getId(), code, name, candCodes);
+                    } else if (StrUtil.isNotBlank(code) && candCodes.contains(code)) {
+                        // —— 情形B：模型编码在候选列表中，但 resolveWithGrade 未精确匹配（如编码格式差异）——
+                        // 以候选为准直接采用该编码对应的候选分类（模型已从候选里选对，仅库匹配口径不一致）
+                        CategoryEntity chosen = null;
+                        for (CategoryEntity c : top3) {
+                            if (code.equals(c.getCategoryCode())) { chosen = c; break; }
+                        }
+                        if (chosen != null) {
+                            cd.setCategoryId(chosen.getId());
+                            cd.setCategoryCode(chosen.getCategoryCode());
+                            cd.setCategoryName(chosen.getCategoryName());
+                            cd.setCategoryLevel(chosen.getLevel());
+                            cd.setCategoryFullPath(chosen.getFullPath());
+                            cd.setMatchSource("AI_CANDIDATE");
+                            cd.setMatchConfidence(0.8);
+                            score = Math.max(score, CategoryStandardLibrary.MatchGrade.STRONG.score()); // ≥强匹配90
+                            cd.setAiReason("模型编码命中候选列表，直接采用："
+                                    + chosen.getCategoryCode() + " " + chosen.getCategoryName()
+                                    + "（原AI返回：" + StrUtil.nullToEmpty(name) + "）");
+                            log.info("批次分类候选命中：cleanedDataId={}，AI编码=[{}] 命中候选，落库编码={}，评分={}",
+                                    cd.getId(), code, chosen.getCategoryCode(), score);
+                        }
+                    } else {
+                        // —— 情形C：模型未返回编码（或为空）且非 NEW_CATEGORY → 按最接近候选兜底归类 ——
+                        CategoryEntity fallback = top3.get(0);
+                        cd.setCategoryId(fallback.getId());
+                        cd.setCategoryCode(fallback.getCategoryCode());
+                        cd.setCategoryName(fallback.getCategoryName());
+                        cd.setCategoryLevel(fallback.getLevel());
+                        cd.setCategoryFullPath(fallback.getFullPath());
+                        cd.setMatchSource("UNMATCHED_FALLBACK");
+                        cd.setMatchConfidence(0.0);
+                        score = CategoryStandardLibrary.MatchGrade.SIMILAR.score(); // 近似 50，需人工确认
+                        StringBuilder sb = new StringBuilder();
+                        sb.append("模型未给出候选内编码，按语义/关键词最接近默认归入【")
+                                .append(fallback.getCategoryCode()).append(" ").append(fallback.getCategoryName()).append("】；")
+                                .append("备选分类（按相关性）：");
+                        for (int i = 0; i < top3.size(); i++) {
+                            CategoryEntity c = top3.get(i);
+                            sb.append(i + 1).append(". ").append(c.getCategoryCode()).append(" ").append(c.getCategoryName());
+                            if (i < top3.size() - 1) sb.append("；");
+                        }
+                        cd.setAiReason((StrUtil.isNotBlank(aiModelReason) ? "AI理由：" + aiModelReason + "；" : "") + sb.toString());
+                        log.warn("批次分类结果未精确命中标准库，默认按最接近兜底归类，cleanedDataId={}，AI返回编码=[{}]，AI返回名称=[{}]，兜底编码={}，评分={}",
+                                cd.getId(), code, name, fallback.getCategoryCode(), score);
                     }
-                    cd.setAiReason(sb.toString());
-                    log.warn("批次分类结果未精确命中标准库，默认按最接近兜底归类，cleanedDataId={}，AI返回编码=[{}]，AI返回名称=[{}]，兜底编码={}，评分={}",
-                            cd.getId(), code, name, fallback.getCategoryCode(), score);
                 } else {
                     // 连备选都召回不到：彻底留空标记 UNMATCHED，交由人工处理
                     cd.setMatchSource("UNMATCHED");
@@ -529,11 +681,17 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                             .replace("{code}", StrUtil.nullToEmpty(cat.getCategoryCode()))
                             .replace("{name}", StrUtil.nullToEmpty(cat.getCategoryName()))
                             .replace("{path}", StrUtil.nullToEmpty(cat.getFullPath()))
+                            .replace("{desc}", StrUtil.nullToEmpty(cat.getDescription()))
                     ).append("\n");
                     shown++;
                 }
             }
             // 不指定某个元素作为分类依据：把整条原始数据（属性拆分列全描述/整行文本）作为分类条件交给大模型
+            // 同时注入拆解出的「材质(牌号)/执行标准」，让模型按「材质优先、形态其次」原则判断（P1 硬性约束）。
+            MaterialNameResolver.MaterialAttributes attr = MaterialNameResolver.extractAttributes(cd);
+            StringBuilder rawData = new StringBuilder(buildRawData(cd));
+            if (!attr.grades.isEmpty()) rawData.append("；材质/牌号=").append(String.join("、", attr.grades));
+            if (!attr.standards.isEmpty()) rawData.append("；执行标准=").append(String.join("、", attr.standards));
             String line = materialLineTpl
                     .replace("{batchIndex}", String.valueOf(i + 1))
                     .replace("{materialCode}", StrUtil.nullToEmpty(cd.getMaterialCode()))
@@ -543,11 +701,65 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                     .replace("{technicalStandard}", StrUtil.nullToEmpty(cd.getTechnicalStandard()))
                     .replace("{unit}", StrUtil.nullToEmpty(cd.getUnit()))
                     .replace("{fullDescription}", StrUtil.nullToEmpty(cd.getFullDescription()))
-                    .replace("{rawData}", buildRawData(cd))
+                    .replace("{rawData}", rawData.toString().trim())
                     .replace("{candidates}", candBlock.toString().trim());
             materialsBlock.append(line).append("\n");
         }
         return userTemplate.replace("{materials}", materialsBlock.toString().trim());
+    }
+
+    /**
+     * 把发给大模型的【完整最终提示词】（占位符已全部替换）写入文件并打印到控制台。
+     * 目的：能拿到一份完整的、可复制的提示词文本，直接复制去单独问大模型验证效果。
+     * 文件输出不受终端截断影响；控制台同时输出一份，方便现场查看。
+     *
+     * @param tag          场景标识（如「批次」「单条重试」），用于文件名与日志
+     * @param systemPrompt 系统提示词（已替换完整）
+     * @param userPrompt   用户提示词（已替换完整）
+     */
+    private void dumpFullPrompt(String tag, String systemPrompt, String userPrompt) {
+        StringBuilder full = new StringBuilder();
+        full.append("【系统提示词】\n").append(systemPrompt).append("\n\n");
+        full.append("【用户提示词】\n").append(userPrompt).append("\n");
+        String fullText = full.toString();
+
+        // 1) 写入文件（logs 目录，文件名带时间戳），拿到完整文本
+        String fileName = "logs/prompt-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS")
+                .format(new java.util.Date()) + "-" + tag + ".txt";
+        java.io.File dir = new java.io.File("logs");
+        try {
+            if (!dir.exists()) dir.mkdirs();
+            java.nio.file.Files.write(java.nio.file.Paths.get(fileName),
+                    fullText.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            log.warn("完整提示词写入文件失败 {}: {}", fileName, e.getMessage());
+        }
+
+        // 2) 控制台完整打印
+        System.out.println("========== " + tag + " 发送给大模型的【完整提示词】写入文件：" + fileName + " ==========");
+        System.out.println(fullText);
+        System.out.println("========== " + tag + " 发送给大模型的【完整提示词】END ==========");
+    }
+
+    /**
+     * 把大模型【原始返回】写入文件并打印到控制台，便于完整、可复制地查看 AI 返回内容（JSON）。
+     * 文件输出不受终端截断影响。
+     */
+    private void dumpAiReturn(String tag, String aiText) {
+        if (aiText == null) aiText = "";
+        String fileName = "logs/ai-return-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS")
+                .format(new java.util.Date()) + "-" + tag + ".txt";
+        java.io.File dir = new java.io.File("logs");
+        try {
+            if (!dir.exists()) dir.mkdirs();
+            java.nio.file.Files.write(java.nio.file.Paths.get(fileName),
+                    aiText.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            log.warn("AI 返回写入文件失败 {}: {}", fileName, e.getMessage());
+        }
+        System.out.println("========== " + tag + " 大模型【原始返回】写入文件：" + fileName + " ==========");
+        System.out.println(aiText);
+        System.out.println("========== " + tag + " 大模型【原始返回】END ==========");
     }
 
     /**
@@ -644,6 +856,7 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
     private List<CategoryEntity> recallCandidates(CleanedDataEntity cd, int n) {
         List<CategoryEntity> result = new ArrayList<>();
         Set<Long> seen = new HashSet<>();
+        String materialId = cd != null ? "id=" + cd.getId() : "null";
         // 命中即加入（去重），优先保序：先关键词后语义
         java.util.function.Consumer<CategoryEntity> add = cat -> {
             if (cat == null || cat.getId() == null || cat.getLevel() == null || cat.getLevel() != 3) return;
@@ -652,6 +865,7 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
 
         // —— 第 1 层：关键词召回（确定性匹配，最可信）——
         if (cd != null) {
+            int kwBefore = result.size();
             List<CategoryStandardLibrary.Candidate> kw =
                     stdLib.retrieveCandidates(cd, candidateRecallK);
             for (CategoryStandardLibrary.Candidate c : kw) {
@@ -664,19 +878,29 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                     for (CategoryEntity desc : stdLib.getSubtree(cat.getId())) add.accept(desc);
                 }
             }
+            if (log.isInfoEnabled()) log.info("[召回] 关键词层：物料{}，原文={}，命中三级候选={} 个（本层新增={}）",
+                    materialId, StrUtil.nullToEmpty(cd.getMaterialName()), kw.size(), result.size() - kwBefore);
         }
 
         // —— 第 2 层：语义向量召回（相似度阈值过滤，保证可信）——
         String nameForSearch = cd != null ? extractNameForSearch(cd) : null;
-        String query = StrUtil.isNotBlank(nameForSearch) ? nameForSearch
+        // 查询文本 = 物料名称 + 长描述前 3 段（含材质/形态/标准号等属性），
+        // 避免仅凭「名称」匹配「分类名称」（如「圆钢」vs「棒材」向量距离远），提升召回率。
+        String query = StrUtil.isNotBlank(nameForSearch) ? (nameForSearch + " " + firstSegmentsOf(cd, 3))
                 : (cd != null ? buildRawData(cd) : null);
         if (StrUtil.isNotBlank(query) && semanticLib.isEnabled()) {
+            int semBefore = result.size();
+            int dropped = 0;
             List<SemanticCategoryLibrary.Candidate> semantic =
                     semanticLib.searchTopK(query, candidateRecallK);
+            StringBuilder semLog = new StringBuilder();
             for (SemanticCategoryLibrary.Candidate s : semantic) {
-                if (s.getSimilarity() < SEMANTIC_MIN_SIMILARITY) continue; // 低于阈值视为不相关噪声，丢弃
+                if (s.getSimilarity() < SEMANTIC_MIN_SIMILARITY) { dropped++; continue; } // 低于阈值视为不相关噪声，丢弃
                 add.accept(s.getCategory());
+                semLog.append(String.format("[%s:%.2f]", s.getCategory().getCategoryCode(), s.getSimilarity()));
             }
+            if (log.isInfoEnabled()) log.info("[召回] 语义层：物料{}，查询={}，原始召回={} 个（相似度明细={}，低于阈值丢弃={} 个，本层新增={}）",
+                    materialId, query, semantic.size(), semLog.toString(), dropped, result.size() - semBefore);
         }
 
         // —— 第 3 层：兜底补足（保证必有 n 个，且均来自标准库真实三级）——
@@ -694,11 +918,21 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                 if (result.size() >= n) break;
                 add.accept(cat);
             }
+            if (log.isInfoEnabled()) log.info("[召回] 兜底层：物料{} 前两层层不足{}个，按相关性从标准库三级全集补足，当前={} 个",
+                    materialId, n, result.size());
         }
 
         // 截断到 n（理论已 ≥ n）
-        if (result.size() > n) return new ArrayList<>(result.subList(0, n));
-        return result;
+        List<CategoryEntity> finalList = result.size() > n ? new ArrayList<>(result.subList(0, n)) : result;
+        if (log.isInfoEnabled()) {
+            StringBuilder codes = new StringBuilder();
+            for (CategoryEntity cat : finalList) {
+                if (codes.length() > 0) codes.append("、");
+                codes.append(cat.getCategoryCode()).append("/").append(cat.getCategoryName());
+            }
+            log.info("[召回] 汇总：物料{} 最终召回 top{} = [{}]", materialId, n, codes.toString());
+        }
+        return finalList;
     }
 
     /** 计算标准分类与物料文本的关联度（基于名称/路径的关键词命中，用于兜底排序） */
@@ -729,49 +963,25 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
 
     /**
      * 提取用于搜索的干净「物资名称」。
-     * 优先取解析字段 materialName；为空时从全描述中提取（形如「物资名称 冷轧不锈钢板;物资简称 钢板;…」），
-     * 或按特殊符号（|、;、、）切割取第一个非空片段作为名称。
+     * 统一委托 {@link MaterialNameResolver#resolve(CleanedDataEntity)}，
+     * 保证候选召回的检索名称与提示词中给大模型的名称提取规则完全一致，
+     * 避免两者口径不同导致的召回跑偏（分类全错的核心根因）。
      */
     private String extractNameForSearch(CleanedDataEntity cd) {
-        if (cd == null) return "";
-        if (StrUtil.isNotBlank(cd.getMaterialName())) return cd.getMaterialName().trim();
-        if (StrUtil.isNotBlank(cd.getFullDescription())) {
-            String desc = cd.getFullDescription();
-            // 尝试解析「物资名称」属性值
-            int idx = desc.indexOf("物资名称");
-            String seg = null;
-            if (idx >= 0) {
-                int v = idx + "物资名称".length();
-                if (v < desc.length() && (desc.charAt(v) == ' ' || desc.charAt(v) == '：' || desc.charAt(v) == ':')) v++;
-                int end = desc.length();
-                for (int i = v; i < desc.length(); i++) {
-                    char ch = desc.charAt(i);
-                    if (ch == ';' || ch == '|' || ch == '；' || ch == '、' || ch == '\n') { end = i; break; }
-                }
-                seg = desc.substring(v, end).trim();
-                if (StrUtil.isNotBlank(seg)) return seg;
-            }
-            // 兜底：按特殊符号切割取第一个非空片段
-            String[] parts = desc.split("[|;；、\n]+");
-            for (String p : parts) {
-                String t = p.trim();
-                if (StrUtil.isNotBlank(t)) return t;
-            }
-        }
-        return "";
+        return MaterialNameResolver.resolve(cd);
     }
 
-    /** 把整条原始数据拼接为分类条件文本（以属性拆分列全描述为主，补充解析字段） */
+    /** 把整条原始数据拼接为分类条件文本（只含描述性字段，剔除价格/编码/数量等无关噪声）。 */
     private String buildRawData(CleanedDataEntity cd) {
         if (cd == null) return "";
         StringBuilder sb = new StringBuilder();
         if (StrUtil.isNotBlank(cd.getFullDescription())) {
             sb.append(cd.getFullDescription().trim());
         }
-        // 当全描述缺失时，兜底拼接解析后的各字段，保证整条原始数据作为条件
-        if (StrUtil.isBlank(cd.getFullDescription())) {
+        // 仅兜底拼接描述性字段：名称、规格、牌号、技术标准；不含 materialCode(编码)/unit(单位) 等无分类信息字段
+        if (sb.length() == 0) {
             for (String f : new String[]{cd.getMaterialName(), cd.getSpecification(), cd.getGrade(),
-                    cd.getTechnicalStandard(), cd.getUnit(), cd.getMaterialCode()}) {
+                    cd.getTechnicalStandard()}) {
                 if (StrUtil.isNotBlank(f)) {
                     if (sb.length() > 0) sb.append("，");
                     sb.append(f.trim());
@@ -782,7 +992,7 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
     }
 
     /** 解析大模型返回的 JSON 数组结果 */
-    private List<BatchClassifyResult> parseBatchAiResult(String aiText) {
+    List<BatchClassifyResult> parseBatchAiResult(String aiText) {
         List<BatchClassifyResult> out = new ArrayList<>();
         if (StrUtil.isBlank(aiText)) return out;
         String text = aiText.trim();
@@ -803,7 +1013,8 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                 JSONArray resultArr = obj.getJSONArray("result");
                 if (resultArr != null) {
                     arr = resultArr;
-                } else if (obj.containsKey("categoryCode") || obj.containsKey("score")) {
+                } else if (obj.containsKey("categoryCode") || obj.containsKey("standardCode")
+                        || obj.containsKey("score") || obj.containsKey("accuracyScore")) {
                     arr = new JSONArray();
                     arr.add(obj);
                 }
@@ -824,12 +1035,17 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                 JSONObject o = arr.getJSONObject(i);
                 if (o == null) continue;
                 BatchClassifyResult r = new BatchClassifyResult();
-                Object idObj = o.get("id");
-                if (idObj != null) r.setId(Long.valueOf(idObj.toString()));
-                r.setCategoryCode(pickString(o, "categoryCode", "分类编码", "分类代码"));
-                r.setCategoryName(pickString(o, "categoryName", "分类名称", "名称"));
-                Object scoreObj = o.get("score");
-                if (scoreObj == null) scoreObj = o.get("准确性评分");
+                // 兼容大模型常见的多种字段命名：id/batchIndex、categoryCode/standardCode/code、score/accuracyScore
+                Object idObj = pickObj(o, "id", "batchIndex", "index", "序号");
+                if (idObj != null) {
+                    try { r.setId(Long.valueOf(idObj.toString())); } catch (Exception ignored) { r.setId(null); }
+                }
+                r.setCategoryCode(pickString(o, "categoryCode", "standardCode", "code",
+                        "分类编码", "分类代码", "标准编码"));
+                r.setCategoryName(pickString(o, "categoryName", "standardName", "name",
+                        "分类名称", "标准名称", "名称"));
+                Object scoreObj = pickObj(o, "score", "accuracyScore", "confidence",
+                        "评分", "准确性评分", "置信度");
                 if (scoreObj != null) {
                     try {
                         r.setScore(Math.max(0, Math.min(Double.parseDouble(scoreObj.toString()), 100)));
@@ -837,13 +1053,22 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
                         r.setScore(0.0);
                     }
                 }
-                r.setReason(pickString(o, "reason", "理由", "说明"));
+                r.setReason(pickString(o, "reason", "理由", "说明", "原因"));
                 out.add(r);
             } catch (Exception ignored) {
                 // 单条解析失败跳过
             }
         }
         return out;
+    }
+
+    /** 按 key 顺序取第一个存在的字段值（Object），用于 id/score 等非纯字符串字段 */
+    private Object pickObj(JSONObject o, String... keys) {
+        if (o == null) return null;
+        for (String k : keys) {
+            if (o.containsKey(k) && o.get(k) != null) return o.get(k);
+        }
+        return null;
     }
 
     /** 按英文 key 优先、中文 key 兜底的方式取字符串字段 */
@@ -867,6 +1092,50 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
     private String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() <= max ? s : s.substring(0, max);
+    }
+
+    /** 反查校验：目标分类名（或其核心词）是否在物料源数据中出现。用于防止模型硬性误分类。 */
+    private boolean crossCheck(String categoryName, CleanedDataEntity cd) {
+        if (StrUtil.isBlank(categoryName) || cd == null) return true; // 无目标名不拦截
+        String src = StrUtil.firstNonNull(
+                StrUtil.blankToDefault(cd.getFullDescription(), null),
+                StrUtil.blankToDefault(cd.getMaterialName(), null)
+        );
+        if (StrUtil.isBlank(src)) return true;
+        String cat = categoryName.trim();
+        // 直接包含分类名
+        if (src.contains(cat)) return true;
+        // 分类名去掉宽泛词后的核心词，任一出现在源数据中即视为通过
+        for (String core : CORE_TOKENS) {
+            if (cat.contains(core) && src.contains(core)) return true;
+        }
+        return false;
+    }
+
+    /** 用于反查校验的核心品类词（分类名的关键构成） */
+    private static final java.util.Set<String> CORE_TOKENS = new java.util.LinkedHashSet<>(java.util.Arrays.asList(
+            "板", "管", "棒", "线", "型", "材", "件", "阀", "法兰", "螺栓", "螺钉", "螺母", "轴承", "密封",
+            "齿轮", "泵", "电机", "电缆", "开关", "接头", "弯头", "焊条", "链条", "弹簧", "橡胶", "塑料"));
+
+    /** 取长描述/全描述的前 n 段（按 | ;；、 ， 切分），补充语义查询用。 */
+    private String firstSegmentsOf(CleanedDataEntity cd, int n) {
+        if (cd == null) return "";
+        String desc = StrUtil.blankToDefault(cd.getFullDescription(), null);
+        if (StrUtil.isBlank(desc)) return "";
+        String[] parts = desc.split("[|;；、，\n\t]+");
+        StringBuilder sb = new StringBuilder();
+        int count = 0;
+        for (String p : parts) {
+            String t = p.trim();
+            if (StrUtil.isBlank(t)) continue;
+            // 跳过「列N:」这类无语义前缀
+            t = t.replaceFirst("^列\\s*\\d+\\s*[:：]?", "").trim();
+            if (StrUtil.isBlank(t)) continue;
+            if (sb.length() > 0) sb.append(" ");
+            sb.append(t);
+            if (++count >= n) break;
+        }
+        return sb.toString().trim();
     }
 
     /**

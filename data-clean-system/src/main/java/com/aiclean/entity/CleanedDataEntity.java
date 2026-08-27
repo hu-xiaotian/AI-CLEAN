@@ -115,6 +115,12 @@ public class CleanedDataEntity extends BaseEntity {
      * AI 辅助分类理由描述（启用 AI 辅助评分时，大模型对分类合理性的说明）
      */
     private String aiReason;
+
+    /**
+     * AI 分类时命中的 top-k 候选分类（JSON 文本，如 [{"code":"100101","name":"冷轧板材"},...]），
+     * 供后续人工编辑/复核分类时参考
+     */
+    private String aiCandidateCodes;
     
     /**
      * 完整性评分

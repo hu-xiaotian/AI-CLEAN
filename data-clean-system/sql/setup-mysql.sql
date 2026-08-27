@@ -385,6 +385,7 @@ CREATE TABLE `cleaned_data` (
                                 `status` VARCHAR(50) DEFAULT 'draft' COMMENT '状态',
                                 `quality_score` DOUBLE DEFAULT 0 COMMENT '质量评分',
                                 `ai_reason` TEXT COMMENT 'AI 辅助分类理由描述（启用 AI 辅助评分时记录）',
+                                `ai_candidate_codes` TEXT COMMENT 'AI 分类命中的 top-k 候选分类 JSON（如 [{"code":"100101","name":"冷轧板材"}]），供人工复核/编辑分类参考',
                                 `completeness_score` DOUBLE DEFAULT 0 COMMENT '完整性评分',
                                 `accuracy_score` DOUBLE DEFAULT 0 COMMENT '准确度评分',
                                 `review_comment` VARCHAR(200) COMMENT '审核备注',

@@ -67,6 +67,8 @@ public class SemanticCategoryLibrary {
     private volatile Map<Long, double[]> index = new HashMap<>();
     private volatile List<CategoryEntity> categories = new ArrayList<>();
     private final AtomicBoolean building = new AtomicBoolean(false);
+    /** 是否处于容器关闭中。置位后不再尝试任何数据库写操作，避免「连接池已关闭」竞态刷日志 */
+    private volatile boolean shuttingDown = false;
     /**
      * Embedding 是否已确认可用。当向量化全表完全失败（如模型不存在）时置 false，
      * 避免每次启动/调用都反复尝试全表向量化；重试请显式调用 {@link #reload()}。
@@ -109,6 +111,8 @@ public class SemanticCategoryLibrary {
 
     @PreDestroy
     public void shutdown() {
+        // 置关闭标志：后续 saveVector 等写库操作直接跳过，避免与数据源关闭产生竞态
+        shuttingDown = true;
         initExecutor.shutdownNow();
         ExecutorService e = embedExecutor;
         if (e != null) e.shutdownNow();
@@ -332,6 +336,8 @@ public class SemanticCategoryLibrary {
      * existingIds 里存在的分类用 update，否则用 insert（避免每条 selectOne 查询）。
      */
     private void saveVector(CategoryEntity c, String source, double[] v, Set<Long> existingIds, String embeddingModel) {
+        // 容器关闭中：数据源已关闭，跳过写库，避免「连接池已关闭」竞态刷日志
+        if (shuttingDown) return;
         try {
             CategoryVectorEntity row = new CategoryVectorEntity();
             row.setCategoryId(c.getId());
@@ -350,7 +356,14 @@ public class SemanticCategoryLibrary {
                 if (existingIds != null) existingIds.add(c.getId());
             }
         } catch (Exception e) {
-            log.warn("标准分类向量写库失败，分类id={}: {}", c.getId(), e.getMessage());
+            String msg = e.getMessage();
+            // 关闭期竞态（连接池已关闭/数据源不可用）不打 WARN，避免刷屏
+            if (msg != null && (msg.contains("has been closed") || msg.contains("Connection is closed")
+                    || msg.contains("CannotGetJdbcConnection"))) {
+                if (log.isDebugEnabled()) log.debug("标准分类向量写库跳过（容器关闭中），分类id={}", c.getId());
+                return;
+            }
+            log.warn("标准分类向量写库失败，分类id={}: {}", c.getId(), msg);
         }
     }
 
@@ -485,6 +498,13 @@ public class SemanticCategoryLibrary {
         }
         if (StrUtil.isNotBlank(c.getDescription())) {
             sb.append("，说明：").append(c.getDescription());
+        } else {
+            // P0-4：说明为空时，用名称生成兜底说明，避免语义向量只含孤立名称导致「圆钢vs棒材」召回退化。
+            // 典型示例句式：该分类包含各种{name}及相关物料，可按材质/规格细分。
+            String nm = StrUtil.nullToEmpty(c.getCategoryName());
+            if (StrUtil.isNotBlank(nm)) {
+                sb.append("，说明：该分类包含各种").append(nm).append("及相关物料，可按材质/规格/执行标准细分");
+            }
         }
         for (String old : new String[]{c.getOldName1(), c.getOldName2(), c.getOldName3(), c.getOldName4(), c.getOldName5()}) {
             if (StrUtil.isNotBlank(old)) {
@@ -562,6 +582,8 @@ public class SemanticCategoryLibrary {
      * 分类数量少、频率低，使用一次 selectOne 判断存在性即可。
      */
     private void saveSingleVector(CategoryEntity c, String source, double[] v) {
+        // 容器关闭中：数据源已关闭，跳过写库
+        if (shuttingDown) return;
         try {
             CategoryVectorEntity exists = categoryVectorMapper.selectOne(
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<CategoryVectorEntity>()
@@ -579,7 +601,14 @@ public class SemanticCategoryLibrary {
                 categoryVectorMapper.insert(row);
             }
         } catch (Exception e) {
-            log.warn("标准分类向量写库失败，分类id={}: {}", c.getId(), e.getMessage());
+            String msg = e.getMessage();
+            // 关闭期竞态（连接池已关闭/数据源不可用）不打 WARN，避免刷屏
+            if (msg != null && (msg.contains("has been closed") || msg.contains("Connection is closed")
+                    || msg.contains("CannotGetJdbcConnection"))) {
+                if (log.isDebugEnabled()) log.debug("标准分类向量写库跳过（容器关闭中），分类id={}", c.getId());
+                return;
+            }
+            log.warn("标准分类向量写库失败，分类id={}: {}", c.getId(), msg);
         }
     }
 

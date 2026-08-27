@@ -961,6 +961,29 @@ th.sortable-id .sort-arrow {
     word-break: break-word;
 }
 
+/* AI top-k 候选分类单元格 */
+.cand-cell {
+    max-height: 64px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.cand-item {
+    cursor: default;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 240px;
+    color: var(--text-primary);
+}
+.cand-name {
+    color: var(--text-secondary);
+    margin-left: 2px;
+}
+
 /* 智能分类：分类名称可双击编辑 */
 .cat-edit {
     cursor: pointer;
