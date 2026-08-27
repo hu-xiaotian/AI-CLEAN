@@ -188,18 +188,11 @@
         <!-- ===== 一键数据清洗 ===== -->
         <section id="page-oneclick" class="page">
             <h2>一键数据清洗</h2>
-            <p class="desc">依次自动执行：智能分类 → 属性提取（可选 规则解析 / AI 智能提取） → 属性补全（自动映射并填充，补充数据表头默认取第一项）</p>
+            <p class="desc">依次自动执行：智能分类 → 属性提取（AI 智能提取） → 属性补全（自动映射并填充，补充数据表头默认取第一项）</p>
             <div class="card">
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="ocTitleId" class="form-input"></select></div>
                     <div class="form-group"><label>解析规则</label><select id="ocRuleId" class="form-input"></select></div>
-                    <div class="form-group">
-                        <label>属性提取方式</label>
-                        <div style="display:flex;gap:18px;align-items:center;margin-top:6px">
-                            <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="ocExtractMode" value="rule" checked> 规则解析提取</label>
-                            <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="ocExtractMode" value="ai"> AI 智能提取</label>
-                        </div>
-                    </div>
                     <div class="form-group">
                         <label>智能分类</label>
                         <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
@@ -290,19 +283,7 @@
         <!-- ===== 全描述提取 ===== -->
         <section id="page-extract" class="page">
             <h2>属性提取</h2>
-            <p class="desc">从全描述字段中解析属性键值对（支持规则解析与 AI 智能提取）</p>
-
-            <!-- 规则解析提取 -->
-            <div class="card">
-                <h3>规则解析提取</h3>
-                <div class="form-grid">
-                    <div class="form-group"><label>数据文件</label><select id="extractTitleId" class="form-input"></select></div>
-                    <div class="form-group"><label>解析规则</label><select id="extractRuleId" class="form-input"></select></div>
-                    <div class="form-group"><label>自定义名称</label><input id="extractCustomName" class="form-input" type="text" placeholder="可选，便于标识本次提取结果"></div>
-                    <div class="form-group"><button class="btn btn-primary" onclick="extractExtraData()">开始提取</button></div>
-                </div>
-                <div id="extractResult" class="mt-3" style="display:none"></div>
-            </div>
+            <p class="desc">由 AI 智能提取属性键值对（按每行分类编码查找标准字段表头，结合属性拆分列，由大模型拆分并入库）</p>
 
             <!-- AI 智能提取 -->
             <div class="card">
@@ -310,7 +291,6 @@
 <!--                <p class="desc">根据每行数据的分类编码查找对应标准字段表头作为<b>参数1（目标字段）</b>，结合文件导入时指定的<b>属性拆分列</b>作为<b>参数2（待拆分文本）</b>，由 AI 将描述文本按标准字段拆分并返回 JSON 键值对，解析后入库。</p>-->
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="aiExtractTitleId" class="form-input"></select></div>
-                    <div class="form-group"><label>自定义名称</label><input id="aiExtractCustomName" class="form-input" type="text" placeholder="可选，便于标识本次提取结果"></div>
                     <div class="form-group"><button class="btn btn-primary" id="aiExtractBtn" onclick="startAiExtract()">AI 提取</button></div>
                 </div>
                 <div id="aiExtractProgressCard" class="mt-3" style="display:none">
@@ -326,12 +306,21 @@
                 </div>
             </div>
 
+            <!-- AI 智能提取记录列表 -->
             <div class="card">
-                <h3>提取结果</h3>
-                <table class="data-table" id="extraTable">
-                    <thead><tr><th>ID</th><th>关联数据</th><th>解析规则</th><th>是否AI提取</th><th>自定义名称</th><th>属性列</th><th>操作</th></tr></thead>
-                    <tbody id="extraTbody"><tr><td colspan="7" class="empty-hint">暂无提取结果</td></tr></tbody>
-                </table>
+                <h3>AI 智能提取记录</h3>
+                <div class="form-grid">
+                    <div class="form-group"><label>&nbsp;</label><button class="btn btn-secondary" onclick="loadAiExtractTasks()">刷新</button></div>
+                </div>
+                <div class="table-scroll">
+                    <table class="data-table" id="aiExtractTaskTable">
+                        <thead><tr>
+                            <th>文件名</th><th>行数</th><th>提取状态</th>
+                            <th>开始时间</th><th>结束时间</th><th>耗时</th><th>操作</th>
+                        </tr></thead>
+                        <tbody id="aiExtractTaskTbody"><tr><td colspan="7" class="empty-hint">暂无提取记录</td></tr></tbody>
+                    </table>
+                </div>
             </div>
         </section>
 

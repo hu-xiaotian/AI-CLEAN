@@ -783,6 +783,54 @@ select.form-input { cursor: pointer; appearance: none; background-image: url("da
 .modal-lg { max-width: 560px; }
 .modal-xl { max-width: 860px; }
 
+/* 属性提取层级查看：列多、行多，使用更宽更高的弹窗 */
+.modal-extract {
+    width: 95vw;
+    max-width: 1400px;
+    max-height: 92vh;
+}
+
+/* 子弹窗：嵌入在主弹窗内，用于"源数据/修改"等二级操作，不销毁主弹窗 */
+.sub-modal {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    padding: 20px;
+}
+.sub-modal .sub-modal-card {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    width: 100%;
+    max-width: 960px;
+    max-height: 88%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.sub-modal .sub-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--bg-secondary, #f6f7f9);
+}
+.sub-modal .sub-modal-header h4 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+}
+.sub-modal .sub-modal-body {
+    padding: 16px 18px;
+    overflow: auto;
+    flex: 1;
+}
+
 .modal-header {
     display: flex;
     justify-content: space-between;

@@ -27,7 +27,6 @@ public interface DataCleaningService {
     List<ParseRuleEntity> getActiveParseRules();
 
     // ===== 全描述解析 =====
-    ExtraDataTitleEntity extractExtraData(Long titleId, Long parseRuleId, String customName);
     void deleteExtraTitle(Long extraTitleId);
 
     // ===== AI 智能提取 =====
@@ -73,6 +72,14 @@ public interface DataCleaningService {
     Map<String, Object> getTempDataById(Long id);
     List<ExtraDataEntity> getExtraDataList(Long extraDataTitleId);
     List<ExtraDataTitleEntity> getExtraDataTitles();
+    /** 属性提取结果层级视图：文件 -> 分类 -> 属性列表 */
+    Map<String, Object> getExtractResultTree(Long tempDataTitleId, Long extraDataTitleId);
+    /** AI 智能提取任务列表（文件名/行数/状态/起止时间/耗时） */
+    List<Map<String, Object>> getAiExtractTaskList();
+    /** 获取单条提取明细：源数据 + 提取属性 + 列标题，用于查看与修改 */
+    Map<String, Object> getExtraRowDetail(Long extraDataId);
+    /** 修改单条提取明细的提取属性（partial update col1~col20） */
+    void updateExtraRow(Long extraDataId, java.util.Map<String, String> cols);
     CleanedDataEntity getCleanedDataByTempDataTitleId(Long tempDataTitleId);
     Long getStandardTitleIdByTempDataTitleId(Long tempDataTitleId);
     // ===== 标准字段表头管理 =====

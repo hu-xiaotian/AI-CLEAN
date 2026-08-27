@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
+import java.util.Date;
+
 /**
  * 补充数据表头实体类
  * 存储从全描述中提取的额外属性列名
@@ -21,6 +23,21 @@ public class ExtraDataTitleEntity extends BaseEntity {
 
     /** 自定义名称（用户在提取时填写，便于标识该提取结果） */
     private String customName;
+
+    /** 提取状态：RUNNING / SUCCESS / PARTIAL / FAILED */
+    private String extractStatus;
+
+    /** 提取开始时间 */
+    private Date extractStartTime;
+
+    /** 提取结束时间 */
+    private Date extractEndTime;
+
+    /** 提取耗时（毫秒） */
+    private Long extractCostMs;
+
+    /** 提取行数（参与提取的原始数据条数） */
+    private Integer rowCount;
 
     private String col1Title;
     private String col2Title;

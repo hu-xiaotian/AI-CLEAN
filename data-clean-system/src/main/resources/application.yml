@@ -248,6 +248,22 @@ app:
       {fullDesc}
 
       请按上述目标字段从描述文本中提取值，只返回 JSON 键值对。
+    # ===== AI 属性提取（跑批模式）=====
+    # 单次请求交给大模型的数据条数。模型能力弱时调小（3~5），能力强时可调大（20~50）
+    extract-batch-size: 10
+    # 提示词已独立抽离到外部文件 ./config/extract-batch-prompt.properties（或 classpath 内置
+    # src/main/resources/extract-batch-prompt.properties），改提示词无需重启/重打包。
+    # 如需自定义外部目录，可配置：app.ai.extract-prompt-external-dir
+    # 大模型输入/输出 txt 调试日志
+    prompt-log:
+      # 是否启用（关闭后不再写 txt）
+      enabled: true
+      # 日志目录（相对启动目录或绝对路径），属性提取写入 ${dir}/attr-extract/
+      dir: logs/ai-prompt
+      # 单条 prompt/响应最大记录字符数，超出截断
+      max-content-length: 200000
+      # 每个模块保留的最大文件数，超出自动删除最旧的
+      max-files-per-module: 200
     # ===== AI 辅助分类评分（智能分类页“启用 AI 辅助评分”时使用，替代原有规则质量评分）=====
     # 系统提示词（角色设定，简短即可，详细评分要求写在用户模板里）
     classification-system-prompt: 你是一名严谨的工业品物料数据质量审核专家，只输出要求的 JSON，不要输出其他内容。

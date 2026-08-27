@@ -3,7 +3,6 @@
  */
 const API = '/api';
 let currentTitleId = null;
-let currentExtraTitleId = null;
 
 // ==================== 页面权限控制 ====================
 let myPermCodes = [];                     // 当前用户拥有的全部权限编码
@@ -213,7 +212,7 @@ function showToast(msg, type = 'success') {
     setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
-function showModal(title, bodyHtml) {
+function showModal(title, bodyHtml, size) {
     $('#modalTitle').textContent = title;
     $('#modalBody').innerHTML = bodyHtml;
     const modal = $('#modal');
@@ -221,6 +220,10 @@ function showModal(title, bodyHtml) {
     modal.classList.remove('dragging');
     modal.style.top = '';
     modal.style.left = '';
+    // 应用尺寸
+    modal.classList.remove('modal-xl', 'modal-lg', 'modal-extract');
+    if (size === 'xl') modal.classList.add('modal-xl');
+    else if (size === 'extract') modal.classList.add('modal-extract');
     modal.classList.add('show');
     $('#modalOverlay').classList.add('show');
 }
@@ -228,6 +231,33 @@ function showModal(title, bodyHtml) {
 function closeModal() {
     $('#modal').classList.remove('show');
     $('#modalOverlay').classList.remove('show');
+    // 清理尺寸 class，恢复默认
+    const modal = $('#modal');
+    if (modal) modal.classList.remove('modal-xl', 'modal-lg', 'modal-extract');
+    // 清理残留子弹窗
+    document.querySelectorAll('.sub-modal').forEach(el => el.remove());
+}
+
+// 子弹窗：嵌入在主弹窗内，用于二级操作（源数据/修改），不销毁主弹窗
+function openSubModal(title, bodyHtml) {
+    // 先移除已存在的子弹窗，避免叠加
+    closeSubModal();
+    const overlay = document.createElement('div');
+    overlay.className = 'sub-modal';
+    overlay.innerHTML = `<div class="sub-modal-card">
+        <div class="sub-modal-header">
+            <h4>${escapeHtml(title)}</h4>
+            <button class="btn-close" onclick="closeSubModal()">&#x2715;</button>
+        </div>
+        <div class="sub-modal-body">${bodyHtml}</div>
+    </div>`;
+    // 嵌入到当前显示的主弹窗内（如果有），否则挂到 body
+    const modal = $('#modal');
+    (modal && modal.classList.contains('show') ? modal : document.body).appendChild(overlay);
+}
+
+function closeSubModal() {
+    document.querySelectorAll('.sub-modal').forEach(el => el.remove());
 }
 
 // 让通用弹窗可拖动（通过标题栏拖拽）
@@ -348,7 +378,7 @@ function switchPage(name) {
     const loaders = {
         'import': () => { loadTitles(); },                          // 刷新导入文件列表
         'rule': () => { loadRules(true); },                            // 刷新解析规则列表
-        'extract': () => { loadTitles(); loadRules(); loadExtraTitles(); loadTitlesForSelect('extractTitleId'); loadRulesForSelect('extractRuleId'); loadTitlesForSelect('aiExtractTitleId'); },  // 刷新提取相关数据
+        'extract': () => { loadTitles(); loadTitlesForSelect('aiExtractTitleId'); loadAiExtractTasks(); },  // 刷新提取相关数据
         'clean': () => { refreshCleanPage(); },     // 刷新清洗相关数据 + 加载已清洗记录
         'mapping': () => { 
             loadTitlesForSelect('mapTitleId').then(() => {
@@ -600,15 +630,9 @@ async function ocDoMapFill(titleId) {
     $('#ocCleanFill').textContent = '100%';
 }
 
-// 步骤二：属性提取（按所选方式：rule=规则解析提取，ai=AI 智能提取）
-async function ocDoExtract(titleId, ruleId, extractMode) {
-    if (extractMode === 'ai') {
-        await ocDoExtractAi(titleId);
-    } else {
-        const res = await fetch(API + `/cleaning/extract-extra?titleId=${titleId}&parseRuleId=${ruleId}`, { method: 'POST' });
-        const data = await safeJson(res, '属性提取');
-        if (data.code !== 200) throw new Error(data.msg || '属性提取失败');
-    }
+// 步骤二：属性提取（AI 智能提取）
+async function ocDoExtract(titleId) {
+    await ocDoExtractAi(titleId);
     return true;
 }
 
@@ -694,8 +718,6 @@ async function runOneClickClean() {
     const titleId = $('#ocTitleId').value;
     const ruleId = $('#ocRuleId').value;
     if (!titleId || !ruleId) { showToast('请选择数据文件和解析规则', 'warning'); return; }
-    // 属性提取方式：rule=规则解析提取，ai=AI 智能提取
-    const extractMode = (document.querySelector('input[name="ocExtractMode"]:checked') || {}).value || 'rule';
 
     ocRunning = true;
     $('#ocStartBtn').disabled = true;
@@ -707,7 +729,7 @@ async function runOneClickClean() {
     if (useAi) AiCleanOverlay.show();
 
     // AI 介入（固定 AI 评分 或 AI 智能提取）时，整体进度卡片启动动态 AI 特效
-    const ocAiInvolved = useAi || extractMode === 'ai';
+    const ocAiInvolved = true;
     const ocProgressCard = $('#ocOverallFill') ? $('#ocOverallFill').closest('.card') : null;
     if (ocAiInvolved && ocProgressCard) AiFx.activate(ocProgressCard);
 
@@ -720,10 +742,10 @@ async function runOneClickClean() {
         setOcStep('clean', 'done');
         setOcOverall(35, '已完成：智能分类');
 
-        // 步骤二：属性提取（按所选方式：规则解析 / AI 智能提取）
+        // 步骤二：属性提取（AI 智能提取）
         setOcStep('extract', 'running');
-        setOcOverall(40, '正在执行：属性提取' + (extractMode === 'ai' ? '（AI）' : '（规则解析）'));
-        await ocDoExtract(titleId, ruleId, extractMode);
+        setOcOverall(40, '正在执行：属性提取（AI）');
+        await ocDoExtract(titleId);
         setOcStep('extract', 'done');
         setOcOverall(60, '已完成：属性提取');
 
@@ -1548,13 +1570,6 @@ async function loadStandardTitles(selId, titleId) {
     }
 }
 
-// 初始化下拉框
-async function loadTitlesForExtract() {
-    await loadTitlesForSelect('extractTitleId');
-    await loadRulesForSelect('extractRuleId');
-    await loadTitlesForSelect('aiExtractTitleId');
-}
-
 // 数据文件列表缓存：用于把关联数据ID映射为中文文件名
 let _titlesCache = null;
 async function getTitles(force = false) {
@@ -1564,133 +1579,6 @@ async function getTitles(force = false) {
     return _titlesCache;
 }
 
-async function loadExtraTitles() {
-    try {
-        const extraTitles = await api('/cleaning/extra-titles');
-        const tbody = $('#extraTbody');
-        if (!extraTitles || extraTitles.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无提取结果，请先进行全描述属性提取</td></tr>';
-            return;
-        }
-        // 解析关联数据中文名（文件名）与解析规则中文名（规则名）
-        const titles = await getTitles();
-        const titleMap = {};
-        (titles || []).forEach(t => { titleMap[t.id] = t.fileName || ('数据#' + t.id); });
-        const rules = _rulesCache || await api('/cleaning/parse-rules/active') || [];
-        const ruleMap = {};
-        (rules || []).forEach(r => { ruleMap[r.id] = r.ruleName || ('规则#' + r.id); });
-
-        tbody.innerHTML = extraTitles.map(et => `
-            <tr>
-                <td>${et.id}</td>
-                <td>${et.tempDataTitleId != null ? (titleMap[et.tempDataTitleId] || et.tempDataTitleId) : '-'}</td>
-                <td>${et.parseRuleId != null ? (ruleMap[et.parseRuleId] || et.parseRuleId) : '-'}</td>
-                <td>${et.isAiExtract ? '<span class="badge badge-success">是</span>' : '<span class="badge">否</span>'}</td>
-                <td>${et.customName ? escapeHtml(et.customName) : '-'}</td>
-                <td>${buildExtraColSummary(et)}</td>
-                <td><button class="btn btn-sm btn-primary" onclick="viewExtraData(${et.id})">查看</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteExtraTitle(${et.id})">删除</button></td>
-            </tr>
-        `).join('');
-    } catch (e) {
-        console.error('加载提取结果失败:', e);
-    }
-}
-
-function buildExtraColSummary(et) {
-    const cols = [];
-    for (let i = 1; i <= 20; i++) {
-        const title = et['col' + i + 'Title'];
-        if (title) cols.push(title);
-    }
-    return cols.length > 0 ? cols.slice(0, 5).join(', ') + (cols.length > 5 ? '...' : '') : '-';
-}
-
-async function deleteExtraTitle(id) {
-    if (!confirm('确定要删除该全描述提取结果及其所有补充数据吗？此操作不可恢复。')) return;
-    showLoading('正在删除提取结果…');
-    try {
-        await api(`/cleaning/extra-title/${id}`, { method: 'DELETE' });
-        showToast('已删除全描述提取结果');
-        loadExtraTitles();
-    } catch (e) {
-        showToast('删除失败: ' + e.message, 'error');
-    } finally {
-        hideLoading();
-    }
-}
-
-async function viewExtraData(extraTitleId) {
-    showModal('查看补充数据', '<p style="text-align:center;padding:40px;color:var(--text-secondary)">加载中...</p>');
-    try {
-        const list = await api(`/cleaning/extra-data/${extraTitleId}`);
-        const extraTitle = await api(`/cleaning/extra-titles`);
-        const titleInfo = extraTitle.find(et => et.id === extraTitleId);
-
-        const headers = [];
-        for (let i = 1; i <= 20; i++) {
-            const ct = titleInfo ? titleInfo['col' + i + 'Title'] : null;
-            if (ct) headers.push(ct);
-        }
-
-        let html = '';
-        if (titleInfo) {
-            const customName = titleInfo.customName ? escapeHtml(titleInfo.customName) : '补充表头#' + titleInfo.id;
-            if (titleInfo.customName) showModal('查看补充数据 - ' + titleInfo.customName, '<p style="text-align:center;padding:40px;color:var(--text-secondary)">加载中...</p>');
-            html += `<div class="view-data-info"><span><strong>名称:</strong> ${customName}</span><span><strong>关联数据ID:</strong> ${titleInfo.tempDataTitleId || '-'}</span><span><strong>总行数:</strong> ${list.length}</span></div>`;
-        }
-
-        if (!list || list.length === 0) {
-            html += '<p class="empty-hint">暂无补充数据</p>';
-        } else {
-            html += '<div class="table-scroll"><table class="data-table"><thead><tr><th>行号</th>';
-            headers.forEach(h => { html += `<th>${h || '-'}</th>`; });
-            html += '</tr></thead><tbody>';
-            list.forEach((row, idx) => {
-                html += `<tr><td>${idx + 1}</td>`;
-                for (let i = 1; i <= headers.length; i++) {
-                    html += `<td>${(row['col' + i] || '')}</td>`;
-                }
-                html += '</tr>';
-            });
-            html += '</tbody></table></div>';
-        }
-
-        $('#modalBody').innerHTML = html;
-    } catch (e) {
-        $('#modalBody').innerHTML = `<p style="text-align:center;padding:40px;color:var(--danger)">加载失败: ${e.message}</p>`;
-    }
-}
-
-async function extractExtraData() {
-    const titleId = $('#extractTitleId').value;
-    const ruleId = $('#extractRuleId').value;
-    const customName = $('#extractCustomName').value.trim();
-    if (!titleId || !ruleId) { showToast('请选择数据文件和解析规则', 'warning'); return; }
-
-    showLoading('正在提取全描述属性…');
-    try {
-        const formData = new FormData();
-        formData.append('titleId', titleId);
-        formData.append('parseRuleId', ruleId);
-        if (customName) formData.append('customName', customName);
-        const res = await fetch(API + `/cleaning/extract-extra?titleId=${titleId}&parseRuleId=${ruleId}` + (customName ? `&customName=${encodeURIComponent(customName)}` : ''), { method: 'POST' });
-        const data = await res.json();
-        if (data.code !== 200) throw new Error(data.msg);
-
-        currentExtraTitleId = data.data.id;
-        $('#extractResult').style.display = 'block';
-        $('#extractResult').innerHTML = `<p class="badge badge-success">提取成功！提取到 ${data.data.id ? '多个' : '0个'} 属性</p>`;
-        showToast('全描述属性提取完成');
-        loadExtraTitles();
-        // 刷新其他页面的下拉框
-        loadExtraTitlesForSelect('mapExtraTitleId');
-    } catch (e) {
-        showToast('提取失败: ' + e.message, 'error');
-    } finally {
-        hideLoading();
-    }
-}
 
 // ==================== AI 智能提取 ====================
 
@@ -1700,7 +1588,6 @@ let aiExtractPollTimer = null;
 
 async function startAiExtract() {
     const titleId = $('#aiExtractTitleId').value;
-    const customName = $('#aiExtractCustomName').value.trim();
     if (!titleId) { showToast('请先选择数据文件', 'warning'); return; }
 
     // 重置进度 UI
@@ -1721,7 +1608,7 @@ async function startAiExtract() {
 
     connectAiExtractWs(titleId, function connected() {
         $('#aiExtractStatus').textContent = 'AI 提取任务已启动，正在处理…';
-        fetch(API + `/cleaning/extract-extra-ai?titleId=${titleId}` + (customName ? `&customName=${encodeURIComponent(customName)}` : ''), { method: 'POST' })
+        fetch(API + `/cleaning/extract-extra-ai?titleId=${titleId}`, { method: 'POST' })
             .then(res => safeJson(res, 'AI 提取'))
             .then(data => { if (data.code !== 200) throw new Error(data.msg); })
             .catch(e => {
@@ -1795,14 +1682,282 @@ function handleAiExtractMessage(msg) {
         $('#aiExtractStatus').textContent = (msg.message || 'AI 提取完成') + '，共处理 ' + total + ' 条 (成功 ' + success + ', 失败 ' + error + ')';
         showToast('AI 属性提取完成');
         if (aiExCard && aiExCard.classList.contains('ai-active')) AiFx.deactivate(aiExCard);
-        loadExtraTitles();
         loadExtraTitlesForSelect('mapExtraTitleId');
+        // 自动弹窗展示本次提取结果
+        const aiSel = $('#aiExtractTitleId');
+        if (aiSel && aiSel.value) {
+            loadExtractTree(aiSel.value);
+        }
+        loadAiExtractTasks();
         setTimeout(disconnectAiExtractWs, 2000);
     } else if (type === 'error') {
         $('#aiExtractStatus').textContent = 'AI 提取异常终止：' + (msg.message || '');
         showToast('AI 提取异常终止', 'error');
         if (aiExCard && aiExCard.classList.contains('ai-active')) AiFx.deactivate(aiExCard);
         setTimeout(disconnectAiExtractWs, 2000);
+    }
+}
+
+// ==================== AI 智能提取记录列表 ====================
+
+async function loadAiExtractTasks() {
+    const tbody = $('#aiExtractTaskTbody');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">加载中…</td></tr>';
+    try {
+        const list = await api('/cleaning/ai-extract-tasks');
+        if (!list || list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无提取记录</td></tr>';
+            return;
+        }
+        const statusMap = {
+            RUNNING: '<span class="badge badge-warning">提取中</span>',
+            SUCCESS: '<span class="badge badge-success">成功</span>',
+            PARTIAL: '<span class="badge badge-warning">部分成功</span>',
+            FAILED: '<span class="badge badge-danger">失败</span>'
+        };
+        tbody.innerHTML = list.map(t => {
+            const cost = t.extractCostMs != null ? (t.extractCostMs / 1000).toFixed(1) + ' 秒' : '-';
+            const status = t.extractStatus ? (statusMap[t.extractStatus] || escapeHtml(t.extractStatus)) : '-';
+            return `<tr>
+                <td>${escapeHtml(t.fileName || '-')}</td>
+                <td>${t.rowCount != null ? t.rowCount : '-'}</td>
+                <td>${status}</td>
+                <td>${fmtLocalTime(t.extractStartTime)}</td>
+                <td>${fmtLocalTime(t.extractEndTime)}</td>
+                <td>${cost}</td>
+                <td><button class="btn btn-sm btn-primary" onclick="viewAiExtractTask(${t.tempDataTitleId})">查看</button></td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-hint" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+// 点击查看：弹窗展示该文件的层级提取结果
+async function viewAiExtractTask(tempDataTitleId) {
+    await loadExtractTree(tempDataTitleId);
+}
+
+// 当前弹窗中查看的 tempDataTitleId（用于明细修改后刷新弹窗）
+let _extractModalTitleId = null;
+
+// ==================== 属性提取结果：弹窗层级查看（文件 → 分类 → 属性） ====================
+
+async function loadExtractTree(tempDataTitleId) {
+    if (!tempDataTitleId) return;
+    _extractModalTitleId = tempDataTitleId;
+    showModal('提取结果（层级查看）', '<p style="text-align:center;padding:40px;color:var(--text-secondary)">加载中…</p>', 'extract');
+    try {
+        // 不传 extraDataTitleId，后端自动取该文件最近一次提取结果
+        const data = await api(`/cleaning/extract-result-tree?tempDataTitleId=${encodeURIComponent(tempDataTitleId)}`);
+        renderExtractTreeInto('modalBody', data);
+    } catch (e) {
+        $('#modalBody').innerHTML = `<p style="text-align:center;padding:40px;color:var(--danger)">加载失败: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+function renderExtractTreeInto(containerId, data) {
+    const box = $(`#${containerId}`);
+    if (!box) return;
+
+    const file = data.file || {};
+    const s = data.summary || {};
+    const summaryHtml = data.extraTitle
+        ? `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+             文件：<b>${escapeHtml(file.fileName || '-')}</b>　|　提取行数：<b>${s.totalRows || 0}</b>　|　分类数：<b>${s.categoryCount || 0}</b>　|　属性列数：<b>${s.columnCount || 0}</b>
+           </div>`
+        : `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+             文件：<b>${escapeHtml(file.fileName || '-')}</b>　该文件暂无提取结果
+           </div>`;
+
+    const cats = data.categories || [];
+    if (!data.extraTitle || cats.length === 0) {
+        box.innerHTML = summaryHtml + '<p class="empty-hint">暂无提取结果，请先执行属性提取</p>';
+        return;
+    }
+
+    // 第一层：文件；第二层：分类（可折叠）；第三层：属性列表 + 明细行
+    let html = summaryHtml + `<div class="tree-file" style="border:1px solid var(--border,#e5e7eb);border-radius:8px;overflow:hidden">
+        <div style="padding:10px 14px;background:var(--bg-secondary,#f6f7f9);font-weight:600">
+            📄 ${escapeHtml(file.fileName || '未知文件')}
+            <span style="font-weight:400;color:var(--text-secondary);font-size:12px">（${cats.length} 个分类 / ${s.totalRows || 0} 行）</span>
+        </div>`;
+
+    cats.forEach((c, ci) => {
+        const catLabel = c.categoryCode
+            ? `${escapeHtml(c.categoryCode)} ${escapeHtml(c.categoryName || '')}`
+            : '未分类';
+        html += `<div style="border-top:1px solid var(--border,#e5e7eb)">
+            <div onclick="toggleExtractCat(${ci})" style="padding:9px 14px 9px 30px;cursor:pointer;display:flex;align-items:center;gap:8px">
+                <span id="treeCatIcon-${ci}">▸</span>
+                <b>📁 ${catLabel}</b>
+                <span style="color:var(--text-secondary);font-size:12px">${c.rowCount} 行 · ${(c.attributes || []).length} 个属性</span>
+            </div>
+            <div id="treeCatBody-${ci}" style="display:none;padding:0 14px 14px 44px">`;
+
+        // 属性列表（汇总视图）
+        const attrs = c.attributes || [];
+        if (attrs.length === 0) {
+            html += '<p class="empty-hint">该分类下未提取到属性</p>';
+        } else {
+            html += `<table class="data-table" style="margin-bottom:10px">
+                <thead><tr><th>属性名</th><th>是否标准字段</th><th>已填充</th><th>填充率</th></tr></thead><tbody>`;
+            attrs.forEach(a => {
+                html += `<tr>
+                    <td>${escapeHtml(a.name)}</td>
+                    <td>${a.isStandardField ? '<span class="badge badge-success">标准</span>' : '<span class="badge">额外</span>'}</td>
+                    <td>${a.filledCount}</td>
+                    <td>${a.fillRate}%</td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            html += `<button class="btn btn-secondary btn-sm" onclick="toggleExtractRows(${ci})">查看/收起明细（${c.rowCount} 行）</button>`;
+
+            // 明细行（属性值矩阵）
+            const cols = attrs.map(a => a.name);
+            html += `<div id="treeCatRows-${ci}" style="display:none;overflow:auto;margin-top:10px">
+                <table class="data-table"><thead><tr><th>物料编码</th><th>物料名称</th>${cols.map(x => `<th>${escapeHtml(x)}</th>`).join('')}<th>操作</th></tr></thead><tbody>`;
+            (c.rows || []).slice(0, 500).forEach(r => {
+                const extraId = r.extraDataId != null ? r.extraDataId : '';
+                html += `<tr><td>${escapeHtml(r.materialCode || '-')}</td><td>${escapeHtml(r.materialName || '-')}</td>`
+                    + cols.map(x => `<td>${escapeHtml((r.attrs || {})[x] || '')}</td>`).join('')
+                    + `<td><button class="btn btn-sm btn-secondary" onclick="viewSourceData(${extraId})">源数据</button> `
+                    + `<button class="btn btn-sm btn-primary" onclick="editExtraRow(${extraId})">修改</button></td></tr>`;
+            });
+            html += '</tbody></table>';
+            if ((c.rows || []).length > 500) {
+                html += `<p class="empty-hint">仅展示前 500 行，共 ${c.rows.length} 行</p>`;
+            }
+            html += '</div>';
+        }
+        html += '</div></div>';
+    });
+    html += '</div>';
+    box.innerHTML = html;
+}
+
+function toggleExtractCat(ci) {
+    const body = $(`#treeCatBody-${ci}`);
+    const icon = $(`#treeCatIcon-${ci}`);
+    if (!body) return;
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : 'block';
+    if (icon) icon.textContent = open ? '▸' : '▾';
+}
+
+function toggleExtractRows(ci) {
+    const el = $(`#treeCatRows-${ci}`);
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+// ==================== 属性提取明细：源数据查看 / 修改 ====================
+
+// 源数据查看：子弹窗展示原始各列 + 当前提取属性（不销毁主弹窗）
+async function viewSourceData(extraDataId) {
+    openSubModal('源数据查看', '<p style="text-align:center;padding:40px;color:var(--text-secondary)">加载中...</p>');
+    try {
+        const d = await api(`/cleaning/extra-row/${extraDataId}`);
+        const srcHeaders = d.sourceHeaders || [];
+        const srcData = d.sourceData || [];
+        let html = `<div class="view-data-info"><span><strong>物料:</strong> ${escapeHtml(d.materialName || '-')}</span>`
+            + `<span><strong>分类:</strong> ${escapeHtml(d.categoryName || '未分类')}</span></div>`;
+
+        // 源数据表
+        html += `<h4 style="margin:14px 0 6px">原始数据</h4>`;
+        if (srcHeaders.length === 0) {
+            html += '<p class="empty-hint">无源数据</p>';
+        } else {
+            html += '<div class="table-scroll"><table class="data-table"><thead><tr>'
+                + srcHeaders.map(h => `<th>${escapeHtml(h)}</th>`).join('') + '</tr></thead><tbody><tr>'
+                + srcData.map(v => `<td>${escapeHtml(v || '')}</td>`).join('') + '</tr></tbody></table></div>';
+        }
+
+        // 提取属性表
+        html += `<h4 style="margin:14px 0 6px">提取属性</h4>`;
+        const cols = d.columns || [];
+        const attrs = d.attrs || {};
+        if (cols.length === 0) {
+            html += '<p class="empty-hint">无提取属性</p>';
+        } else {
+            html += '<div class="table-scroll"><table class="data-table"><thead><tr><th>属性名</th><th>属性值</th></tr></thead><tbody>'
+                + cols.map(c => `<tr><td>${escapeHtml(c)}</td><td>${escapeHtml(attrs[c] || '')}</td></tr>`).join('')
+                + '</tbody></table></div>';
+        }
+        const body = document.querySelector('.sub-modal .sub-modal-body');
+        if (body) body.innerHTML = html;
+    } catch (e) {
+        const body = document.querySelector('.sub-modal .sub-modal-body');
+        if (body) body.innerHTML = `<p style="text-align:center;padding:40px;color:var(--danger)">加载失败: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+// 明细修改：子弹窗展示可编辑的提取属性表单，保存后刷新层级树（不销毁主弹窗）
+let _editExtraDataId = null;
+async function editExtraRow(extraDataId) {
+    openSubModal('修改提取明细', '<p style="text-align:center;padding:40px;color:var(--text-secondary)">加载中...</p>');
+    try {
+        const d = await api(`/cleaning/extra-row/${extraDataId}`);
+        const cols = d.columns || [];
+        const attrs = d.attrs || {};
+        _editExtraDataId = extraDataId;
+
+        let html = `<div class="view-data-info"><span><strong>物料:</strong> ${escapeHtml(d.materialName || '-')}</span>`
+            + `<span><strong>分类:</strong> ${escapeHtml(d.categoryName || '未分类')}</span></div>`;
+        html += `<p style="color:var(--text-secondary);font-size:12px;margin:10px 0">仅修改下方提取属性，保存后将直接覆盖该行的提取结果。</p>`;
+        html += '<div id="editExtraForm" class="form-grid">';
+        if (cols.length === 0) {
+            html += '<p class="empty-hint">该明细无提取属性列</p>';
+        } else {
+            cols.forEach(c => {
+                html += `<div class="form-group"><label>${escapeHtml(c)}</label>`
+                    + `<input class="form-input edit-col" data-col="${escapeHtml(c)}" type="text" value="${escapeHtml(attrs[c] || '')}"></div>`;
+            });
+        }
+        html += '</div>';
+        html += `<div style="margin-top:14px;text-align:right">
+            <button class="btn btn-secondary" onclick="closeSubModal()">取消</button>
+            <button class="btn btn-primary" onclick="saveExtraRow()">保存</button></div>`;
+        const body = document.querySelector('.sub-modal .sub-modal-body');
+        if (body) body.innerHTML = html;
+    } catch (e) {
+        const body = document.querySelector('.sub-modal .sub-modal-body');
+        if (body) body.innerHTML = `<p style="text-align:center;padding:40px;color:var(--danger)">加载失败: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+async function saveExtraRow() {
+    if (!_editExtraDataId) return;
+    const inputs = document.querySelectorAll('#editExtraForm .edit-col');
+    const cols = {};
+    inputs.forEach(inp => { cols[inp.getAttribute('data-col')] = inp.value; });
+    showLoading('正在保存…');
+    try {
+        await api(`/cleaning/extra-row/${_editExtraDataId}`, { method: 'POST', body: JSON.stringify(cols), headers: { 'Content-Type': 'application/json' } });
+        showToast('保存成功');
+        // 关闭子弹窗
+        closeSubModal();
+        // 在原层级查看主弹窗中重新渲染
+        if (_extractModalTitleId) {
+            const modal = $('#modalBody');
+            if (modal) {
+                modal.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-secondary)">加载中…</p>';
+                try {
+                    const data = await api(`/cleaning/extract-result-tree?tempDataTitleId=${encodeURIComponent(_extractModalTitleId)}`);
+                    renderExtractTreeInto('modalBody', data);
+                } catch (e2) {
+                    modal.innerHTML = `<p style="text-align:center;padding:40px;color:var(--danger)">刷新失败: ${escapeHtml(e2.message)}</p>`;
+                }
+            }
+        }
+        _editExtraDataId = null;
+        // 同时刷新记录列表
+        loadAiExtractTasks();
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
     }
 }
 
@@ -5410,9 +5565,7 @@ function copyToChat(text) {
 document.addEventListener('DOMContentLoaded', () => {
     // 初始化下拉框
     const initSelects = async () => {
-        await loadRulesForSelect('extractRuleId');
         await loadRulesForSelect('cleanRuleId');
-        await loadTitlesForSelect('extractTitleId');
         await loadTitlesForSelect('cleanTitleId');
         await loadTitlesForSelect('mapTitleId');
         await loadTitlesForSelect('resultTitleId', 'completed');

@@ -74,12 +74,11 @@ public class DataCleaningController {
 
     // ==================== 全描述提取 ====================
 
-    @PostMapping("/extract-extra")
-    @Operation(summary = "提取全描述属性")
+    @GetMapping("/ai-extract-tasks")
+    @Operation(summary = "AI 智能提取任务列表", description = "按文件维度展示提取记录：文件名、行数、状态、起止时间、耗时")
     @RequirePermission("page:extract")
-    public R<ExtraDataTitleEntity> extractExtraData(@RequestParam Long titleId, @RequestParam Long parseRuleId,
-                                                     @RequestParam(required = false) String customName) {
-        return R.success(dataCleaningService.extractExtraData(titleId, parseRuleId, customName));
+    public R<List<Map<String, Object>>> getAiExtractTasks() {
+        return R.success(dataCleaningService.getAiExtractTaskList());
     }
 
     @DeleteMapping("/extra-title/{id}")
@@ -96,16 +95,54 @@ public class DataCleaningController {
     }
 
     @PostMapping("/extract-extra-ai")
-    @Operation(summary = "AI 提取属性", description = "按每行分类编码查找标准字段表头(参数1)，结合属性拆分列(参数2)，由 AI 拆分为 JSON 键值对并入库")
-    public R<String> extractExtraDataByAi(@RequestParam Long titleId,
-                                          @RequestParam(required = false) String customName) {
-        return R.success(dataCleaningService.startAiExtract(titleId, customName));
+    @Operation(summary = "AI 提取属性", description = "按每行分类编码查找标准字段表头(参数1)，结合属性拆分列(参数2)，由 AI 拆分为 JSON 键值对并入库（覆盖旧结果）")
+    public R<String> extractExtraDataByAi(@RequestParam Long titleId) {
+        return R.success(dataCleaningService.startAiExtract(titleId, null));
     }
 
     @GetMapping("/ai-extract-progress/{titleId}")
     @Operation(summary = "获取 AI 提取进度", description = "WebSocket 不可用时作为轮询兜底")
     public R<Map<String, Object>> getAiExtractProgress(@PathVariable Long titleId) {
         return R.success(dataCleaningService.getAiExtractProgress(titleId));
+    }
+
+    @GetMapping("/extract-result-tree")
+    @Operation(summary = "属性提取结果层级视图",
+            description = "按 文件 -> 分类 -> 属性列表 三层返回提取结果；extraDataTitleId 不传时取该文件最近一次提取结果")
+    @RequirePermission("page:extract")
+    public R<Map<String, Object>> getExtractResultTree(@RequestParam Long tempDataTitleId,
+                                                       @RequestParam(required = false) Long extraDataTitleId) {
+        try {
+            return R.success(dataCleaningService.getExtractResultTree(tempDataTitleId, extraDataTitleId));
+        } catch (Exception e) {
+            log.error("查询属性提取结果层级视图失败，tempDataTitleId: {}", tempDataTitleId, e);
+            return R.error("查询失败: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/extra-row/{extraDataId}")
+    @Operation(summary = "获取单条提取明细", description = "返回源数据 + 提取属性 + 列标题，用于查看与修改")
+    @RequirePermission("page:extract")
+    public R<Map<String, Object>> getExtraRowDetail(@PathVariable Long extraDataId) {
+        try {
+            return R.success(dataCleaningService.getExtraRowDetail(extraDataId));
+        } catch (Exception e) {
+            log.error("查询提取明细失败，extraDataId: {}", extraDataId, e);
+            return R.error("查询失败: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/extra-row/{extraDataId}")
+    @Operation(summary = "修改单条提取明细", description = "partial update 提取属性，请求体为 {列标题: 值} 的 JSON")
+    @RequirePermission("page:extract")
+    public R<String> updateExtraRow(@PathVariable Long extraDataId, @RequestBody Map<String, String> cols) {
+        try {
+            dataCleaningService.updateExtraRow(extraDataId, cols);
+            return R.success("更新成功");
+        } catch (Exception e) {
+            log.error("更新提取明细失败，extraDataId: {}", extraDataId, e);
+            return R.error("更新失败: " + e.getMessage());
+        }
     }
 
     // ==================== 数据清洗 ====================

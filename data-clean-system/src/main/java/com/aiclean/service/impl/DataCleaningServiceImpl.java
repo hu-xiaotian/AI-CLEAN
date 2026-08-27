@@ -12,6 +12,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.aiclean.entity.enums.DataStatus;
 import com.aiclean.mapper.*;
 import com.aiclean.ai.AiClientService;
+import com.aiclean.ai.AiPromptLogger;
+import com.aiclean.ai.BatchExtractPrompt;
 import com.aiclean.agent.ShardingAgent;
 import com.aiclean.match.*;
 import com.aiclean.model.ParseRule;
@@ -79,6 +81,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Autowired private TransactionTemplate transactionTemplate;
     @Autowired private SimpMessagingTemplate messagingTemplate;
     @Autowired private AiClientService aiClientService;
+    @Autowired private com.aiclean.ai.AiPromptLogger aiPromptLogger;
     @Autowired private CategoryStandardLibrary stdLib;
     @Autowired private SemanticCategoryLibrary semanticLib;
     @Autowired private BatchClassificationService batchClassificationService;
@@ -111,6 +114,19 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     /** AI 提取用户提示词模板（支持占位符 {fields} 与 {fullDesc}，见 application.yml -> app.ai.user-prompt-template） */
     @Value("${app.ai.user-prompt-template:目标字段列表：\n{fields}\n\n待拆分的属性描述文本：\n{fullDesc}\n\n请按上述目标字段从描述文本中提取值，只返回 JSON 键值对。}")
     private String aiUserPromptTemplate;
+
+    /** AI 属性提取跑批：单次请求交给大模型的数据条数 */
+    @Value("${app.ai.extract-batch-size:20}")
+    private int aiExtractBatchSize;
+
+    /**
+     * AI 属性提取跑批提示词模板加载器（提示词独立存放于 extract-batch-prompt.properties，支持外部覆盖）。
+     * 占位符：{categoryCode} {categoryName} {fields} {records} {count}
+     */
+    @Autowired private BatchExtractPrompt batchExtractPrompt;
+
+    /** 属性提取调试日志模块名（对应 logs/ai-prompt/attr-extract 目录） */
+    public static final String AI_EXTRACT_LOG_MODULE = "attr-extract";
 
     /** AI 辅助分类评分系统提示词 */
     @Value("${app.ai.classification-system-prompt:你是一名严谨的工业品物料数据质量审核专家，只输出要求的 JSON，不要输出其他内容。}")
@@ -322,99 +338,6 @@ public class DataCleaningServiceImpl implements DataCleaningService {
 
     @Override
     @Transactional
-    public ExtraDataTitleEntity extractExtraData(Long titleId, Long parseRuleId, String customName) {
-        log.info("开始提取全描述属性，表头ID: {}, 规则ID: {}", titleId, parseRuleId);
-        TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
-        if (titleEntity == null) throw new RuntimeException("表头不存在: " + titleId);
-
-        ParseRuleEntity ruleEntity = parseRuleMapper.selectById(parseRuleId);
-        if (ruleEntity == null) throw new RuntimeException("解析规则不存在: " + parseRuleId);
-        ParseRule parseRule = ruleEntity.toParseRule();
-
-        String fullDescCol = titleEntity.getFullDescCol();
-        int fullDescIndex = findFullDescColIndex(titleEntity, fullDescCol);
-        if (fullDescIndex <= 0) {
-            throw new RuntimeException("未找到全描述列");
-        }
-
-        List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(titleId);
-        log.info("待解析数据量: {}", tempDataList.size());
-
-        // 收集所有key作为extra_data_title的列
-        Set<String> allKeys = new LinkedHashSet<>();
-        List<Map<String, String>> allParsed = new ArrayList<>();
-        int skipCount = 0;
-
-        for (TempDataEntity tempData : tempDataList) {
-            String fullDesc = tempData.getColData(fullDescIndex);
-            if (StrUtil.isNotBlank(fullDesc)) {
-                Map<String, String> parsed;
-                try {
-                    parsed = parseRule.parse(fullDesc);
-                } catch (Exception e) {
-                    // 该属性不可拆分（如分隔符无法解析），跳过此条，不影响整体提取
-                    log.warn("属性不可拆分，已跳过 tempDataId: {}，原因: {}", tempData.getId(), e.getMessage());
-                    skipCount++;
-                    allParsed.add(new LinkedHashMap<>());
-                    continue;
-                }
-                allParsed.add(parsed);
-                allKeys.addAll(parsed.keySet());
-            } else {
-                allParsed.add(new LinkedHashMap<>());
-            }
-        }
-
-        if (skipCount > 0) {
-            log.info("全描述属性提取：共跳过不可拆分记录 {} 条（文件 {}）", skipCount, titleId);
-        }
-
-        // 限制最多20个属性
-        List<String> keyList = new ArrayList<>(allKeys);
-        if (keyList.size() > 20) {
-            keyList = keyList.subList(0, 20);
-        }
-
-        // 创建extra_data_title
-        ExtraDataTitleEntity extraTitle = new ExtraDataTitleEntity();
-        extraTitle.setTempDataTitleId(titleId);
-        extraTitle.setParseRuleId(parseRuleId);
-        extraTitle.setIsAiExtract(false);
-        extraTitle.setCustomName(customName);
-        for (int i = 0; i < keyList.size(); i++) {
-            extraTitle.setColTitle(i + 1, keyList.get(i));
-        }
-        extraDataTitleMapper.insert(extraTitle);
-
-        // 创建extra_data
-        List<ExtraDataEntity> extraDataList = new ArrayList<>();
-        for (int i = 0; i < tempDataList.size() && i < allParsed.size(); i++) {
-            TempDataEntity tempData = tempDataList.get(i);
-            Map<String, String> parsed = allParsed.get(i);
-            ExtraDataEntity extraData = new ExtraDataEntity();
-            extraData.setExtraDataTitleId(extraTitle.getId());
-            extraData.setTempDataId(tempData.getId());
-
-            for (int j = 0; j < keyList.size(); j++) {
-                extraData.setColData(j + 1, parsed.getOrDefault(keyList.get(j), ""));
-            }
-            extraDataList.add(extraData);
-
-            if (extraDataList.size() >= batchSize) {
-                extraDataMapper.insertBatch(extraDataList);
-                extraDataList.clear();
-            }
-        }
-        if (!extraDataList.isEmpty()) {
-            extraDataMapper.insertBatch(extraDataList);
-        }
-
-        log.info("全描述属性提取完成，提取属性数: {}, 数据量: {}", keyList.size(), tempDataList.size());
-        return extraTitle;
-    }
-
-    @Override
-    @Transactional
     public void deleteExtraTitle(Long extraTitleId) {
         log.info("开始删除全描述提取结果，extraTitleId: {}", extraTitleId);
 
@@ -476,12 +399,14 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     }
 
     /**
-     * AI 属性提取核心逻辑（异步执行）：
-     * 1. 逐行读取原始数据，按"指定分类列"或已清洗的分类编码确定该行的分类编码；
-     * 2. 用分类编码查 standard_title 表得到标准字段（参数1）；
-     * 3. 取"指定属性拆分列"（参数2）作为待拆分的描述文本；
-     * 4. 调用大模型将描述文本按标准字段拆分，要求只返回 JSON 键值对；
-     * 5. 解析 JSON，汇总所有键生成 extra_data_title 列，并写入 extra_data 行。
+     * AI 属性提取核心逻辑（异步执行，跑批模式）：
+     * 1. 逐行确定该行的分类编码（优先已清洗结果，其次"指定分类列"）；
+     * 2. 从数据库 standard_title 查询该分类编码对应的标准分类字段（参数1），按分类编码分组；
+     * 3. 同一分类下的原始数据（含物料名称/规格/牌号/技术标准/全描述等）按 batchSize 切成批次，
+     *    一次请求把"多条原始数据 + 标准字段清单"整体交给大模型识别填充；
+     * 4. 模型返回 JSON 数组（每个元素 {"index":n, "attrs":{...}}），解析后按行回填；
+     * 5. 全过程的输入提示词与输出原文写入 txt 调试日志（logs/ai-prompt/attr-extract/）；
+     * 6. 汇总所有属性键生成 extra_data_title 列，并写入 extra_data 行。
      */
     public void doStartAiExtract(Long titleId, String customName) {
         TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
@@ -506,7 +431,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             return;
         }
 
-        // 预加载：分类（编码/名称 -> 实体）、已清洗数据（按原始数据ID）、标准表头（按分类编码缓存）
+        // 预加载：分类（编码/名称 -> 实体）、已清洗数据（按原始数据ID）
         List<CategoryEntity> allCategories = categoryMapper.selectList(null);
         Map<String, CategoryEntity> catByCode = new HashMap<>();
         Map<String, CategoryEntity> catByName = new HashMap<>();
@@ -518,51 +443,147 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         for (CleanedDataEntity cd : cleanedDataMapper.selectAllByTempDataTitleId(titleId)) {
             cleanedByTempId.put(cd.getTempDataId(), cd);
         }
-        Map<String, StandardTitleEntity> stdCache = new HashMap<>();
 
+        final long extractStartTs = System.currentTimeMillis();
         sendAiExtractProgress(titleId, "start", 0, total, 0, 0, null);
 
-        // AI 调用（在事务外执行，避免长事务占用连接）
+        // ---------- 步骤1：按分类编码分组（同一分类的标准字段一致，可合并跑批） ----------
+        Map<String, List<Integer>> rowsByCategory = new LinkedHashMap<>();
+        List<String> rowCategoryCode = new ArrayList<>(Collections.nCopies(total, null));
+        int noCategoryCount = 0;
+        for (int i = 0; i < total; i++) {
+            String code = resolveCategoryCode(tempDataList.get(i), categoryColIndex,
+                    cleanedByTempId, catByCode, catByName);
+            rowCategoryCode.set(i, code);
+            if (code == null) {
+                noCategoryCount++;
+                continue;
+            }
+            rowsByCategory.computeIfAbsent(code, k -> new ArrayList<>()).add(i);
+        }
+
+        // ---------- 步骤2：查询各分类的标准字段（数据库 standard_title） ----------
+        Map<String, List<String>> fieldsByCategory = new LinkedHashMap<>();
+        for (String code : rowsByCategory.keySet()) {
+            StandardTitleEntity stdTitle = standardTitleMapper.selectByCategoryCode(code);
+            if (stdTitle == null) continue;
+            List<String> fields = new ArrayList<>();
+            for (int c = 1; c <= 20; c++) {
+                String t = stdTitle.getColTitle(c);
+                if (StrUtil.isNotBlank(t)) fields.add(t);
+            }
+            if (!fields.isEmpty()) fieldsByCategory.put(code, fields);
+        }
+
+        // ---------- 调试日志会话 ----------
+        int perBatch = aiExtractBatchSize > 0 ? aiExtractBatchSize : 20;
+        String logSession = aiPromptLogger.startSession(AI_EXTRACT_LOG_MODULE, titleId);
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("文件名", titleEntity.getFileName());
+        meta.put("表头ID", titleId);
+        meta.put("总行数", total);
+        meta.put("分类列", titleEntity.getCategoryCol());
+        meta.put("属性拆分列", titleEntity.getFullDescCol());
+        meta.put("涉及分类数", rowsByCategory.size());
+        meta.put("有标准字段的分类数", fieldsByCategory.size());
+        meta.put("无法确定分类的行数", noCategoryCount);
+        meta.put("每批条数", perBatch);
+        aiPromptLogger.writeHeader(logSession, "AI 属性提取（跑批）", meta);
+
+        // ---------- 步骤3~4：按分类 + 批次调用大模型 ----------
         List<Map<String, String>> allParsed = new ArrayList<>();
+        for (int i = 0; i < total; i++) allParsed.add(new LinkedHashMap<>());
         Set<String> allKeys = new LinkedHashSet<>();
         int success = 0;
         int error = 0;
+        int processed = 0;
+        int batchNo = 0;
 
-        for (int i = 0; i < tempDataList.size(); i++) {
-            TempDataEntity tempData = tempDataList.get(i);
-            Map<String, String> parsed = new LinkedHashMap<>();
-            try {
-                // 参数1：该行的标准字段（来自 standard_title）
-                String categoryCode = resolveCategoryCode(tempData, categoryColIndex, cleanedByTempId, catByCode, catByName);
-                if (categoryCode == null) {
-                    log.debug("tempDataId {} 无法确定分类编码，跳过", tempData.getId());
-                } else {
-                    StandardTitleEntity stdTitle = stdCache.computeIfAbsent(
-                            categoryCode, code -> standardTitleMapper.selectByCategoryCode(code));
-                    if (stdTitle == null) {
-                        log.debug("分类编码 {} 未找到标准字段表头，跳过", categoryCode);
-                    } else {
-                        List<String> fields = new ArrayList<>();
-                        for (int c = 1; c <= 20; c++) {
-                            String t = stdTitle.getColTitle(c);
-                            if (StrUtil.isNotBlank(t)) fields.add(t);
-                        }
-                        // 参数2：属性拆分列文本
-                        String fullDesc = fullDescIndex > 0 ? tempData.getColData(fullDescIndex) : "";
-                        if (!fields.isEmpty() && StrUtil.isNotBlank(fullDesc)) {
-                            String aiText = aiClientService.chat(buildAiSystemPrompt(), buildAiUserPrompt(fields, fullDesc));
-                            parsed = parseAiJson(aiText, fields);
-                            success++;
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                error++;
-                log.error("AI 提取失败，tempDataId: {}", tempData.getId(), e);
+        for (Map.Entry<String, List<Integer>> entry : rowsByCategory.entrySet()) {
+            String categoryCode = entry.getKey();
+            List<Integer> rowIdx = entry.getValue();
+            List<String> fields = fieldsByCategory.get(categoryCode);
+            CategoryEntity cat = catByCode.get(categoryCode);
+            String categoryName = cat != null ? cat.getCategoryName() : "";
+
+            if (fields == null) {
+                // 该分类没有标准字段，整组跳过（仍推进进度）
+                processed += rowIdx.size();
+                aiPromptLogger.writeSection(logSession, "跳过分类 " + categoryCode,
+                        "分类 " + categoryCode + "(" + categoryName + ") 在 standard_title 中未找到标准字段，"
+                                + rowIdx.size() + " 行跳过");
+                sendAiExtractProgress(titleId, "progress", processed, total, success, error, null);
+                continue;
             }
-            allParsed.add(parsed);
-            allKeys.addAll(parsed.keySet());
-            sendAiExtractProgress(titleId, "progress", i + 1, total, success, error, null);
+
+            int totalBatch = (rowIdx.size() + perBatch - 1) / perBatch;
+            for (int b = 0; b < totalBatch; b++) {
+                int from = b * perBatch;
+                int to = Math.min(from + perBatch, rowIdx.size());
+                List<Integer> batchRows = rowIdx.subList(from, to);
+                batchNo++;
+
+                // 组装批次输入：每条数据带上序号与原始信息
+                List<Map<String, String>> records = new ArrayList<>();
+                for (int k = 0; k < batchRows.size(); k++) {
+                    TempDataEntity td = tempDataList.get(batchRows.get(k));
+                    records.add(buildExtractRecord(k + 1, td, titleEntity, fullDescIndex,
+                            cleanedByTempId.get(td.getId())));
+                }
+
+                String systemPrompt = buildAiSystemPrompt();
+                String userPrompt = buildAiBatchUserPrompt(categoryCode, categoryName, fields, records);
+                String batchLabel = "分类 " + categoryCode + "(" + categoryName + ") 批次 "
+                        + (b + 1) + "/" + totalBatch + "（" + batchRows.size() + " 条）";
+
+                String aiText = null;
+                String errMsg = null;
+                long t0 = System.currentTimeMillis();
+                try {
+                    aiText = aiClientService.chat(systemPrompt, userPrompt);
+                } catch (Exception e) {
+                    errMsg = e.getMessage();
+                    log.error("AI 属性提取批次失败，{}", batchLabel, e);
+                }
+                long cost = System.currentTimeMillis() - t0;
+                aiPromptLogger.writeCall(logSession, batchLabel, systemPrompt, userPrompt, aiText, cost, errMsg);
+
+                if (aiText == null) {
+                    error += batchRows.size();
+                    processed += batchRows.size();
+                    sendAiExtractProgress(titleId, "progress", processed, total, success, error, null);
+                    continue;
+                }
+
+                // 解析批次返回：index -> 属性 Map
+                Map<Integer, Map<String, String>> batchResult = parseAiBatchJson(aiText, fields, batchRows.size());
+                StringBuilder parsedDump = new StringBuilder();
+                for (int k = 0; k < batchRows.size(); k++) {
+                    int globalIdx = batchRows.get(k);
+                    Map<String, String> attrs = batchResult.get(k + 1);
+                    if (attrs != null && !attrs.isEmpty()) {
+                        allParsed.set(globalIdx, attrs);
+                        allKeys.addAll(attrs.keySet());
+                        success++;
+                    } else {
+                        error++;
+                    }
+                    parsedDump.append('#').append(k + 1)
+                            .append(" tempDataId=").append(tempDataList.get(globalIdx).getId())
+                            .append(" -> ").append(attrs == null ? "(未解析到)" : JSON.toJSONString(attrs))
+                            .append('\n');
+                }
+                aiPromptLogger.writeSection(logSession, "[PARSED] " + batchLabel, parsedDump.toString());
+
+                processed += batchRows.size();
+                sendAiExtractProgress(titleId, "progress", processed, total, success, error, null);
+            }
+        }
+
+        // 无分类的行也计入已处理
+        if (processed < total) {
+            processed = total;
+            sendAiExtractProgress(titleId, "progress", processed, total, success, error, null);
         }
 
         // 汇总列（最多 20 个）
@@ -570,20 +591,31 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         if (keyList.size() > 20) keyList = keyList.subList(0, 20);
 
         if (keyList.isEmpty()) {
-            sendAiExtractProgress(titleId, "complete", total, total, success, error,
-                    "未提取到任何属性，请确认：文件已设置分类列或已执行智能分类，且对应分类编码在标准字段表头中存在，且属性拆分列有内容");
+            String msg = "未提取到任何属性，请确认：文件已设置分类列或已执行智能分类，且对应分类编码在标准字段表头中存在，且属性拆分列有内容";
+            aiPromptLogger.writeFooter(logSession, msg + "（批次数 " + batchNo + "）");
+            aiPromptLogger.endSession(logSession);
+            sendAiExtractProgress(titleId, "complete", total, total, success, error, msg);
             log.warn("AI 提取未产生任何属性，文件 {}", titleId);
             return;
         }
 
-        // 入库（独立事务）
+        // ---------- 步骤6：覆盖旧结果后入库（独立事务） ----------
+        // 重复提取：先删除该文件已有的全部属性提取结果（extra_data + extra_data_title），再重新写入
+        extraDataMapper.deleteByTempDataTitleId(titleId);
+        extraDataTitleMapper.deleteByTempDataTitleId(titleId);
+
         final List<String> columnKeys = keyList;
+        final ExtraDataTitleEntity[] extraTitleHolder = new ExtraDataTitleEntity[1];
         transactionTemplate.executeWithoutResult(status -> {
             ExtraDataTitleEntity extraTitle = new ExtraDataTitleEntity();
+            extraTitleHolder[0] = extraTitle;
             extraTitle.setTempDataTitleId(titleId);
             extraTitle.setParseRuleId(null);
             extraTitle.setIsAiExtract(true);
-            extraTitle.setCustomName(customName);
+            extraTitle.setCustomName(null);
+            extraTitle.setExtractStatus("RUNNING");
+            extraTitle.setExtractStartTime(new java.util.Date(extractStartTs));
+            extraTitle.setRowCount(total);
             for (int i = 0; i < columnKeys.size(); i++) {
                 extraTitle.setColTitle(i + 1, columnKeys.get(i));
             }
@@ -608,9 +640,178 @@ public class DataCleaningServiceImpl implements DataCleaningService {
             if (!extraDataList.isEmpty()) extraDataMapper.insertBatch(extraDataList);
         });
 
+        String summary = "属性数 " + keyList.size() + "，成功 " + success + " 行，失败/未提取 " + error
+                + " 行，批次数 " + batchNo + "，涉及分类 " + rowsByCategory.size() + " 个";
+        aiPromptLogger.writeFooter(logSession, summary);
+        aiPromptLogger.endSession(logSession);
+
+        // 回填提取元数据（结束时间 / 耗时 / 状态）
+        ExtraDataTitleEntity savedTitle = extraTitleHolder[0];
+        if (savedTitle != null && savedTitle.getId() != null) {
+            savedTitle.setExtractEndTime(new java.util.Date());
+            savedTitle.setExtractCostMs(System.currentTimeMillis() - extractStartTs);
+            savedTitle.setExtractStatus(error > 0 && success == 0 ? "FAILED"
+                    : (error > 0 ? "PARTIAL" : "SUCCESS"));
+            extraDataTitleMapper.updateById(savedTitle);
+        }
+
         sendAiExtractProgress(titleId, "complete", total, total, success, error,
                 "AI 属性提取完成，共提取 " + keyList.size() + " 个属性");
-        log.info("AI 属性提取完成，文件 {}，属性数 {}，数据量 {}", titleId, keyList.size(), tempDataList.size());
+        log.info("AI 属性提取完成，文件 {}，{}", titleId, summary);
+    }
+
+    /**
+     * 组装单条待提取记录：把原始数据的关键列拼成"字段名=值"的形式，便于大模型理解。
+     */
+    private Map<String, String> buildExtractRecord(int seq, TempDataEntity td, TempDataTitleEntity title,
+                                                   int fullDescIndex, CleanedDataEntity cleaned) {
+        Map<String, String> rec = new LinkedHashMap<>();
+        rec.put("序号", String.valueOf(seq));
+        // 原始数据全部有值的列（列名取自表头），让模型拿到完整上下文
+        for (int c = 1; c <= 10; c++) {
+            String colName = title.getColTitle(c);
+            String val = td.getColData(c);
+            if (StrUtil.isNotBlank(colName) && StrUtil.isNotBlank(val)) {
+                rec.put(colName, val.trim());
+            }
+        }
+        // 显式补充全描述（属性拆分列），确保即使列名为空也能带上
+        if (fullDescIndex > 0) {
+            String fullDesc = td.getColData(fullDescIndex);
+            if (StrUtil.isNotBlank(fullDesc)) rec.put("全描述", fullDesc.trim());
+        }
+        // 已清洗结果里的规范化信息（若有）可作为补充线索
+        if (cleaned != null) {
+            if (StrUtil.isNotBlank(cleaned.getMaterialName())) rec.putIfAbsent("物料名称", cleaned.getMaterialName());
+            if (StrUtil.isNotBlank(cleaned.getSpecification())) rec.putIfAbsent("规格", cleaned.getSpecification());
+        }
+        return rec;
+    }
+
+    /**
+     * 构造跑批用户提示词：标准字段清单 + 多条原始数据，要求模型返回 JSON 数组。
+     */
+    private String buildAiBatchUserPrompt(String categoryCode, String categoryName,
+                                          List<String> fields, List<Map<String, String>> records) {
+        StringBuilder fieldSb = new StringBuilder();
+        for (int i = 0; i < fields.size(); i++) {
+            fieldSb.append(i + 1).append(". ").append(fields.get(i)).append('\n');
+        }
+        StringBuilder recSb = new StringBuilder();
+        for (Map<String, String> rec : records) {
+            recSb.append("【序号 ").append(rec.get("序号")).append("】");
+            boolean first = true;
+            for (Map.Entry<String, String> e : rec.entrySet()) {
+                if ("序号".equals(e.getKey())) continue;
+                if (!first) recSb.append(" | ");
+                recSb.append(e.getKey()).append('=').append(e.getValue());
+                first = false;
+            }
+            recSb.append('\n');
+        }
+        String template = batchExtractPrompt.getOrDefault("extract.user-prompt", null);
+        if (StrUtil.isBlank(template)) {
+            template = "分类编码：{categoryCode}（{categoryName}）\n\n"
+                    + "【标准分类字段（目标字段，严格使用以下名称作为 JSON 键）】\n{fields}\n\n"
+                    + "【待识别的原始数据（共 {count} 条）】\n{records}\n\n"
+                    + "【要求】\n"
+                    + "1. 针对每一条原始数据，从其内容中识别并填充上述标准字段的值；\n"
+                    + "2. 字段名必须严格使用给定名称，不要增加、删除或改写；\n"
+                    + "3. 某字段在该条数据中无法确定时，值填空字符串 \"\"；\n"
+                    + "4. 只输出一个 JSON 数组，元素个数与数据条数一致，格式为：\n"
+                    + "[{\"index\":1,\"attrs\":{\"字段名\":\"值\"}},{\"index\":2,\"attrs\":{...}}]\n"
+                    + "5. 不要输出解释文字，不要输出 Markdown 代码块。";
+        }
+        return template
+                .replace("{categoryCode}", categoryCode == null ? "" : categoryCode)
+                .replace("{categoryName}", categoryName == null ? "" : categoryName)
+                .replace("{fields}", fieldSb.toString())
+                .replace("{records}", recSb.toString())
+                .replace("{count}", String.valueOf(records.size()));
+    }
+
+    /**
+     * 解析批次返回的 JSON 数组，得到 序号(1-based) -> 属性 Map。
+     * 兼容模型返回 Markdown 包裹、对象包裹数组、纯对象数组等情况。
+     */
+    private Map<Integer, Map<String, String>> parseAiBatchJson(String aiText, List<String> fields, int expectSize) {
+        Map<Integer, Map<String, String>> result = new LinkedHashMap<>();
+        if (StrUtil.isBlank(aiText)) return result;
+        String text = stripCodeFence(aiText);
+
+        // 截取数组主体；若模型返回 {"results":[...]} 则先取出数组
+        int as = text.indexOf('[');
+        int ae = text.lastIndexOf(']');
+        if (as < 0 || ae <= as) {
+            // 退化情况：只返回了单个对象
+            Map<String, String> single = parseAiJson(text, fields);
+            if (!single.isEmpty() && expectSize == 1) result.put(1, single);
+            return result;
+        }
+        String arrText = text.substring(as, ae + 1);
+
+        try {
+            com.alibaba.fastjson2.JSONArray arr = JSON.parseArray(arrText);
+            for (int i = 0; i < arr.size(); i++) {
+                JSONObject item = arr.getJSONObject(i);
+                if (item == null) continue;
+                Integer index = item.getInteger("index");
+                if (index == null) index = item.getInteger("序号");
+                if (index == null) index = i + 1;
+                JSONObject attrs = item.getJSONObject("attrs");
+                if (attrs == null) attrs = item.getJSONObject("属性");
+                if (attrs == null) {
+                    // 模型可能直接把属性平铺在元素里
+                    attrs = new JSONObject(item);
+                    attrs.remove("index");
+                    attrs.remove("序号");
+                }
+                Map<String, String> mapped = mapToStandardFields(attrs, fields);
+                if (!mapped.isEmpty()) result.put(index, mapped);
+            }
+        } catch (Exception e) {
+            log.warn("AI 批次返回解析失败，原文前 500 字: {}",
+                    arrText.length() > 500 ? arrText.substring(0, 500) : arrText);
+        }
+        return result;
+    }
+
+    /** 把模型返回的键映射到标准字段名（精确 -> 归一化 -> 包含关系模糊匹配） */
+    private Map<String, String> mapToStandardFields(JSONObject obj, List<String> fields) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (obj == null) return result;
+        Map<String, String> fieldNorm = new HashMap<>();
+        for (String f : fields) fieldNorm.put(normalize(f), f);
+        for (String key : obj.keySet()) {
+            String val = obj.getString(key);
+            if (val == null) val = "";
+            String stdField = fieldNorm.get(normalize(key));
+            if (stdField == null) {
+                String nk = normalize(key);
+                for (String f : fields) {
+                    String nf = normalize(f);
+                    if (nf.equals(nk) || nf.contains(nk) || nk.contains(nf)) {
+                        stdField = f;
+                        break;
+                    }
+                }
+            }
+            if (stdField != null) result.put(stdField, val);
+        }
+        return result;
+    }
+
+    /** 去掉 ```json ... ``` 代码块包裹 */
+    private String stripCodeFence(String text) {
+        String t = text.trim();
+        if (t.startsWith("```")) {
+            int firstNL = t.indexOf('\n');
+            if (firstNL >= 0) t = t.substring(firstNL + 1);
+            int lastFence = t.lastIndexOf("```");
+            if (lastFence >= 0) t = t.substring(0, lastFence);
+            t = t.trim();
+        }
+        return t;
     }
 
     /**
@@ -652,7 +853,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     }
 
     private String buildAiSystemPrompt() {
-        return aiSystemPrompt;
+        return batchExtractPrompt.getOrDefault("extract.system-prompt", aiSystemPrompt);
     }
 
     private String buildAiUserPrompt(List<String> fields, String fullDesc) {
@@ -2220,6 +2421,324 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Override
     public List<ExtraDataTitleEntity> getExtraDataTitles() {
         return extraDataTitleMapper.selectList(null);
+    }
+
+    /**
+     * 按层级返回属性提取结果：文件 -> 分类 -> 属性列表。
+     * <p>
+     * extraDataTitleId 为空时，取该文件最近一次的提取结果表头。
+     *
+     * @param tempDataTitleId  原始数据文件表头ID（文件层）
+     * @param extraDataTitleId 指定的提取结果表头ID，可为空
+     * @return {file:{...}, extraTitle:{...}, columns:[...], categories:[{categoryCode, categoryName, rowCount,
+     *         attributes:[{name, filledCount, fillRate, samples:[...]}], rows:[{tempDataId, materialName, attrs:{}}]}]}
+     */
+    @Override
+    public Map<String, Object> getExtractResultTree(Long tempDataTitleId, Long extraDataTitleId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        TempDataTitleEntity fileTitle = tempDataTitleMapper.selectById(tempDataTitleId);
+        if (fileTitle == null) {
+            throw new RuntimeException("文件表头不存在: " + tempDataTitleId);
+        }
+
+        // ---------- 文件层 ----------
+        Map<String, Object> fileInfo = new LinkedHashMap<>();
+        fileInfo.put("tempDataTitleId", fileTitle.getId());
+        fileInfo.put("fileName", fileTitle.getFileName());
+        fileInfo.put("categoryCol", fileTitle.getCategoryCol());
+        fileInfo.put("fullDescCol", fileTitle.getFullDescCol());
+        result.put("file", fileInfo);
+
+        // ---------- 定位提取结果表头 ----------
+        List<ExtraDataTitleEntity> titles = extraDataTitleMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<ExtraDataTitleEntity>()
+                        .eq("temp_data_title_id", tempDataTitleId)
+                        .orderByDesc("id"));
+        result.put("extraTitleOptions", titles.stream().map(t -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", t.getId());
+            m.put("customName", t.getCustomName());
+            m.put("isAiExtract", t.getIsAiExtract());
+            return m;
+        }).collect(java.util.stream.Collectors.toList()));
+
+        ExtraDataTitleEntity extraTitle = null;
+        if (extraDataTitleId != null) {
+            extraTitle = extraDataTitleMapper.selectById(extraDataTitleId);
+        } else if (!titles.isEmpty()) {
+            extraTitle = titles.get(0);
+        }
+        if (extraTitle == null) {
+            result.put("extraTitle", null);
+            result.put("columns", Collections.emptyList());
+            result.put("categories", Collections.emptyList());
+            return result;
+        }
+        result.put("extraTitle", extraTitle);
+
+        // 属性列名清单
+        List<String> columns = new ArrayList<>();
+        for (int c = 1; c <= 20; c++) {
+            String t = extraTitle.getColTitle(c);
+            if (StrUtil.isNotBlank(t)) columns.add(t);
+        }
+        result.put("columns", columns);
+
+        // ---------- 数据装载 ----------
+        List<ExtraDataEntity> extraDataList = extraDataMapper.selectByExtraDataTitleId(extraTitle.getId());
+        Map<Long, ExtraDataEntity> extraByTempId = new HashMap<>();
+        for (ExtraDataEntity ed : extraDataList) {
+            extraByTempId.put(ed.getTempDataId(), ed);
+        }
+
+        List<TempDataEntity> tempDataList = tempDataMapper.selectByTitleId(tempDataTitleId);
+        Map<Long, CleanedDataEntity> cleanedByTempId = new HashMap<>();
+        for (CleanedDataEntity cd : cleanedDataMapper.selectAllByTempDataTitleId(tempDataTitleId)) {
+            cleanedByTempId.put(cd.getTempDataId(), cd);
+        }
+        List<CategoryEntity> allCategories = categoryMapper.selectList(null);
+        Map<String, CategoryEntity> catByCode = new HashMap<>();
+        Map<String, CategoryEntity> catByName = new HashMap<>();
+        for (CategoryEntity c : allCategories) {
+            if (c.getCategoryCode() != null) catByCode.put(c.getCategoryCode(), c);
+            if (c.getCategoryName() != null) catByName.put(c.getCategoryName(), c);
+        }
+        int categoryColIndex = findColIndex(fileTitle, fileTitle.getCategoryCol());
+
+        // ---------- 分类层分组 ----------
+        Map<String, List<Map<String, Object>>> rowsByCategory = new LinkedHashMap<>();
+        for (TempDataEntity td : tempDataList) {
+            ExtraDataEntity ed = extraByTempId.get(td.getId());
+            if (ed == null) continue;
+            CleanedDataEntity cleaned = cleanedByTempId.get(td.getId());
+            String code = resolveCategoryCode(td, categoryColIndex, cleanedByTempId, catByCode, catByName);
+            String key = code == null ? "__UNCLASSIFIED__" : code;
+
+            Map<String, String> attrs = new LinkedHashMap<>();
+            for (int j = 0; j < columns.size(); j++) {
+                attrs.put(columns.get(j), ed.getColData(j + 1));
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("tempDataId", td.getId());
+            row.put("extraDataId", ed.getId());
+            row.put("materialCode", cleaned != null ? cleaned.getMaterialCode() : null);
+            row.put("materialName", cleaned != null ? cleaned.getMaterialName() : td.getColData(1));
+            row.put("attrs", attrs);
+            // 源数据（原始各列），供前端查看明细与修改时使用
+            List<String> sourceHeaders = new ArrayList<>();
+            List<String> sourceData = new ArrayList<>();
+            for (int c = 1; c <= 20; c++) {
+                String h = fileTitle.getColTitle(c);
+                if (h == null) continue;
+                String v = td.getColData(c);
+                if (StrUtil.isBlank(v)) continue;
+                sourceHeaders.add(h);
+                sourceData.add(v);
+            }
+            row.put("sourceHeaders", sourceHeaders);
+            row.put("sourceData", sourceData);
+            boolean rowUnclassified = "__UNCLASSIFIED__".equals(key);
+            row.put("categoryCode", rowUnclassified ? null : code);
+            row.put("categoryName", rowUnclassified ? "未分类" : (catByCode.get(code) != null ? catByCode.get(code).getCategoryName() : code));
+            rowsByCategory.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+        }
+
+        // ---------- 组装：分类 -> 属性列表 ----------
+        List<Map<String, Object>> categories = new ArrayList<>();
+        for (Map.Entry<String, List<Map<String, Object>>> e : rowsByCategory.entrySet()) {
+            String code = e.getKey();
+            List<Map<String, Object>> rows = e.getValue();
+            boolean unclassified = "__UNCLASSIFIED__".equals(code);
+            CategoryEntity cat = unclassified ? null : catByCode.get(code);
+
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("categoryCode", unclassified ? null : code);
+            node.put("categoryName", unclassified ? "未分类" : (cat != null ? cat.getCategoryName() : code));
+            node.put("rowCount", rows.size());
+
+            // 该分类下的标准分类字段（来自 standard_title），用于对比"标准字段 vs 实际提取"
+            List<String> stdFields = new ArrayList<>();
+            if (!unclassified) {
+                StandardTitleEntity st = standardTitleMapper.selectByCategoryCode(code);
+                if (st != null) {
+                    for (int c = 1; c <= 20; c++) {
+                        String t = st.getColTitle(c);
+                        if (StrUtil.isNotBlank(t)) stdFields.add(t);
+                    }
+                }
+            }
+            node.put("standardFields", stdFields);
+
+            // 属性层：每个属性的填充数、填充率、示例值
+            List<Map<String, Object>> attributes = new ArrayList<>();
+            for (String col : columns) {
+                int filled = 0;
+                List<String> samples = new ArrayList<>();
+                for (Map<String, Object> row : rows) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, String> attrs = (Map<String, String>) row.get("attrs");
+                    String v = attrs.get(col);
+                    if (StrUtil.isNotBlank(v)) {
+                        filled++;
+                        if (samples.size() < 3 && !samples.contains(v)) samples.add(v);
+                    }
+                }
+                if (filled == 0 && !stdFields.contains(col)) continue; // 与该分类无关的属性列不展示
+                Map<String, Object> attr = new LinkedHashMap<>();
+                attr.put("name", col);
+                attr.put("isStandardField", stdFields.contains(col));
+                attr.put("filledCount", filled);
+                attr.put("fillRate", rows.isEmpty() ? 0
+                        : Math.round(filled * 1000.0 / rows.size()) / 10.0);
+                attr.put("samples", samples);
+                attributes.add(attr);
+            }
+            node.put("attributes", attributes);
+            node.put("rows", rows);
+            categories.add(node);
+        }
+        // 未分类排在最后，其余按数据量倒序
+        categories.sort((a, b) -> {
+            boolean au = a.get("categoryCode") == null;
+            boolean bu = b.get("categoryCode") == null;
+            if (au != bu) return au ? 1 : -1;
+            return Integer.compare((Integer) b.get("rowCount"), (Integer) a.get("rowCount"));
+        });
+        result.put("categories", categories);
+
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("totalRows", extraDataList.size());
+        summary.put("categoryCount", categories.size());
+        summary.put("columnCount", columns.size());
+        result.put("summary", summary);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> getExtraRowDetail(Long extraDataId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        ExtraDataEntity ed = extraDataMapper.selectById(extraDataId);
+        if (ed == null) {
+            throw new RuntimeException("提取明细不存在: " + extraDataId);
+        }
+        ExtraDataTitleEntity extraTitle = extraDataTitleMapper.selectById(ed.getExtraDataTitleId());
+        TempDataEntity td = tempDataMapper.selectById(ed.getTempDataId());
+        TempDataTitleEntity fileTitle = td != null ? tempDataTitleMapper.selectById(td.getTempDataTitleId()) : null;
+        CleanedDataEntity cleaned = cleanedDataMapper.selectByTempDataId(ed.getTempDataId());
+
+        // 该明细所属分类（用于对齐层级查看的属性过滤）
+        String rowCategoryCode = cleaned != null ? cleaned.getCategoryCode() : null;
+        List<String> stdFields = new ArrayList<>();
+        if (rowCategoryCode != null) {
+            StandardTitleEntity st = standardTitleMapper.selectByCategoryCode(rowCategoryCode);
+            if (st != null) {
+                for (int c = 1; c <= 20; c++) {
+                    String t = st.getColTitle(c);
+                    if (StrUtil.isNotBlank(t)) stdFields.add(t);
+                }
+            }
+        }
+
+        // 提取属性列标题（仅展示该分类相关属性，与层级查看保持一致）
+        List<String> columns = new ArrayList<>();
+        if (extraTitle != null) {
+            for (int c = 1; c <= 20; c++) {
+                String t = extraTitle.getColTitle(c);
+                if (StrUtil.isBlank(t)) continue;
+                String v = ed.getColData(c);
+                // 过滤规则与层级查看一致：属于标准字段，或本行该列已赋值
+                if (stdFields.contains(t) || StrUtil.isNotBlank(v)) columns.add(t);
+            }
+        }
+        // 提取属性值
+        Map<String, String> attrs = new LinkedHashMap<>();
+        for (int c = 1; c <= 20; c++) {
+            String t = extraTitle != null ? extraTitle.getColTitle(c) : null;
+            if (StrUtil.isBlank(t)) continue;
+            String v = ed.getColData(c);
+            if (stdFields.contains(t) || StrUtil.isNotBlank(v)) attrs.put(t, v);
+        }
+        // 源数据（原始列）
+        List<String> sourceHeaders = new ArrayList<>();
+        List<String> sourceData = new ArrayList<>();
+        if (fileTitle != null && td != null) {
+            for (int c = 1; c <= 20; c++) {
+                String h = fileTitle.getColTitle(c);
+                if (h == null) continue;
+                String v = td.getColData(c);
+                if (StrUtil.isBlank(v)) continue;
+                sourceHeaders.add(h);
+                sourceData.add(v);
+            }
+        }
+
+        result.put("extraDataId", ed.getId());
+        result.put("tempDataId", ed.getTempDataId());
+        result.put("extraDataTitleId", ed.getExtraDataTitleId());
+        result.put("materialCode", cleaned != null ? cleaned.getMaterialCode() : null);
+        result.put("materialName", cleaned != null ? cleaned.getMaterialName() : (td != null ? td.getColData(1) : null));
+        result.put("columns", columns);
+        result.put("attrs", attrs);
+        result.put("sourceHeaders", sourceHeaders);
+        result.put("sourceData", sourceData);
+        result.put("categoryCode", cleaned != null ? cleaned.getCategoryCode() : null);
+        result.put("categoryName", cleaned != null ? cleaned.getCategoryName() : null);
+        return result;
+    }
+
+    @Override
+    public void updateExtraRow(Long extraDataId, Map<String, String> cols) {
+        if (cols == null || cols.isEmpty()) return;
+        ExtraDataEntity ed = extraDataMapper.selectById(extraDataId);
+        if (ed == null) {
+            throw new RuntimeException("提取明细不存在: " + extraDataId);
+        }
+        ExtraDataTitleEntity extraTitle = extraDataTitleMapper.selectById(ed.getExtraDataTitleId());
+        if (extraTitle == null) {
+            throw new RuntimeException("提取表头不存在: " + ed.getExtraDataTitleId());
+        }
+        // 仅更新传入的、且列标题匹配的字段
+        for (int c = 1; c <= 20; c++) {
+            String colTitle = extraTitle.getColTitle(c);
+            if (StrUtil.isBlank(colTitle)) continue;
+            if (cols.containsKey(colTitle)) {
+                ed.setColData(c, cols.get(colTitle));
+            }
+        }
+        extraDataMapper.updateById(ed);
+    }
+
+    @Override
+    public List<Map<String, Object>> getAiExtractTaskList() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        // 查询全部 AI 提取记录（按 id 倒序，最新在前）
+        List<ExtraDataTitleEntity> titles = extraDataTitleMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<ExtraDataTitleEntity>()
+                        .eq("is_ai_extract", true)
+                        .orderByDesc("id"));
+        if (titles == null) return result;
+
+        for (ExtraDataTitleEntity t : titles) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            Long tempDataTitleId = t.getTempDataTitleId();
+            TempDataTitleEntity fileTitle = tempDataTitleId != null ? tempDataTitleMapper.selectById(tempDataTitleId) : null;
+            String fileName = fileTitle != null ? fileTitle.getFileName() : ("数据#" + tempDataTitleId);
+
+            // 行数：优先用记录的 rowCount，否则按 extra_data 计数
+            int rowCount = t.getRowCount() != null ? t.getRowCount() : 0;
+
+            m.put("extraDataTitleId", t.getId());
+            m.put("tempDataTitleId", tempDataTitleId);
+            m.put("fileName", fileName);
+            m.put("rowCount", rowCount);
+            m.put("extractStatus", t.getExtractStatus());
+            m.put("extractStartTime", t.getExtractStartTime());
+            m.put("extractEndTime", t.getExtractEndTime());
+            m.put("extractCostMs", t.getExtractCostMs());
+            result.add(m);
+        }
+        return result;
     }
 
     @Override
