@@ -23,6 +23,8 @@ CREATE TABLE temp_data_title (
     col10_title VARCHAR2(200),
     full_desc_col VARCHAR2(100),
     category_col VARCHAR2(100),
+    clean_start_time TIMESTAMP,
+    clean_end_time TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR2(50) DEFAULT 'system',

@@ -772,6 +772,21 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Async
     public String startCleaning(Long titleId, Long parseRuleId, Integer batchSize) {
         log.info("开始数据清洗（固定AI分类），表头ID: {}, 规则ID: {}, batchSize: {}", titleId, parseRuleId, batchSize);
+        // 任务入队：先把文件状态置为"排队等待中"并记录文件级清洗开始时间（独立提交），
+        // 让智能分类页文件列表能立即看到排队状态；真正开始处理时再切为"清洗中"。
+        try {
+            TempDataTitleEntity title = tempDataTitleMapper.selectById(titleId);
+            if (title != null) {
+                title.setStatus(DataStatus.QUEUED);
+                if (title.getCleanStartTime() == null) {
+                    title.setCleanStartTime(java.time.LocalDateTime.now());
+                }
+                title.setCleanEndTime(null);
+                tempDataTitleMapper.updateById(title);
+            }
+        } catch (Exception e) {
+            log.warn("设置文件排队状态失败，titleId: {}", titleId, e);
+        }
         doStartCleaning(titleId, parseRuleId, batchSize);
         return "cleaning_task_" + titleId;
     }
@@ -787,11 +802,14 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         // 导致 "Lock wait timeout exceeded"。因此此处放在外层 transactionTemplate 之前执行。
         cleanPreviousCleaningData(titleId);
 
-        // 标记表头为"清洗中"并立即提交（独立自动提交，不在外层事务内），
-        // 使"智能分类"页在长时间 AI 清洗期间能即时看到进行中状态（否则会一直显示草稿直到整批结束）。
+        // 真正开始处理：把文件状态由"排队等待中"切为"清洗中"并立即提交（独立自动提交，不在外层事务内），
+        // 使"智能分类"页文件列表在长时间 AI 清洗期间能即时看到进行中状态（否则会一直显示排队直到整批结束）。
         TempDataTitleEntity titleForStatus = tempDataTitleMapper.selectById(titleId);
         if (titleForStatus != null) {
             titleForStatus.setStatus(DataStatus.PROCESSING);
+            if (titleForStatus.getCleanStartTime() == null) {
+                titleForStatus.setCleanStartTime(java.time.LocalDateTime.now());
+            }
             tempDataTitleMapper.updateById(titleForStatus);
         }
 
@@ -975,8 +993,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                     }
                 }
 
-                // 更新表头状态
+                // 更新表头状态：已完成，并记录文件级清洗结束时间
                 titleEntity.setStatus(DataStatus.COMPLETED);
+                titleEntity.setCleanEndTime(java.time.LocalDateTime.now());
                 tempDataTitleMapper.updateById(titleEntity);
 
                 // 发送完成消息
@@ -998,6 +1017,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                     TempDataTitleEntity titleEntity = tempDataTitleMapper.selectById(titleId);
                     if (titleEntity != null) {
                         titleEntity.setStatus(DataStatus.REJECTED);
+                        titleEntity.setCleanEndTime(java.time.LocalDateTime.now());
                         tempDataTitleMapper.updateById(titleEntity);
                     }
                 } catch (Exception ex) {
@@ -1179,6 +1199,15 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         result.put("fileName", title.getFileName());
         result.put("status", title.getStatus());
         result.put("totalRows", title.getTotalRows());
+        result.put("cleanStartTime", title.getCleanStartTime());
+        result.put("cleanEndTime", title.getCleanEndTime());
+        // 耗时（毫秒）：开始时间已记录且未结束时按当前时间计算，便于文件列表实时展示
+        if (title.getCleanStartTime() != null) {
+            LocalDateTime end = title.getCleanEndTime() != null ? title.getCleanEndTime() : LocalDateTime.now();
+            result.put("durationMs", java.time.Duration.between(title.getCleanStartTime(), end).toMillis());
+        } else {
+            result.put("durationMs", null);
+        }
         return result;
     }
 
@@ -1193,9 +1222,11 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         }
         // 2. 更新表头状态
         TempDataTitleEntity title = tempDataTitleMapper.selectById(titleId);
-        if (title != null && (DataStatus.PROCESSING.name().equals(title.getStatus())
+        if (title != null && (DataStatus.PROCESSING == title.getStatus()
+                || DataStatus.QUEUED == title.getStatus()
                 || DataStatus.needsReview(title.getStatus()))) {
             title.setStatus(DataStatus.REJECTED);
+            title.setCleanEndTime(LocalDateTime.now());
             tempDataTitleMapper.updateById(title);
         }
         // 3. 通知前端

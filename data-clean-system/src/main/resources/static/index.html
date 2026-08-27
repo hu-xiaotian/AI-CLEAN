@@ -361,16 +361,47 @@
                     <span style="color:var(--danger)">失败: <strong id="liveError">0</strong></span>
                 </div>
             </div>
-            <div class="card" id="cleanedRecordsCard" style="display:none">
+            <div class="card" id="cleanFileCard">
                 <h3 class="card-collapse-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px" onclick="toggleCardCollapse(this)">
                     <span style="display:flex;align-items:center;gap:8px">
                         <span class="card-collapse-arrow">&#9662;</span>
-                        <span>清洗结果记录</span>
+                        <span>清洗文件列表</span>
                     </span>
-                    <span id="cleanedRecordsSummary" class="record-count"></span>
+                    <span id="cleanFileSummary" class="record-count"></span>
                 </h3>
                 <div class="card-collapse-body">
-                    <p class="desc">已清洗完成的数据记录，AI 辅助评分（质量评分）越高表示越符合标准分类体系。</p>
+                    <p class="desc">以数据文件为单位展示清洗状态：未清洗 / 排队等待中 / 清洗中 / 已完成。点击「查看」进入该文件的清洗结果。</p>
+                    <div class="table-scroll mt-2" style="max-height:480px;overflow-y:auto">
+                        <table class="data-table" id="cleanFileTable">
+                            <thead><tr>
+                                <th>文件名</th>
+                                <th>行数</th>
+                                <th>清洗状态</th>
+                                <th>清洗开始时间</th>
+                                <th>清洗结束时间</th>
+                                <th>耗时</th>
+                                <th style="width:120px">操作</th>
+                            </tr></thead>
+                            <tbody id="cleanFileTbody">
+                                <tr><td colspan="7" class="empty-hint">暂无数据文件</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="card" id="cleanedRecordsCard" style="display:none">
+                <h3 class="card-collapse-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+                    <span style="display:flex;align-items:center;gap:8px">
+                        <span class="card-collapse-arrow" style="cursor:pointer" onclick="toggleCardCollapse(document.getElementById('cleanedRecordsCard').querySelector('.card-collapse-title'))">&#9662;</span>
+                        <span id="cleanedRecordsTitle">清洗结果记录</span>
+                    </span>
+                    <span style="display:flex;align-items:center;gap:10px">
+                        <span id="cleanedRecordsSummary" class="record-count"></span>
+                        <button class="btn btn-xs btn-outline" onclick="closeCleanResult()">返回文件列表</button>
+                    </span>
+                </h3>
+                <div class="card-collapse-body">
+                    <p class="desc">已清洗完成的数据记录，AI 辅助评分（质量评分）越高表示越符合标准分类体系；单击分类名称或备注可人工修正。</p>
                     <div class="table-scroll mt-2" style="max-height:560px;overflow-y:auto">
                         <table class="data-table" id="cleanedRecordsTable">
                             <thead><tr>
@@ -384,12 +415,10 @@
                                 <th>备注(修改原因)</th>
                                 <th style="min-width:180px">AI分类理由</th>
                                 <th style="min-width:160px">AI候选分类</th>
-                                <th>清洗开始时间</th>
-                                <th>清洗结束时间</th>
                                 <th>状态</th>
                             </tr></thead>
                             <tbody id="cleanedRecordsTbody">
-                                <tr><td colspan="12" class="empty-hint">请选择数据文件并点击「开始清洗」，或执行一键清洗后查看</td></tr>
+                                <tr><td colspan="11" class="empty-hint">请选择数据文件并点击「开始清洗」，或执行一键清洗后查看</td></tr>
                             </tbody>
                         </table>
                     </div>

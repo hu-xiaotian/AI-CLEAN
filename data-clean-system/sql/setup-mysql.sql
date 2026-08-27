@@ -28,6 +28,8 @@ CREATE TABLE `temp_data_title` (
                                    `col10_title` VARCHAR(200) DEFAULT NULL,
                                    `full_desc_col` VARCHAR(100) DEFAULT NULL COMMENT '全描述列名',
                                    `category_col` VARCHAR(100) DEFAULT NULL COMMENT '分类列名',
+                                   `clean_start_time` TIMESTAMP NULL DEFAULT NULL COMMENT '清洗开始时间',
+                                   `clean_end_time` TIMESTAMP NULL DEFAULT NULL COMMENT '清洗结束时间',
                                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                                    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                                    `created_by` VARCHAR(50) DEFAULT 'system' COMMENT '创建人',

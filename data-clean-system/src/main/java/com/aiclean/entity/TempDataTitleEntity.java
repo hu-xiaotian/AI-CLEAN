@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
+import java.time.LocalDateTime;
+
 /**
  * 原始数据表头实体类
  */
@@ -93,6 +95,16 @@ public class TempDataTitleEntity extends BaseEntity {
      * 类别列名称
      */
     private String categoryCol;
+
+    /**
+     * 文件级清洗开始时间
+     */
+    private LocalDateTime cleanStartTime;
+
+    /**
+     * 文件级清洗结束时间
+     */
+    private LocalDateTime cleanEndTime;
     
     /**
      * 成功行数（非数据库字段）

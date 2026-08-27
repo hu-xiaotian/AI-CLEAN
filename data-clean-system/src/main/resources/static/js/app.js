@@ -298,12 +298,12 @@ function formatDate(str) {
 
 function statusBadge(status) {
     const map = {
-        'draft':'badge-default','processing':'badge-info','needs_review':'badge-warning','reviewing':'badge-info',
+        'draft':'badge-default','queued':'badge-warning','processing':'badge-info','needs_review':'badge-warning','reviewing':'badge-info',
         'approved':'badge-success','rejected':'badge-danger','modified':'badge-info',
         'export_ready':'badge-success','processed':'badge-info','completed':'badge-success',
     };
     const label = {
-        'draft':'草稿','processing':'处理中','needs_review':'待审核','reviewing':'审核中',
+        'draft':'未清洗','queued':'排队等待中','processing':'清洗中','needs_review':'待审核','reviewing':'审核中',
         'approved':'审核通过','rejected':'审核驳回','modified':'已修改',
         'export_ready':'可导出','processed':'已处理','completed':'已完成',
     };
@@ -1830,7 +1830,7 @@ async function loadCleanStats() {
 // 一键清洗完成后，切换到智能分类页时携带的上下文（待加载的文件）
 let ocPendingTitleId = null;
 
-// 刷新智能分类页：加载下拉、统计，并展示已清洗记录与 AI 辅助评分
+// 刷新智能分类页：加载下拉、统计、文件列表（清洗状态一览）
 async function refreshCleanPage() {
     loadTitles();
     loadRules();
@@ -1846,12 +1846,93 @@ async function refreshCleanPage() {
         if (ct) ct.value = String(ocPendingTitleId);
         ocPendingTitleId = null;
     }
-    const titleId = $('#cleanTitleId').value;
-    if (titleId) loadCleanedRecords(titleId);
+    // 以文件列表为单位展示清洗状态
+    loadCleanFileList();
     // 清洗固定启用 AI 智能分类，无需再触发 AI 辅助分类检测
 }
 
-// 加载已清洗记录（按数据文件），并在智能分类页展示 AI 辅助评分结果
+/** 格式化耗时（毫秒 -> 时:分:秒） */
+function formatDuration(ms) {
+    if (ms == null) return '-';
+    const total = Math.max(0, Math.round(ms / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return h + '时' + m + '分' + s + '秒';
+    if (m > 0) return m + '分' + s + '秒';
+    return s + '秒';
+}
+
+// 加载清洗文件列表（以数据文件为单位展示清洗状态）
+async function loadCleanFileList() {
+    const tbody = $('#cleanFileTbody');
+    const summary = $('#cleanFileSummary');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">加载中…</td></tr>';
+    try {
+        const titles = await api('/import/titles');
+        if (!titles || titles.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无数据文件</td></tr>';
+            if (summary) summary.textContent = '共 0 个文件';
+            return;
+        }
+        // 当前正在查看结果的文件 ID（用于高亮）
+        const currentTitleId = window.__cleanViewTitleId;
+        tbody.innerHTML = titles.map(t => {
+            const st = t.status ? t.status.toLowerCase() : 'draft';
+            const startT = t.cleanStartTime ? fmtLocalTime(t.cleanStartTime) : '-';
+            const endT = t.cleanEndTime ? fmtLocalTime(t.cleanEndTime) : '-';
+            let duration = '-';
+            if (t.cleanStartTime) {
+                const startMs = new Date(t.cleanStartTime).getTime();
+                const endMs = t.cleanEndTime ? new Date(t.cleanEndTime).getTime() : Date.now();
+                duration = formatDuration(endMs - startMs);
+            }
+            const highlight = currentTitleId != null && String(currentTitleId) === String(t.id) ? ' style="background:rgba(26,115,232,0.06)"' : '';
+            return '<tr' + highlight + '>' +
+                '<td title="' + escapeHtml(t.fileName || '') + '">' + escapeHtml(t.fileName || ('数据#' + t.id)) + '</td>' +
+                '<td>' + (t.totalRows || 0) + '</td>' +
+                '<td>' + statusBadge(st) + '</td>' +
+                '<td>' + startT + '</td>' +
+                '<td>' + endT + '</td>' +
+                '<td>' + duration + '</td>' +
+                '<td><button class="btn btn-xs btn-primary" onclick="viewCleanResult(' + t.id + ')">查看</button></td>' +
+                '</tr>';
+        }).join('');
+        if (summary) summary.textContent = '共 ' + titles.length + ' 个文件';
+    } catch (e) {
+        console.error('加载清洗文件列表失败:', e);
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">加载失败：' + (e && e.message ? e.message : e) + '</td></tr>';
+    }
+}
+
+// 点击「查看」进入指定文件的清洗结果记录
+function viewCleanResult(titleId) {
+    if (!titleId) { showToast('文件不存在', 'warning'); return; }
+    window.__cleanViewTitleId = titleId;
+    const fileListCard = document.getElementById('cleanFileCard');
+    const recordsCard = document.getElementById('cleanedRecordsCard');
+    const titleEl = document.getElementById('cleanedRecordsTitle');
+    if (fileListCard) fileListCard.style.display = 'none';
+    if (recordsCard) recordsCard.style.display = 'block';
+    // 回显文件名到结果卡片标题
+    const sel = document.getElementById('cleanTitleId');
+    const opt = sel ? sel.querySelector('option[value="' + titleId + '"]') : null;
+    if (titleEl) titleEl.textContent = '清洗结果：' + (opt ? opt.textContent.split(' (')[0] : ('文件#' + titleId));
+    loadCleanedRecords(titleId);
+}
+
+// 返回文件列表
+function closeCleanResult() {
+    window.__cleanViewTitleId = null;
+    const fileListCard = document.getElementById('cleanFileCard');
+    const recordsCard = document.getElementById('cleanedRecordsCard');
+    if (fileListCard) fileListCard.style.display = 'block';
+    if (recordsCard) recordsCard.style.display = 'none';
+    loadCleanFileList();
+}
+
+// 加载指定数据文件的清洗结果记录
 async function loadCleanedRecords(titleId) {
     const card = document.getElementById('cleanedRecordsCard');
     const tbody = $('#cleanedRecordsTbody');
@@ -1860,7 +1941,7 @@ async function loadCleanedRecords(titleId) {
         return;
     }
     if (card) card.style.display = 'block';
-    tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">加载中…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-hint">加载中…</td></tr>';
     try {
         const list = await api('/cleaning/cleaned-data/search', {
             method: 'POST',
@@ -1869,16 +1950,16 @@ async function loadCleanedRecords(titleId) {
         renderCleanedRecords(list || []);
     } catch (e) {
         console.error('加载清洗结果记录失败:', e);
-        tbody.innerHTML = '<tr><td colspan="10" class="empty-hint">加载失败：' + (e && e.message ? e.message : e) + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="empty-hint">加载失败：' + (e && e.message ? e.message : e) + '</td></tr>';
     }
 }
 
-// 渲染清洗结果记录表格（含 AI 辅助评分、AI 分类理由与状态）
+// 渲染清洗结果记录表格（含 AI 辅助评分、AI 分类理由与状态，不含清洗开始/结束时间）
 function renderCleanedRecords(list) {
     const tbody = $('#cleanedRecordsTbody');
     const summary = $('#cleanedRecordsSummary');
     if (!list || list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="13" class="empty-hint">暂无清洗结果记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="empty-hint">暂无清洗结果记录</td></tr>';
         if (summary) summary.textContent = '共 0 条';
         return;
     }
@@ -1894,8 +1975,6 @@ function renderCleanedRecords(list) {
             : '<span class="empty-hint">-</span>';
         // AI候选分类（top-k）：解析 JSON 展示编码+名称，悬停显示完整路径
         const candidateCell = renderAiCandidates(d.aiCandidateCodes);
-        const startT = d.cleanStartTime ? fmtLocalTime(d.cleanStartTime) : '-';
-        const endT = d.cleanEndTime ? fmtLocalTime(d.cleanEndTime) : '-';
         // 原始数据查看按钮
         const viewBtn = '<button class="btn btn-xs btn-outline" onclick="viewCleanedSource(' + d.tempDataId + ',' + d.id + ')">查看</button>';
         // 分类名称（单击可编辑）+ 分类编码
@@ -1916,8 +1995,6 @@ function renderCleanedRecords(list) {
             '<td>' + remarkCell + '</td>' +
             '<td>' + reasonCell + '</td>' +
             '<td>' + candidateCell + '</td>' +
-            '<td>' + startT + '</td>' +
-            '<td>' + endT + '</td>' +
             '<td>' + statusBadge(statusCleanText(d.status)) + '</td>' +
         '</tr>';
         if (d.qualityScore != null) { sum += d.qualityScore; scored++; }
@@ -1955,8 +2032,10 @@ async function saveCleanedCategory(id, categoryCode, categoryName, remark, el) {
         const res = await api(url, { method: 'PUT' });
         if (!res) throw new Error('保存失败：无返回');
         showToast('已保存，状态改为已修改', 'success');
-        const titleId = $('#cleanTitleId').value;
-        if (titleId) loadCleanedRecords(titleId);
+        // 刷新当前正在查看的清洗结果（若在文件列表视图则同时刷新文件列表）
+        const viewTitleId = window.__cleanViewTitleId || $('#cleanTitleId').value;
+        if (viewTitleId) loadCleanedRecords(viewTitleId);
+        if (!window.__cleanViewTitleId) loadCleanFileList();
     } catch (e) {
         showToast('保存失败：' + e.message, 'error');
     }
@@ -2048,10 +2127,9 @@ async function saveSelectedCategory(id) {
     closeModal();
 }
 
-// 智能分类页切换数据文件时联动加载已清洗记录
+// 智能分类页切换数据文件下拉时仅刷新文件列表（清洗状态一览），不自动打开结果
 function onCleanTitleChange() {
-    const titleId = $('#cleanTitleId').value;
-    loadCleanedRecords(titleId);
+    loadCleanFileList();
 }
 
 async function startCleaning() {
@@ -2149,17 +2227,22 @@ function handleCleaningMessage(msg) {
 
     if (type === 'start') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--accent);font-size:13px">清洗开始，共 ' + total + ' 条数据</p>';
+        loadCleanFileList();
     } else if (type === 'progress') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--accent);font-size:13px">清洗中… ' + current + '/' + total + ' (成功 ' + success + ', 失败 ' + error + ')</p>';
+        // 节流刷新文件列表，实时更新"清洗中"状态与耗时
+        if (!window.__cleanListRefreshTimer) {
+            window.__cleanListRefreshTimer = setTimeout(() => { window.__cleanListRefreshTimer = null; loadCleanFileList(); }, 1000);
+        }
     } else if (type === 'complete') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--success);font-size:13px">清洗完成，共处理 ' + total + ' 条 (成功 ' + success + ', 失败 ' + error + ')</p>';
         const clCard = document.getElementById('cleanLiveCard');
         if (clCard && clCard.classList.contains('ai-active')) AiFx.deactivate(clCard);
         showToast('数据清洗完成');
         loadCleanStats();
-        // 清洗完成后自动刷新智能分类界面（清洗结果记录列表）；仅当当前选中的正是该数据文件时
-        const ctId = $('#cleanTitleId').value;
-        if (ctId && String(msg.titleId) === String(ctId)) loadCleanedRecords(ctId);
+        loadCleanFileList();
+        // 清洗完成后，若当前正查看该文件的清洗结果则一并刷新
+        if (window.__cleanViewTitleId && String(msg.titleId) === String(window.__cleanViewTitleId)) loadCleanedRecords(msg.titleId);
         // 延迟断开
         setTimeout(disconnectWebSocket, 2000);
     } else if (type === 'error') {
@@ -2168,9 +2251,9 @@ function handleCleaningMessage(msg) {
         if (clCard && clCard.classList.contains('ai-active')) AiFx.deactivate(clCard);
         showToast('清洗异常终止', 'error');
         loadCleanStats();
-        // 异常终止后也刷新一次界面，避免残留旧数据
-        const ctId = $('#cleanTitleId').value;
-        if (ctId) loadCleanedRecords(ctId);
+        loadCleanFileList();
+        // 异常终止后也刷新一次结果视图，避免残留旧数据
+        if (window.__cleanViewTitleId && String(msg.titleId) === String(window.__cleanViewTitleId)) loadCleanedRecords(msg.titleId);
         setTimeout(disconnectWebSocket, 2000);
     }
 }
@@ -2180,7 +2263,8 @@ function statusCleanText(status) {
         'EXPORT_READY': '已审核', 'APPROVED': '已审核',
         'NEEDS_REVIEW': '待审核', 'REVIEWING': '审核中',
         'MODIFIED': '已修改', 'PROCESSED': '已处理',
-        'REJECTED': '已驳回', 'DRAFT': '草稿'
+        'REJECTED': '已驳回', 'DRAFT': '未清洗',
+        'QUEUED': '排队等待中', 'PROCESSING': '清洗中', 'COMPLETED': '已完成'
     };
     return map[status] || status || '-';
 }

@@ -10,7 +10,8 @@ import lombok.Getter;
 @Getter
 public enum DataStatus {
     
-    DRAFT("draft", "草稿"),
+    DRAFT("draft", "未清洗"),
+    QUEUED("queued", "排队等待中"),
     PROCESSING("processing", "清洗中"),
     NEEDS_REVIEW("needs_review", "待审核"),
     REVIEWING("reviewing", "审核中"),
