@@ -869,6 +869,14 @@ th.sortable-id .sort-arrow {
 
 .modal-body { padding: 20px; }
 
+.modal-footer {
+    padding: 14px 20px;
+    border-top: 1px solid var(--border, #e5e7eb);
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
 /* -------- Utility -------- */
 .mt-1 { margin-top: 8px; }
 .mt-2 { margin-top: 16px; }

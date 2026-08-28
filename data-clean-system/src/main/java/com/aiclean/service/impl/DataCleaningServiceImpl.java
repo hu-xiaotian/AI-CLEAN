@@ -34,8 +34,12 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
+import javax.annotation.PostConstruct;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -76,6 +80,17 @@ public class DataCleaningServiceImpl implements DataCleaningService {
     @Autowired private ShardingAgent shardingAgent;
     @Autowired @Qualifier("cleaningExecutor") private ThreadPoolTaskExecutor cleaningExecutor;
     @Autowired private TransactionTemplate transactionTemplate;
+    @Autowired private PlatformTransactionManager transactionManager;
+
+    /** 独立事务模板：每条清洗结果写入后立即提交，避免后续阶段异常触发外层事务回滚时把已入库数据一起冲掉 */
+    private TransactionTemplate requiresNewTemplate;
+
+    @PostConstruct
+    public void initTransactionTemplates() {
+        DefaultTransactionDefinition def = new DefaultTransactionDefinition();
+        def.setPropagationBehavior(Propagation.REQUIRES_NEW.value());
+        requiresNewTemplate = new TransactionTemplate(transactionManager, def);
+    }
     @Autowired private SimpMessagingTemplate messagingTemplate;
     @Autowired private AiClientService aiClientService;
     @Autowired private CategoryStandardLibrary stdLib;
@@ -1038,8 +1053,9 @@ public class DataCleaningServiceImpl implements DataCleaningService {
                                     // 固定 AI 分类：本阶段仅占位，最终分类由向量召回 top-k + 大模型给出。
                                     CleanedDataEntity cleaned = matchAndCleanPrepare(td, null, parseRule,
                                             titleEntity, allCategories, synonyms, seenHashes, true);
-                                    // Phase 2（短事务）：仅做 DB 写入并立即提交，快速释放连接与行锁
-                                    transactionTemplate.executeWithoutResult(s -> matchAndCleanPersist(cleaned, td, true));
+                                    // Phase 2（独立短事务 REQUIRES_NEW）：仅做 DB 写入并立即提交，快速释放连接与行锁；
+                                    // 使用 REQUIRES_NEW 确保即使后续 AI 分类阶段异常触发外层事务回滚，已入库的清洗结果也不会被冲掉。
+                                    requiresNewTemplate.executeWithoutResult(s -> matchAndCleanPersist(cleaned, td, true));
                                     allCleaned.add(cleaned);
                                     allScores.add(cleaned.getQualityScore() != null ? cleaned.getQualityScore() : 0.0);
                                     int cur = successCount.incrementAndGet();
@@ -1717,7 +1733,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         Map<String, Object> result = new LinkedHashMap<>();
         ExtraDataEntity ed = extraDataMapper.selectById(extraDataId);
         if (ed == null) {
-            throw new RuntimeException("提取明细不存在: " + extraDataId);
+            throw new RuntimeException("提取明细不存在: " + extraDataId + "（可能已被重新提取清理，请刷新后重试）");
         }
         ExtraDataTitleEntity extraTitle = extraDataTitleMapper.selectById(ed.getExtraDataTitleId());
         TempDataEntity td = tempDataMapper.selectById(ed.getTempDataId());
@@ -1789,7 +1805,7 @@ public class DataCleaningServiceImpl implements DataCleaningService {
         if (cols == null || cols.isEmpty()) return;
         ExtraDataEntity ed = extraDataMapper.selectById(extraDataId);
         if (ed == null) {
-            throw new RuntimeException("提取明细不存在: " + extraDataId);
+            throw new RuntimeException("提取明细不存在: " + extraDataId + "（可能已被重新提取清理，请刷新后重试）");
         }
         ExtraDataTitleEntity extraTitle = extraDataTitleMapper.selectById(ed.getExtraDataTitleId());
         if (extraTitle == null) {

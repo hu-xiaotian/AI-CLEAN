@@ -207,6 +207,7 @@ public class DataInitializer implements ApplicationRunner {
                 "page:dashboard", "page:import", "page:oneclick", "page:search",
                 "page:externalclean", "page:clean", "page:extract",
                 "page:result", "page:unmapped", "page:rule", "page:standard",
+                "page:file",
                 "data:import:upload", "data:import:delete", "data:clean:start",
                 "data:clean:stop", "data:clean:export", "data:rule:manage"
         };
@@ -241,6 +242,7 @@ public class DataInitializer implements ApplicationRunner {
                 {"page:role",           "角色管理",   "系统管理",   "71"},
                 {"page:permission",     "权限配置",   "系统管理",   "72"},
                 {"page:oplog",          "操作日志",   "系统管理",   "73"},
+                {"page:file",           "文件管理",   "知识库文件", "74"},
                 // ===== 功能级权限（页面内操作按钮） =====
                 {"data:import:upload",  "文件上传",     "数据导入", "11"},
                 {"data:import:delete",  "删除导入数据", "数据导入", "12"},

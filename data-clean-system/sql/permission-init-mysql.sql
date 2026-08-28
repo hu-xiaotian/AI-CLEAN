@@ -40,7 +40,8 @@ INSERT INTO sys_permission (perm_code, perm_name, module, sort, status, created_
 ('data:rule:manage',     '解析规则管理', '规则配置', 6, 1, NOW(), NOW(), 'system', 'system'),
 ('data:user:manage',     '用户管理',     '系统管理', 7, 1, NOW(), NOW(), 'system', 'system'),
 ('data:permission:manage','权限配置',    '系统管理', 8, 1, NOW(), NOW(), 'system', 'system'),
-('data:log:view',        '查看操作日志', '系统管理', 9, 1, NOW(), NOW(), 'system', 'system');
+('data:log:view',        '查看操作日志', '系统管理', 9, 1, NOW(), NOW(), 'system', 'system'),
+('page:file',            '文件管理',     '知识库文件', 10, 1, NOW(), NOW(), 'system', 'system');
 
 -- 3. 管理员默认拥有全部权限
 INSERT INTO sys_role_permission (role_code, perm_id)

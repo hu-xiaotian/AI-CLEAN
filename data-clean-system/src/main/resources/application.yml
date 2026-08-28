@@ -202,6 +202,16 @@ app:
   file:
     upload-path: uploads/
 
+  # 文件管理模块（/opt/kb 文件库）
+  file-manage:
+    # 知识库文件根目录（物理存储位置，外部系统从此目录导入）。
+    # 支持环境变量 KB_FILE_DIR 覆盖，便于改路径不重打包。
+    kb-dir: ${KB_FILE_DIR:/Users/zjr/hangxun/kb}
+    # 允许上传的文件后缀白名单（逗号分隔，小写），防止恶意文件
+    allowed-extensions: docx,doc,txt,md,xlsx,xls,pdf,jpg,jpeg,png,gif,bmp,csv
+    # 单文件大小上限（字节），默认 200MB
+    max-size: 209715200
+
   # AI 提取配置（通用 OpenAI 兼容接口，支持 DeepSeek / 通义千问兼容模式 等）
   # 启用后将"属性提取"页面可使用"AI 提取"：按每行分类编码查找标准字段表头作为目标字段，
   # 结合文件导入时指定的"属性拆分列"文本，由 AI 拆分成 JSON 键值对并入库。
@@ -377,6 +387,17 @@ app:
     poll-interval-minutes: 3
     # 提交后超过该分钟数未收到回调则标记 callback_timeout
     callback-timeout-minutes: 30
+
+  # 知识库系统对接配置（调用 api-design.md 4.4 外部 REST 接口）
+  knowledge-base:
+    # 是否启用知识库入库（false 时入库按钮不可用）
+    enabled: ${KB_ENABLED:true}
+    # 知识库服务地址，如 http://kb-service:8000
+    base-url: ${KB_BASE_URL:}
+    # 调用知识库接口的 API Key（Bearer Token，仅填原始 Key，不要带 "Bearer " 前缀）
+    api-key: ${KB_API_KEY:}
+    # 调用超时（秒）
+    timeout-seconds: 30
 
   # 文件处理配置
   file-processing:

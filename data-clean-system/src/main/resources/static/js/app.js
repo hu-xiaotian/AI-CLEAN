@@ -26,6 +26,7 @@ const PAGE_PERM_MAP = {
     'role': 'page:role',
     'permission': 'page:permission',
     'oplog': 'page:oplog',
+    'file': 'page:file',
 };
 
 // 当前用户是否有指定权限编码
@@ -75,7 +76,7 @@ function applyMenuPermissionVisibility() {
 function firstAccessiblePage() {
     const order = ['dashboard', 'import', 'oneclick', 'search', 'externalclean',
         'clean', 'extract', 'mapping', 'result', 'unmapped',
-        'rule', 'standard', 'users', 'role', 'permission', 'oplog'];
+        'rule', 'standard', 'users', 'role', 'permission', 'oplog', 'file'];
     for (let i = 0; i < order.length; i++) {
         const page = order[i];
         const perm = PAGE_PERM_MAP[page];
@@ -215,6 +216,8 @@ function showToast(msg, type = 'success') {
 function showModal(title, bodyHtml, size) {
     $('#modalTitle').textContent = title;
     $('#modalBody').innerHTML = bodyHtml;
+    const footer = $('#modalFooter');
+    if (footer) footer.innerHTML = '';
     const modal = $('#modal');
     // 重置拖动位置，恢复默认居中
     modal.classList.remove('dragging');
@@ -231,6 +234,8 @@ function showModal(title, bodyHtml, size) {
 function closeModal() {
     $('#modal').classList.remove('show');
     $('#modalOverlay').classList.remove('show');
+    const footer = $('#modalFooter');
+    if (footer) footer.innerHTML = '';
     // 清理尺寸 class，恢复默认
     const modal = $('#modal');
     if (modal) modal.classList.remove('modal-xl', 'modal-lg', 'modal-extract');
@@ -378,7 +383,7 @@ function switchPage(name) {
     const loaders = {
         'import': () => { loadTitles(); },                          // 刷新导入文件列表
         'rule': () => { loadRules(true); },                            // 刷新解析规则列表
-        'extract': () => { loadTitles(); loadTitlesForSelect('aiExtractTitleId'); loadAiExtractTasks(); },  // 刷新提取相关数据
+        'extract': () => { loadTitles(); loadExtractFiles(); loadAiExtractTasks(); },  // 刷新提取相关数据
         'clean': () => { refreshCleanPage(); },     // 刷新清洗相关数据 + 加载已清洗记录
         'mapping': () => { 
             loadTitlesForSelect('mapTitleId').then(() => {
@@ -412,6 +417,7 @@ function switchPage(name) {
             initPermissionPage(target);
         },
         'oplog': () => { loadOpLogs(1); },                              // 刷新操作日志
+        'file': () => { loadFileList(1); },                            // 刷新文件列表
     };
     if (loaders[name]) loaders[name]();
 }
@@ -1586,9 +1592,9 @@ let aiExtractStomp = null;
 let aiExtractSub = null;
 let aiExtractPollTimer = null;
 
-async function startAiExtract() {
-    const titleId = $('#aiExtractTitleId').value;
+async function startAiExtract(titleId) {
     if (!titleId) { showToast('请先选择数据文件', 'warning'); return; }
+    _extractRunningTitleId = titleId;
 
     // 重置进度 UI
     $('#aiExtractProgressCard').style.display = 'block';
@@ -1684,10 +1690,10 @@ function handleAiExtractMessage(msg) {
         if (aiExCard && aiExCard.classList.contains('ai-active')) AiFx.deactivate(aiExCard);
         loadExtraTitlesForSelect('mapExtraTitleId');
         // 自动弹窗展示本次提取结果
-        const aiSel = $('#aiExtractTitleId');
-        if (aiSel && aiSel.value) {
-            loadExtractTree(aiSel.value);
+        if (_extractRunningTitleId) {
+            loadExtractTree(_extractRunningTitleId);
         }
+        loadExtractFiles();
         loadAiExtractTasks();
         setTimeout(disconnectAiExtractWs, 2000);
     } else if (type === 'error') {
@@ -1695,6 +1701,66 @@ function handleAiExtractMessage(msg) {
         showToast('AI 提取异常终止', 'error');
         if (aiExCard && aiExCard.classList.contains('ai-active')) AiFx.deactivate(aiExCard);
         setTimeout(disconnectAiExtractWs, 2000);
+    }
+}
+
+// ==================== 属性提取：数据文件列表 ====================
+
+// 当前正在提取的文件 titleId（用于完成后自动弹窗）
+let _extractRunningTitleId = null;
+
+// 文件列表 -> 最近一次提取状态（tempDataTitleId -> 记录），避免重复请求
+async function loadExtractFiles() {
+    const tbody = $('#extractFileTbody');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-hint">加载中…</td></tr>';
+    try {
+        const [titles, tasks] = await Promise.all([
+            api('/import/titles') || [],
+            api('/cleaning/ai-extract-tasks') || []
+        ]);
+        const titleList = titles || [];
+        // 取每个文件最近一条提取记录（后端已按时间倒序返回）
+        const statusByTitle = {};
+        (tasks || []).forEach(t => {
+            if (t.tempDataTitleId != null && !statusByTitle[t.tempDataTitleId]) {
+                statusByTitle[t.tempDataTitleId] = t;
+            }
+        });
+
+        if (titleList.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="empty-hint">暂无数据文件</td></tr>';
+            return;
+        }
+
+        const statusMap = {
+            RUNNING: '<span class="badge badge-warning">提取中</span>',
+            SUCCESS: '<span class="badge badge-success">成功</span>',
+            PARTIAL: '<span class="badge badge-warning">部分成功</span>',
+            FAILED: '<span class="badge badge-danger">失败</span>'
+        };
+
+        tbody.innerHTML = titleList.map(t => {
+            const rec = statusByTitle[t.id];
+            const status = rec && rec.extractStatus
+                ? (statusMap[rec.extractStatus] || escapeHtml(rec.extractStatus))
+                : '<span class="badge">未提取</span>';
+            const running = rec && rec.extractStatus === 'RUNNING';
+            const btn = running
+                ? '<button class="btn btn-sm btn-secondary" disabled>提取中…</button>'
+                : `<button class="btn btn-sm btn-primary" onclick="startAiExtract(${t.id})">提取</button>`;
+            return `<tr>
+                <td>${escapeHtml(t.fileName || '数据#' + t.id)}</td>
+                <td>${t.totalRows != null ? t.totalRows : '-'}</td>
+                <td>${status}</td>
+                <td>
+                    ${btn}
+                    <button class="btn btn-sm btn-secondary" onclick="viewAiExtractTask(${t.id})">查看</button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="4" class="empty-hint" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
     }
 }
 
@@ -1890,6 +1956,12 @@ async function viewSourceData(extraDataId) {
     } catch (e) {
         const body = document.querySelector('.sub-modal .sub-modal-body');
         if (body) body.innerHTML = `<p style="text-align:center;padding:40px;color:var(--danger)">加载失败: ${escapeHtml(e.message)}</p>`;
+        // 明细不存在通常是重新提取后旧数据被清理，自动刷新主弹窗的层级树以获取最新明细
+        if (_extractModalTitleId && /明细不存在|不存在/.test(e.message || '')) {
+            showToast('提取明细已失效，正在刷新列表…', 'error');
+            closeSubModal();
+            loadExtractTree(_extractModalTitleId);
+        }
     }
 }
 
@@ -1924,6 +1996,12 @@ async function editExtraRow(extraDataId) {
     } catch (e) {
         const body = document.querySelector('.sub-modal .sub-modal-body');
         if (body) body.innerHTML = `<p style="text-align:center;padding:40px;color:var(--danger)">加载失败: ${escapeHtml(e.message)}</p>`;
+        // 明细不存在通常是重新提取后旧数据被清理，自动刷新主弹窗的层级树以获取最新明细
+        if (_extractModalTitleId && /明细不存在|不存在/.test(e.message || '')) {
+            showToast('提取明细已失效，正在刷新列表…', 'error');
+            closeSubModal();
+            loadExtractTree(_extractModalTitleId);
+        }
     }
 }
 
@@ -7287,4 +7365,255 @@ function resetOpLogFilter() {
     if ($('#opLogEndTime')) $('#opLogEndTime').value = '';
     opLogPageState.page = 1;
     loadOpLogs(1);
+}
+
+// ==================== 文件管理 ====================
+let filePageState = { page: 1, size: 20, total: 0, pages: 0 };
+
+// 导入状态徽章
+function fileImportBadge(status) {
+    if (status === 'IMPORTED') return '<span class="badge badge-success">已录入</span>';
+    if (status === 'NOT_IMPORTED') return '<span class="badge badge-default">未录入</span>';
+    return '<span class="badge badge-default">' + escapeHtml(status || '-') + '</span>';
+}
+
+function formatFileSize(bytes) {
+    if (!bytes && bytes !== 0) return '-';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+async function loadFileList(page) {
+    try {
+        filePageState.page = page || 1;
+        const kw = ($('#fileKeyword') && $('#fileKeyword').value || '').trim();
+        const status = ($('#fileStatusFilter') && $('#fileStatusFilter').value || '');
+        const params = new URLSearchParams();
+        params.set('current', filePageState.page);
+        params.set('size', filePageState.size);
+        if (kw) params.set('fileName', kw);
+        if (status) params.set('importStatus', status);
+        const data = await api('/file/list?' + params.toString());
+        const list = (data && data.records) || [];
+        filePageState.total = data ? data.total : 0;
+        filePageState.pages = data ? data.pages : 0;
+        const tbody = $('#fileTbody');
+        if (!list.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无文件</td></tr>';
+        } else {
+            tbody.innerHTML = list.map(f => `<tr>
+                <td title="${escapeHtml(f.relativePath || '')}">${escapeHtml(f.fileName || '-')}</td>
+                <td>${escapeHtml((f.fileType || '-').toUpperCase())}</td>
+                <td>${formatFileSize(f.fileSize)}</td>
+                <td>${fileImportBadge(f.importStatus)}</td>
+                <td>${fmtLocalTime(f.uploadedAt)}</td>
+                <td>${fmtLocalTime(f.updatedAt)}</td>
+                <td style="max-width:200px;white-space:pre-wrap;word-break:break-all">${escapeHtml(f.remark || '-')}</td>
+                <td class="row-actions">
+                    <button class="btn btn-sm" onclick="previewFile(${f.id})">预览</button>
+                    <button class="btn btn-sm" onclick="downloadFile(${f.id})">下载</button>
+                    <button class="btn btn-sm" onclick="openFileRemarkModal(${f.id}, ${JSON.stringify((f.remark || '').replace(/"/g, '&quot;'))})">备注</button>
+                    <button class="btn btn-sm btn-success" onclick="ingestFile(${f.id})" ${f.importStatus === 'IMPORTED' ? 'disabled' : ''}>入库</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteFile(${f.id})">删除</button>
+                </td>
+            </tr>`).join('');
+        }
+        $('#fileRecordCount').textContent = '共 ' + filePageState.total + ' 条';
+        const ci = $('#fileCurPage'), tp = $('#fileTotalPages');
+        if (ci) ci.textContent = filePageState.page;
+        if (tp) tp.textContent = filePageState.pages || 1;
+        renderFilePagination();
+    } catch (e) {
+        console.error(e);
+        showToast('加载文件列表失败: ' + e.message, 'error');
+    }
+}
+
+function renderFilePagination() {
+    const container = $('#filePageBtns');
+    if (!container) return;
+    const page = filePageState.page, pages = filePageState.pages || 1;
+    let html = '';
+    html += '<button class="page-btn" ' + (page <= 1 ? 'disabled' : '') + ' onclick="loadFileList(1)">首页</button>';
+    html += '<button class="page-btn" ' + (page <= 1 ? 'disabled' : '') + ' onclick="loadFileList(' + (page - 1) + ')">上一页</button>';
+    html += '<span class="page-now">第 ' + page + ' / ' + pages + ' 页</span>';
+    html += '<button class="page-btn" ' + (page >= pages ? 'disabled' : '') + ' onclick="loadFileList(' + (page + 1) + ')">下一页</button>';
+    html += '<button class="page-btn" ' + (page >= pages ? 'disabled' : '') + ' onclick="loadFileList(' + pages + ')">尾页</button>';
+    container.innerHTML = html;
+}
+
+function resetFileFilter() {
+    if ($('#fileKeyword')) $('#fileKeyword').value = '';
+    if ($('#fileStatusFilter')) $('#fileStatusFilter').value = '';
+    loadFileList(1);
+}
+
+// 上传文件弹窗
+function openFileUploadModal() {
+    const html = `<div class="form-group">
+        <label class="form-label">选择文件<span class="required">*</span></label>
+        <input type="file" id="uploadFileInput" class="input">
+        <div class="form-hint">支持 docx/doc/txt/md/xlsx/xls/pdf/jpg/png 等；默认按文件名保存，同名将覆盖并重置导入状态</div>
+    </div>
+    <div class="form-group">
+        <label class="form-label">保存路径（相对 /opt/kb，可留空）</label>
+        <input type="text" id="uploadRelativePath" class="input" placeholder="例：category/property/a.docx；留空则使用原文件名">
+    </div>
+    <div class="form-group">
+        <label class="form-label">备注</label>
+        <textarea id="uploadRemark" class="input" rows="2" placeholder="选填"></textarea>
+    </div>`;
+    showModal('上传文件', html, 'lg');
+    // 绑定确定按钮
+    const footer = $('#modalFooter');
+    if (footer) footer.innerHTML = `<button class="btn" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="submitFileUpload()">上传</button>`;
+}
+
+async function submitFileUpload() {
+    const input = $('#uploadFileInput');
+    if (!input || !input.files || !input.files.length) {
+        showToast('请先选择文件', 'warning');
+        return;
+    }
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+    const rel = $('#uploadRelativePath') && $('#uploadRelativePath').value.trim();
+    const remark = $('#uploadRemark') && $('#uploadRemark').value.trim();
+    if (rel) fd.append('relativePath', rel);
+    if (remark) fd.append('remark', remark);
+    showLoading('上传中...');
+    try {
+        const res = await fetch(API + '/file/upload', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + getToken() },
+            body: fd
+        });
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch (e) { throw new Error('响应解析失败'); }
+        if (res.status === 401 || (data && data.code === 401)) { redirectToLogin(); throw new Error('登录已过期'); }
+        if (!data || data.code !== 200) throw new Error((data && data.msg) || '上传失败');
+        hideLoading();
+        closeModal();
+        showToast('上传成功', 'success');
+        loadFileList(filePageState.page);
+    } catch (e) {
+        hideLoading();
+        showToast('上传失败: ' + e.message, 'error');
+    }
+}
+
+// 以鉴权方式请求文件流，返回 blob URL（用于下载/预览，统一携带 Bearer）
+async function fetchFileBlobUrl(id, endpoint) {
+    const res = await fetch(API + endpoint + '/' + id, {
+        headers: { 'Authorization': 'Bearer ' + (getToken() || '') }
+    });
+    if (res.status === 401) { redirectToLogin(); throw new Error('登录已过期'); }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+}
+
+// 下载
+async function downloadFile(id) {
+    try {
+        const url = await fetchFileBlobUrl(id, '/file/download');
+        const meta = await api('/file/' + id);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = meta.fileName || ('file_' + id);
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+        showToast('下载失败: ' + e.message, 'error');
+    }
+}
+
+// 在线预览：图片/PDF/文本内联展示；其余类型提示下载
+async function previewFile(id) {
+    try {
+        // 先取元数据，决定是否内联展示
+        const meta = await api('/file/' + id);
+        const ext = (meta.fileType || '').toLowerCase();
+        const inlineTypes = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'pdf', 'txt', 'md', 'csv', 'json', 'xml', 'html', 'log'];
+        if (inlineTypes.indexOf(ext) === -1) {
+            // Office 等不支持内联的类型，提供下载入口
+            showModal('文件预览', `<div style="text-align:center;padding:24px">
+                <p>该类型（${escapeHtml((meta.fileType || '未知').toUpperCase())}）暂不支持在线预览，请下载后查看。</p>
+                <button class="btn btn-primary" onclick="downloadFile(${id})">下载文件</button>
+            </div>`, 'lg');
+            return;
+        }
+        const url = await fetchFileBlobUrl(id, '/file/preview');
+        const isImg = ['jpg', 'jpeg', 'png', 'gif', 'bmp'].indexOf(ext) !== -1;
+        const isPdf = ext === 'pdf';
+        let body;
+        if (isImg) {
+            body = `<div style="text-align:center"><img src="${url}" style="max-width:100%;max-height:70vh" alt="${escapeHtml(meta.fileName)}"></div>`;
+        } else if (isPdf) {
+            body = `<iframe src="${url}" style="width:100%;height:70vh;border:0"></iframe>`;
+        } else {
+            const txt = await fetch(url).then(r => r.text());
+            body = `<pre style="max-height:70vh;overflow:auto;white-space:pre-wrap;word-break:break-all">${escapeHtml(txt)}</pre>`;
+        }
+        body = `<div style="margin-bottom:8px"><b>${escapeHtml(meta.fileName)}</b> <span class="badge badge-default">${escapeHtml((meta.fileType || '').toUpperCase())}</span></div>` + body;
+        showModal('文件预览', body, 'xl');
+    } catch (e) {
+        showToast('预览失败: ' + e.message, 'error');
+    }
+}
+
+// 备注编辑
+function openFileRemarkModal(id, cur) {
+    const current = (cur || '').replace(/&quot;/g, '"');
+    const html = `<div class="form-group">
+        <label class="form-label">备注</label>
+        <textarea id="remarkInput" class="input" rows="3">${escapeHtml(current)}</textarea>
+    </div>`;
+    showModal('编辑备注', html, 'lg');
+    $('#modalFooter').innerHTML = `<button class="btn" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="submitFileRemark(${id})">保存</button>`;
+}
+
+async function submitFileRemark(id) {
+    const val = ($('#remarkInput') && $('#remarkInput').value || '').trim();
+    try {
+        await api('/file/remark/' + id + '?remark=' + encodeURIComponent(val), { method: 'PUT' });
+        closeModal();
+        showToast('备注已保存', 'success');
+        loadFileList(filePageState.page);
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    }
+}
+
+// 入库到知识库（调用 4.4.4 接口，成功后后端自动标记已录入）
+async function ingestFile(id) {
+    if (!confirm('确定将该文件入库到知识库？将调用知识库接口按相对路径导入。')) return;
+    try {
+        const res = await api('/file/ingest/' + id, { method: 'POST' });
+        if (res === true || (res && res.code === 200 && res.data === true)) {
+            showToast('入库成功，状态已更新为已录入', 'success');
+        } else {
+            showToast('入库失败，请检查知识库服务配置或文件状态', 'error');
+        }
+        loadFileList(filePageState.page);
+    } catch (e) {
+        showToast('入库失败: ' + e.message, 'error');
+    }
+}
+
+// 删除
+async function deleteFile(id) {
+    if (!confirm('确定删除该文件记录？可选择是否同时删除服务器物理文件。')) return;
+    const delPhysical = confirm('是否同时删除服务器上的物理文件（/opt/kb 下）？\n确定=删除物理文件；取消=仅删除记录');
+    try {
+        await api('/file/' + id + '?deletePhysical=' + delPhysical, { method: 'DELETE' });
+        showToast('已删除', 'success');
+        loadFileList(filePageState.page);
+    } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
+    }
 }
