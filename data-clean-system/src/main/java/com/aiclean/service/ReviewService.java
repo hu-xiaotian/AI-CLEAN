@@ -267,17 +267,7 @@ public interface ReviewService {
     ReviewTaskEntity createQualityCheckTask(String entityType, Long entityId, 
                                            List<Map<String, Object>> issues, TaskPriority priority);
     
-    /**
-     * 创建字段映射审核任务
-     * @param mappingId 映射ID
-     * @param confidence 置信度
-     * @param suggestions 建议列表
-     * @return 创建的审核任务
-     */
-    ReviewTaskEntity createFieldMappingAuditTask(Long mappingId, Double confidence, 
-                                                List<Map<String, Object>> suggestions);
-    
-    /**
+/**
      * 创建分类审核任务
      * @param dataId 数据ID
      * @param categoryId 分类ID

@@ -2023,17 +2023,20 @@ async function loadCleanFileList() {
     const tbody = $('#cleanFileTbody');
     const summary = $('#cleanFileSummary');
     if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">加载中…</td></tr>';
     try {
         const titles = await api('/import/titles');
         if (!titles || titles.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无数据文件</td></tr>';
+            const emptyHtml = '<tr><td colspan="7" class="empty-hint">暂无数据文件</td></tr>';
+            if (tbody.getAttribute('data-render-key') !== emptyHtml) {
+                tbody.innerHTML = emptyHtml;
+                tbody.setAttribute('data-render-key', emptyHtml);
+            }
             if (summary) summary.textContent = '共 0 个文件';
             return;
         }
         // 当前正在查看结果的文件 ID（用于高亮）
         const currentTitleId = window.__cleanViewTitleId;
-        tbody.innerHTML = titles.map(t => {
+        const html = titles.map(t => {
             const st = t.status ? t.status.toLowerCase() : 'draft';
             const startT = t.cleanStartTime ? fmtLocalTime(t.cleanStartTime) : '-';
             const endT = t.cleanEndTime ? fmtLocalTime(t.cleanEndTime) : '-';
@@ -2054,10 +2057,19 @@ async function loadCleanFileList() {
                 '<td><button class="btn btn-xs btn-primary" onclick="viewCleanResult(' + t.id + ')">查看</button></td>' +
                 '</tr>';
         }).join('');
+        // 仅当内容真正变化时才重写 tbody，避免无谓的整表重绘/重排导致画面抖动
+        if (tbody.getAttribute('data-render-key') !== html) {
+            tbody.innerHTML = html;
+            tbody.setAttribute('data-render-key', html);
+        }
         if (summary) summary.textContent = '共 ' + titles.length + ' 个文件';
     } catch (e) {
         console.error('加载清洗文件列表失败:', e);
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">加载失败：' + (e && e.message ? e.message : e) + '</td></tr>';
+        const errHtml = '<tr><td colspan="7" class="empty-hint">加载失败：' + (e && e.message ? e.message : e) + '</td></tr>';
+        if (tbody.getAttribute('data-render-key') !== errHtml) {
+            tbody.innerHTML = errHtml;
+            tbody.setAttribute('data-render-key', errHtml);
+        }
     }
 }
 
@@ -2385,10 +2397,8 @@ function handleCleaningMessage(msg) {
         loadCleanFileList();
     } else if (type === 'progress') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--accent);font-size:13px">清洗中… ' + current + '/' + total + ' (成功 ' + success + ', 失败 ' + error + ')</p>';
-        // 节流刷新文件列表，实时更新"清洗中"状态与耗时
-        if (!window.__cleanListRefreshTimer) {
-            window.__cleanListRefreshTimer = setTimeout(() => { window.__cleanListRefreshTimer = null; loadCleanFileList(); }, 1000);
-        }
+        // 进度已在上方实时面板(cleanLiveCard)展示，不再每次重建文件列表表格，
+        // 避免整表 innerHTML 重写引发的重排/视觉抖动；文件列表仅由 start/complete/error 刷新。
     } else if (type === 'complete') {
         $('#cleanStatus').innerHTML = '<p style="color:var(--success);font-size:13px">清洗完成，共处理 ' + total + ' 条 (成功 ' + success + ', 失败 ' + error + ')</p>';
         const clCard = document.getElementById('cleanLiveCard');

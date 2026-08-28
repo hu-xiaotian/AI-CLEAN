@@ -84,11 +84,7 @@
                         <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
                         <span class="nav-label">属性提取</span>
                     </a>
-                    <a class="nav-item" data-page="mapping" data-perm="page:mapping" onclick="switchPage('mapping')">
-                        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                        <span class="nav-label">属性补全</span>
-                    </a>
-                </div>
+                    </div>
             </div>
 
             <div class="nav-group">
@@ -188,7 +184,7 @@
         <!-- ===== 一键数据清洗 ===== -->
         <section id="page-oneclick" class="page">
             <h2>一键数据清洗</h2>
-            <p class="desc">依次自动执行：智能分类 → 属性提取（AI 智能提取） → 属性补全（自动映射并填充，补充数据表头默认取第一项）</p>
+            <p class="desc">依次自动执行：智能分类 → 属性提取（AI 智能提取）</p>
             <div class="card">
                 <div class="form-grid">
                     <div class="form-group"><label>数据文件</label><select id="ocTitleId" class="form-input"></select></div>
@@ -229,13 +225,7 @@
                             <div class="oc-step-status" data-state="waiting">等待中</div>
                         </div>
                     </div>
-                    <div class="oc-step" id="ocStep-map">
-                        <span class="oc-step-icon">3</span>
-                        <div class="oc-step-body">
-                            <div class="oc-step-name">属性补全（自动映射并填充）</div>
-                            <div class="oc-step-status" data-state="waiting">等待中</div>
-                        </div>
-                    </div>
+                    <div class="oc-step" id="ocStep-map" style="display:none"></div>
                 </div>
             </div>
 
@@ -336,7 +326,6 @@
                         <button class="btn btn-primary" onclick="startCleaning()">开始清洗</button>
                     </div>
                 </div>
-                <p class="mapping-tip" style="margin-top:8px">「每批条数」决定一次交给大模型判定的数据条数：条数越小单次输出越稳（适合较小模型），越大调用次数越少（速度更快）。清洗将自动启用 AI 智能分类，把整条待分类数据连同 top-K 最相关的标准分类候选交给大模型识别，返回分类并附理由；全程采用批量 + 多线程方式，大幅提升速度。</p>
                 <div id="cleanStatus" class="mt-3" style="display:none"></div>
             </div>
             <div class="card" id="cleanLiveCard" style="display:none">
@@ -422,76 +411,6 @@
                 </div>
             </div>
         </section>
-
-        <!-- ===== 字段映射 ===== -->
-        <section id="page-mapping" class="page">
-            <h2>字段映射与填充</h2>
-            <p class="desc">自动匹配标准字段表头并填充结果数据</p>
-            <div class="card">
-                <div class="form-grid">
-                    <div class="form-group"><label>数据文件</label><select id="mapTitleId" class="form-input" onchange="onMapTitleChange()"></select></div>
-                    <div class="form-group"><label>补充数据表头</label><select id="mapExtraTitleId" class="form-input"></select></div>
-                    <div class="form-group" style="flex-direction:row;gap:6px;align-items:center">
-                        <button class="btn btn-primary" onclick="autoMapFields()">自动映射并填充</button>
-                        <button class="btn btn-default" onclick="manualMapAndFill()">手动映射并填充</button>
-                    </div>
-                </div>
-                <p class="mapping-tip">选择数据文件与补充数据表头后，下方列出该数据文件可填充的全部标准字段表头。点击「编辑」可自定义字段与数据文件 / 补充数据列的映射关系并保存；「手动映射并填充」将采用各标准表头已保存的自定义映射进行填充（不会重新自动映射，保留您的手动配置）。</p>
-            </div>
-            <div class="card" id="mapStandardListCard" style="display:none">
-                <div class="card-head">
-                    <h3>标准字段表头列表</h3>
-                    <span class="muted" id="mapStandardListCount"></span>
-                </div>
-                <div class="table-scroll mt-2" style="max-height:520px;overflow-y:auto">
-                    <table class="data-table" id="mapStandardTable">
-                        <thead>
-                            <tr>
-                                <th style="width:50px">#</th>
-                                <th>分类编码名称</th>
-                                <th>分类编码</th>
-                                <th style="width:90px">字段数</th>
-                                <th style="width:110px">映射状态</th>
-                                <th style="width:170px">操作</th>
-                            </tr>
-                        </thead>
-                        <tbody id="mapStandardTbody">
-                            <tr><td colspan="6" class="empty-hint">请选择数据文件以加载标准字段表头列表</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="card" id="fillLiveCard" style="display:none">
-                <h3>填充进度</h3>
-                <div class="progress-bar has-text mt-2">
-                    <div class="progress-fill" id="fillProgressFill" style="width:0%;background:var(--success)">0%</div>
-                </div>
-                <div class="clean-stats-inline mt-2" style="display:flex;gap:24px;flex-wrap:wrap">
-                    <span>已处理: <strong id="fillLiveCurrent">0</strong> / <strong id="fillLiveTotal">0</strong></span>
-                    <span style="color:var(--success)">成功: <strong id="fillLiveSuccess">0</strong></span>
-                    <span style="color:var(--danger)">失败: <strong id="fillLiveError">0</strong></span>
-                </div>
-                <div id="fillLiveStatus" class="mt-2"></div>
-                <div class="table-scroll mt-2" style="max-height:500px;overflow-y:auto">
-                    <table class="data-table" id="fillLiveTable">
-                        <thead>
-                            <tr>
-                                <th style="width:40px">#</th>
-                                <th>结果ID</th>
-                                <th>原始数据ID</th>
-                                <th>清洗数据ID</th>
-                                <th>已填充字段</th>
-                                <th>状态</th>
-                            </tr>
-                        </thead>
-                        <tbody id="fillLiveTbody">
-                            <tr><td colspan="6" class="empty-hint">等待填充数据…</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-
         <!-- ===== 结果数据 ===== -->
         <section id="page-result" class="page">
             <h2>结果数据</h2>
@@ -510,25 +429,6 @@
                     </div>
                 </div>
             </div>
-            <div class="card" id="mfStatusCard" style="display:none">
-                <h3>标准字段表头映射状态 <span style="font-size:11px;color:var(--text-tertiary);font-weight:400">（当前数据文件下各标准表头的映射配置）</span></h3>
-                <div class="table-scroll" style="max-height:400px">
-                    <table class="data-table" id="mfStatusTable">
-                        <thead>
-                            <tr>
-                                <th style="width:50px">ID</th>
-                                <th>标准表头名称</th>
-                                <th style="width:80px">映射状态</th>
-                                <th style="width:60px">映射数</th>
-                                <th style="width:160px">操作</th>
-                            </tr>
-                        </thead>
-                        <tbody id="mfStatusTbody">
-                            <tr><td colspan="5" class="empty-hint">请先选择数据文件并点击"显示映射状态"</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
             <div class="card" id="resultCard" style="display:none">
                 <h3>结果数据</h3>
                 <div class="table-scroll">
@@ -542,24 +442,7 @@
                     <div class="pagination-btns" id="resultPageBtnsBottom"></div>
                 </div>
             </div>
-            <div class="card" id="failedCard" style="display:none">
-                <h3>填充失败记录 <span id="failedCount" style="font-size:13px;color:var(--danger);font-weight:400"></span></h3>
-                <p class="desc">以下数据因未匹配到对应的标准字段表头（standard_title_id 非空约束）而未能写入结果数据，已跳过并记录，不影响其余数据正常填充。</p>
-                <div class="table-scroll" style="max-height:420px;overflow-y:auto">
-                    <table class="data-table" id="failedTable">
-                        <thead><tr>
-                            <th style="width:60px">ID</th>
-                            <th style="width:90px">原始数据ID</th>
-                            <th style="width:120px">分类编码</th>
-                            <th>失败原因</th>
-                            <th>原始数据</th>
-                            <th style="width:160px">记录时间</th>
-                        </tr></thead>
-                        <tbody id="failedTbody"></tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
+            </section>
 
         <!-- ===== 数据检索 ===== -->
         <section id="page-search" class="page">
@@ -1014,7 +897,6 @@
             <ul class="ai-info-list">
                 <li data-step="clean"><span class="ai-info-ic">①</span><div><b>智能分类</b><em>依据语义将数据归入标准分类体系</em></div></li>
                 <li data-step="extract"><span class="ai-info-ic">②</span><div><b>属性提取</b><em>从原始文本中抽取关键字段与属性</em></div></li>
-                <li data-step="map"><span class="ai-info-ic">③</span><div><b>属性补全</b><em>对齐标准字段表头，补全缺失信息</em></div></li>
             </ul>
             <p class="ai-info-note">全程基于大模型推理，自动纠偏、去噪与标准化，清洗完成可在「智能分类」页查看逐条评分。</p>
         </div>
@@ -1028,7 +910,6 @@
         <div class="ai-clean-steps">
             <div class="ai-step" data-step="clean"><span class="ai-step-dot"></span><b>智能分类</b><i>等待中</i></div>
             <div class="ai-step" data-step="extract"><span class="ai-step-dot"></span><b>属性提取</b><i>等待中</i></div>
-            <div class="ai-step" data-step="map"><span class="ai-step-dot"></span><b>属性补全</b><i>等待中</i></div>
         </div>
     </div>
     <button class="ai-clean-close" id="aiCleanClose" type="button" onclick="AiCleanOverlay.hide()">关闭</button>
@@ -1062,79 +943,6 @@
         <button class="btn-close" onclick="closeStandardEditModal()">&#x2715;</button>
     </div>
     <div class="modal-body" id="standardEditBody"></div>
-</div>
-
-<!-- Manual Fill Modal -->
-<div class="modal-overlay" id="manualFillOverlay" onclick="closeManualFillModal()"></div>
-<div class="modal modal-xl" id="manualFillModal">
-    <div class="modal-header">
-        <h3>字段映射配置</h3>
-        <button class="btn-close" onclick="closeManualFillModal()">&#x2715;</button>
-    </div>
-    <div class="modal-body" id="manualFillBody">
-        <div class="view-info-grid" id="manualFillInfo">
-            <div class="view-info-item">
-                <span class="label">标准字段表头</span>
-                <span class="value" id="mfStandardTitle">-</span>
-            </div>
-            <div class="view-info-item">
-                <span class="label">数据文件</span>
-                <span class="value" id="mfDataFile">-</span>
-            </div>
-            <div class="view-info-item" id="mfExtraInfoItem" style="display:none">
-                <span class="label">补充数据表头</span>
-                <select id="mfExtraTitleSelect" class="form-input" style="max-width:250px" onchange="onMfExtraTitleChange()">
-                    <option value="">-- 请选择 --</option>
-                </select>
-            </div>
-        </div>
-        <div class="modal-divider"></div>
-        <div class="modal-section-title">标准字段 → 数据源字段映射</div>
-        <p class="mapping-desc">为每个标准字段指定来源列，选择"不映射"则留空。</p>
-        <div class="table-scroll mf-table-scroll" id="mfTableContainer">
-            <p style="text-align:center;padding:40px;color:var(--text-tertiary)">加载中…</p>
-        </div>
-        <div class="modal-divider"></div>
-        <div style="display:flex;justify-content:space-between;align-items:center">
-            <button class="btn btn-info" onclick="autoMapInModal()">自动映射</button>
-            <div style="display:flex;gap:8px">
-                <button class="btn btn-default" onclick="closeManualFillModal()">取消</button>
-                <button class="btn btn-default" onclick="saveMappingsOnly()">仅保存映射</button>
-                <button class="btn btn-primary" onclick="executeManualFill()">保存并填充</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- File Edit Modal (分类列 & 全描述列) -->
-<div class="modal-overlay" id="catColOverlay" onclick="closeCatColModal()"></div>
-<div class="modal" id="catColModal">
-    <div class="modal-header">
-        <h3>编辑文件设置</h3>
-        <button class="btn-close" onclick="closeCatColModal()">&#x2715;</button>
-    </div>
-    <div class="modal-body" id="catColBody">
-        <!-- 指定分类列 -->
-        <h4 style="margin:0 0 8px 0">指定分类列</h4>
-        <p class="desc" style="margin-bottom:12px">选择一列作为分类匹配的依据列，未选择时默认使用第2列。</p>
-        <div id="catColList" style="display:flex;flex-direction:column;gap:8px">
-            <p style="text-align:center;padding:20px;color:var(--text-secondary)">加载中...</p>
-        </div>
-        <hr style="margin:16px 0;border:0;border-top:1px solid var(--border)">
-        <!-- 全描述列 -->
-        <h4 style="margin:0 0 8px 0">指定属性拆分列</h4>
-        <p class="desc" style="margin-bottom:12px">选择一列作为全描述属性提取的依据列，导入时自动识别"全描述/完整描述"列头。</p>
-        <div id="fullDescColList" style="display:flex;flex-direction:column;gap:8px">
-            <p style="text-align:center;padding:20px;color:var(--text-secondary)">加载中...</p>
-        </div>
-        <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px">
-            <button class="btn btn-default" onclick="closeCatColModal()">取消</button>
-            <button class="btn btn-primary" id="catColSaveBtn" onclick="saveCategoryCol()">保存</button>
-        </div>
-    </div>
-</div>
-
-<!-- Cell Edit Modal (结果数据双击编辑) -->
 <div class="modal-overlay" id="cellEditOverlay" onclick="closeCellEditModal()"></div>
 <div class="modal cell-edit-modal" id="cellEditModal">
     <div class="modal-header">

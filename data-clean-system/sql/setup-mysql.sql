@@ -419,48 +419,6 @@ CREATE INDEX `idx_cd_status` ON `cleaned_data`(`status`);
 CREATE INDEX `idx_cd_temp_data_id` ON `cleaned_data`(`temp_data_id`);
 CREATE INDEX `idx_cd_match_source` ON `cleaned_data`(`match_source`);
 
--- 11. 字段映射审核表 (field_mapping_audit)
--- 系统字段映射结果与人工审核记录
-DROP TABLE IF EXISTS `field_mapping_audit`;
-CREATE TABLE `field_mapping_audit` (
-                                       `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
-                                       `standard_title_id` BIGINT DEFAULT NULL COMMENT '关联标准表头ID',
-                                       `temp_data_title_id` BIGINT DEFAULT NULL COMMENT '关联原始表头ID',
-                                       `source_type` VARCHAR(50) DEFAULT NULL COMMENT '来源类型',
-                                       `source_field` VARCHAR(200) DEFAULT NULL COMMENT '源字段',
-                                       `target_field` VARCHAR(200) DEFAULT NULL COMMENT '目标字段',
-                                       `mapping_type` VARCHAR(50) DEFAULT 'auto' COMMENT '映射类型: auto/manual',
-                                       `confidence` DOUBLE DEFAULT 0 COMMENT '置信度',
-                                       `status` VARCHAR(50) DEFAULT 'pending' COMMENT '状态: pending/approved/rejected',
-                                       `suggested_target_field` VARCHAR(200) DEFAULT NULL COMMENT '建议的目标字段',
-                                       `review_comment` VARCHAR(200) COMMENT '审核备注',
-                                       `reviewed_by` VARCHAR(50) DEFAULT NULL COMMENT '审核人',
-                                       `reviewed_at` TIMESTAMP NULL DEFAULT NULL COMMENT '审核时间',
-                                       `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-                                       `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-                                       `created_by` VARCHAR(50) DEFAULT 'system' COMMENT '创建人',
-                                       `updated_by` VARCHAR(50) DEFAULT 'system' COMMENT '更新人'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='字段映射审核表';
-
-CREATE INDEX `idx_fma_title_id` ON `field_mapping_audit`(`temp_data_title_id`);
-CREATE INDEX `idx_fma_status` ON `field_mapping_audit`(`status`);
-CREATE INDEX `idx_fma_standard_title_id` ON `field_mapping_audit`(`standard_title_id`);
-
--- 11.x 数据文件-标准字段表头关联表 (title_standard_title)
--- 在数据清洗/结果填充时记录每个数据文件关联的标准字段表头，供结果数据下拉框按文件快速查询
-CREATE TABLE `title_standard_title` (
-    `id` BIGINT NOT NULL PRIMARY KEY COMMENT '主键ID',
-    `temp_data_title_id` BIGINT NOT NULL COMMENT '数据文件ID',
-    `standard_title_id` BIGINT NOT NULL COMMENT '标准字段表头ID',
-    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    `created_by` VARCHAR(50) DEFAULT 'system' COMMENT '创建人',
-    `updated_by` VARCHAR(50) DEFAULT 'system' COMMENT '更新人'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据文件-标准字段表头关联表';
-CREATE UNIQUE INDEX `idx_tst_title_std` ON `title_standard_title`(`temp_data_title_id`, `standard_title_id`);
-CREATE INDEX `idx_tst_title_id` ON `title_standard_title`(`temp_data_title_id`);
-CREATE INDEX `idx_tst_std_id` ON `title_standard_title`(`standard_title_id`);
-
 -- 12. 审核任务表 (review_task)
 DROP TABLE IF EXISTS `review_task`;
 CREATE TABLE `review_task` (

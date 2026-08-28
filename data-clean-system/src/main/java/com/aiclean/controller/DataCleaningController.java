@@ -226,82 +226,7 @@ public class DataCleaningController {
         return R.success(dataCleaningService.searchCategories(keyword, limit));
     }
 
-    // ==================== 字段映射 ====================
-
-    @PostMapping("/auto-map-fields")
-    @Operation(summary = "自动映射字段（根据清洗数据的分类编码自动匹配标准字段表头）")
-    @RequirePermission("page:mapping")
-    public R<List<FieldMappingAuditEntity>> autoMapFields(@RequestParam Long tempDataTitleId,
-                                                          @RequestParam(required = false) Long extraDataTitleId,
-                                                          @RequestParam(required = false) Long standardTitleId) {
-        return R.success(dataCleaningService.autoMapFields(tempDataTitleId, extraDataTitleId, standardTitleId));
-    }
-
-    @PutMapping("/field-mapping/{mappingId}")
-    @Operation(summary = "更新字段映射")
-    public R<FieldMappingAuditEntity> updateFieldMapping(@PathVariable Long mappingId,
-                                                          @RequestParam String targetField) {
-        return R.success(dataCleaningService.updateFieldMapping(mappingId, targetField));
-    }
-
-    @GetMapping("/field-mappings")
-    @Operation(summary = "获取字段映射列表")
-    public R<List<FieldMappingAuditEntity>> getFieldMappings(@RequestParam(required = false) Long standardTitleId,
-                                                              @RequestParam Long tempDataTitleId,
-                                                              @RequestParam(required = false) Long extraDataTitleId) {
-        return R.success(dataCleaningService.getFieldMappings(standardTitleId, tempDataTitleId, extraDataTitleId));
-    }
-
-    @PostMapping("/field-mappings/batch")
-    @Operation(summary = "批量保存手动字段映射（覆盖该标准表头+数据文件组合下的旧映射）")
-    public R<List<FieldMappingAuditEntity>> saveManualMappings(@RequestParam Long standardTitleId,
-                                                                @RequestParam Long tempDataTitleId,
-                                                                @RequestParam(required = false) Long extraDataTitleId,
-                                                                @RequestBody List<Map<String, Object>> mappings) {
-        return R.success(dataCleaningService.saveManualMappings(standardTitleId, tempDataTitleId, extraDataTitleId, mappings));
-    }
-
-    // ==================== 结果数据填充 ====================
-
-    @PostMapping("/fill-result")
-    @Operation(summary = "填充结果数据")
-    public R<List<ResultDataEntity>> fillResultData(@RequestParam Long standardTitleId,
-                                                     @RequestParam Long tempDataTitleId,
-                                                     @RequestParam(required = false) Long extraDataTitleId) {
-        return R.success(dataCleaningService.fillResultData(standardTitleId, tempDataTitleId, extraDataTitleId));
-    }
-
-    @PostMapping("/fill-result/start")
-    @Operation(summary = "异步填充结果数据（带 WebSocket 实时进度）")
-    public R<String> startFill(@RequestParam Long standardTitleId,
-                                @RequestParam Long tempDataTitleId,
-                                @RequestParam(required = false) Long extraDataTitleId) {
-        return R.success(dataCleaningService.startFill(standardTitleId, tempDataTitleId, extraDataTitleId));
-    }
-
-    @PostMapping("/fill-result/fill-all")
-    @Operation(summary = "批量填充所有标准字段表头的映射结果数据")
-    public R<String> fillAllStandardTitles(@RequestParam Long tempDataTitleId,
-                                            @RequestParam(required = false) Long extraDataTitleId) {
-        return R.success(dataCleaningService.fillAllStandardTitles(tempDataTitleId, extraDataTitleId));
-    }
-
-    @PutMapping("/result-data/{resultDataId}")
-    @Operation(summary = "更新结果数据")
-    public R<ResultDataEntity> updateResultData(@PathVariable Long resultDataId,
-                                                 @RequestParam int colIndex,
-                                                 @RequestParam String value) {
-        return R.success(dataCleaningService.updateResultData(resultDataId, colIndex, value));
-    }
-
-    @PutMapping("/result-data/{resultDataId}/status")
-    @Operation(summary = "更新结果数据状态（审核）")
-    public R<Void> updateResultDataStatus(@PathVariable Long resultDataId,
-                                           @RequestParam String status,
-                                           @RequestParam(required = false) String comment) {
-        dataCleaningService.updateResultDataStatus(resultDataId, status, comment);
-        return R.success();
-    }
+    // ==================== 属性补全相关端点已移除 ====================
 
     @PostMapping("/result-data/search")
     @Operation(summary = "搜索结果数据")
@@ -314,30 +239,6 @@ public class DataCleaningController {
     @Operation(summary = "统计结果数据数量")
     public R<Long> countResultData(@RequestBody SearchCondition condition) {
         return R.success(dataCleaningService.countResultData(condition));
-    }
-
-    @GetMapping("/result-data/export-multi-sheet")
-    @Operation(summary = "导出多 Sheet 结果数据", description = "未选标准字段表头时，将结果数据页面“标准字段表头”下拉框的每一条生成一个 sheet，每个 sheet 表头对应各自标准表头的属性列，最终合并为一个 .xlsx 下载")
-    public void exportResultDataMultiSheet(@RequestParam Long tempDataTitleId, HttpServletResponse response) {
-        try {
-            byte[] data = dataCleaningService.exportResultDataMultiSheet(tempDataTitleId);
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-            String fileName = "result_data_multi_" + tempDataTitleId + "_" + timestamp + ".xlsx";
-            String encodedName = URLEncoder.encode(fileName, "UTF-8").replaceAll("\\+", "%20");
-            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-            response.setHeader("Content-Disposition", "attachment; filename=\"" + encodedName + "\"; filename*=UTF-8''" + encodedName);
-            response.setContentLength(data.length);
-            response.getOutputStream().write(data);
-            response.getOutputStream().flush();
-        } catch (IOException e) {
-            log.error("导出多表头结果数据失败", e);
-            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-            writeError(response, "导出失败: " + e.getMessage());
-        } catch (Exception e) {
-            log.error("导出多表头结果数据失败", e);
-            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-            writeError(response, "导出失败: " + e.getMessage());
-        }
     }
 
     @GetMapping("/result-data/export")
@@ -480,12 +381,6 @@ public class DataCleaningController {
                                                             @RequestParam(required = false) String keyword,
                                                             @RequestParam(defaultValue = "desc") String sortOrder) {
         return R.success(dataCleaningService.pageStandardTitles(page, size, keyword, sortOrder));
-    }
-
-    @GetMapping("/standard-titles/by-title")
-    @Operation(summary = "按数据文件查询其关联的标准字段表头（结果数据下拉框用）")
-    public R<List<StandardTitleEntity>> getStandardTitlesByTitle(@RequestParam Long tempDataTitleId) {
-        return R.success(dataCleaningService.getStandardTitlesByTitleId(tempDataTitleId));
     }
 
     @GetMapping("/standard-title/{id}")

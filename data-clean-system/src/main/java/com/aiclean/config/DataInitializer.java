@@ -205,7 +205,7 @@ public class DataInitializer implements ApplicationRunner {
     private String userRolePermissionCodes() {
         String[] codes = {
                 "page:dashboard", "page:import", "page:oneclick", "page:search",
-                "page:externalclean", "page:clean", "page:extract", "page:mapping",
+                "page:externalclean", "page:clean", "page:extract",
                 "page:result", "page:unmapped", "page:rule", "page:standard",
                 "data:import:upload", "data:import:delete", "data:clean:start",
                 "data:clean:stop", "data:clean:export", "data:rule:manage"
@@ -233,7 +233,6 @@ public class DataInitializer implements ApplicationRunner {
                 {"page:externalclean",  "智能体一键清洗", "外部清洗", "35"},
                 {"page:clean",          "智能分类",   "数据清洗",   "40"},
                 {"page:extract",        "属性提取",   "数据清洗",   "41"},
-                {"page:mapping",        "属性补全",   "数据清洗",   "42"},
                 {"page:result",         "结果数据",   "数据输出",   "50"},
                 {"page:unmapped",       "无效数据",   "数据输出",   "51"},
                 {"page:rule",           "描述拆分配置", "规则配置",  "60"},

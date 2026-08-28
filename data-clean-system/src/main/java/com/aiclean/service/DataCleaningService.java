@@ -51,19 +51,6 @@ public interface DataCleaningService {
     /** 模糊搜索标准分类（按名称/编码，供智能分类页双击分类名称下拉选择），返回三级分类 */
     List<Map<String, Object>> searchCategories(String keyword, int limit);
 
-    // ===== 字段映射 =====
-    List<FieldMappingAuditEntity> autoMapFields(Long tempDataTitleId, Long extraDataTitleId, Long standardTitleId);
-    FieldMappingAuditEntity updateFieldMapping(Long mappingId, String targetField);
-    List<FieldMappingAuditEntity> getFieldMappings(Long standardTitleId, Long tempDataTitleId, Long extraDataTitleId);
-    List<FieldMappingAuditEntity> saveManualMappings(Long standardTitleId, Long tempDataTitleId, Long extraDataTitleId, List<Map<String, Object>> mappings);
-
-    // ===== 结果数据填充 =====
-    List<ResultDataEntity> fillResultData(Long standardTitleId, Long tempDataTitleId, Long extraDataTitleId);
-    String startFill(Long standardTitleId, Long tempDataTitleId, Long extraDataTitleId);
-    String fillAllStandardTitles(Long tempDataTitleId, Long extraDataTitleId);
-    ResultDataEntity updateResultData(Long resultDataId, int colIndex, String value);
-    void updateResultDataStatus(Long resultDataId, String status, String comment);
-
     // ===== 查询 =====
     List<CleanedDataEntity> searchCleanedData(SearchCondition condition);
     long countCleanedData(SearchCondition condition);
@@ -90,17 +77,8 @@ public interface DataCleaningService {
     List<StandardTitleEntity> getAllStandardTitles();
     IPage<StandardTitleEntity> pageStandardTitles(long page, long size, String keyword, String sortOrder);
 
-    // ===== 数据文件-标准表头关联 =====
-    /** 记录某数据文件关联了某个标准字段表头（幂等，已存在则跳过） */
-    void recordTitleStandardTitle(Long tempDataTitleId, Long standardTitleId);
-    /** 查询某数据文件关联的标准字段表头（首次查询时从已填充结果懒回填） */
-    List<StandardTitleEntity> getStandardTitlesByTitleId(Long tempDataTitleId);
-
     List<ResultDataEntity> searchResultData(SearchCondition condition);
     long countResultData(SearchCondition condition);
-
-    /** 导出多 Sheet 结果数据：数据文件下每个标准字段表头生成一张 sheet，表头为该标准表头的属性列，合并为一个 .xlsx 字节流 */
-    byte[] exportResultDataMultiSheet(Long tempDataTitleId) throws IOException;
 
     /** 导出（单 Sheet）结果数据：表头为 行号 + 原始数据列（前置）+ 结果属性列，合并为一个 .xlsx 字节流 */
     byte[] exportResultData(Long standardTitleId, int page, int pageSize) throws IOException;

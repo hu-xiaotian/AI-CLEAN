@@ -951,67 +951,6 @@ public class ReviewServiceImpl implements ReviewService {
 
     @Override
     @Transactional
-    public ReviewTaskEntity createFieldMappingAuditTask(Long mappingId, Double confidence, 
-                                                       List<Map<String, Object>> suggestions) {
-        log.info("创建字段映射审核任务, 映射ID: {}, 置信度: {}, 建议数: {}", 
-                mappingId, confidence, suggestions != null ? suggestions.size() : 0);
-        
-        ReviewTaskEntity task = new ReviewTaskEntity();
-        task.setTaskType(ReviewTaskType.FIELD_MAPPING);
-        task.setEntityType("field_mapping");
-        task.setEntityId(mappingId);
-        
-        // 根据置信度设置优先级
-        if (confidence != null) {
-            if (confidence < 0.7) {
-                task.setPriority(TaskPriority.HIGH);
-            } else if (confidence < 0.9) {
-                task.setPriority(TaskPriority.MEDIUM);
-            } else {
-                task.setPriority(TaskPriority.LOW);
-            }
-        } else {
-            task.setPriority(TaskPriority.MEDIUM);
-        }
-        
-        String title = "字段映射审核 - 映射 #" + mappingId;
-        if (confidence != null) {
-            title += " (" + String.format("%.1f", confidence * 100) + "% 置信度)";
-        }
-        task.setTitle(title);
-        
-        // 构建任务描述
-        StringBuilder description = new StringBuilder();
-        description.append("字段映射审核任务\n\n");
-        description.append("映射ID: ").append(mappingId).append("\n");
-        if (confidence != null) {
-            description.append("系统匹配置信度: ").append(String.format("%.1f", confidence * 100)).append("%\n");
-        }
-        
-        if (suggestions != null && !suggestions.isEmpty()) {
-            description.append("\n系统建议:\n");
-            for (int i = 0; i < suggestions.size(); i++) {
-                Map<String, Object> suggestion = suggestions.get(i);
-                description.append(i + 1).append(". ").append(suggestion.get("suggestion")).append("\n");
-                if (suggestion.containsKey("confidence")) {
-                    description.append("   置信度: ").append(suggestion.get("confidence")).append("\n");
-                }
-                description.append("\n");
-            }
-        }
-        
-        task.setDescription(description.toString());
-        
-        // 保存建议为JSON
-        if (suggestions != null && !suggestions.isEmpty()) {
-            task.setIssueDetails("{\"suggestions\": " + suggestions.size() + "}");
-        }
-        
-        return createReviewTask(task);
-    }
-
-    @Override
-    @Transactional
     public ReviewTaskEntity createCategoryAuditTask(Long dataId, Long categoryId, Double confidence,
                                                    List<Long> alternativeCategories) {
         log.info("创建分类审核任务, 数据ID: {}, 分类ID: {}, 置信度: {}, 备选分类数: {}", 
@@ -1293,17 +1232,7 @@ public class ReviewServiceImpl implements ReviewService {
         qualityCheckTemplate.put("description", "标准数据质量检查任务模板");
         templates.add(qualityCheckTemplate);
         
-        // 字段映射审核模板
-        Map<String, Object> mappingAuditTemplate = new HashMap<>();
-        mappingAuditTemplate.put("id", "field_mapping_audit");
-        mappingAuditTemplate.put("name", "字段映射审核");
-        mappingAuditTemplate.put("taskType", ReviewTaskType.FIELD_MAPPING);
-        mappingAuditTemplate.put("priority", TaskPriority.HIGH);
-        mappingAuditTemplate.put("estimatedMinutes", 30);
-        mappingAuditTemplate.put("description", "字段映射关系审核模板");
-        templates.add(mappingAuditTemplate);
-        
-        // 分类审核模板
+// 分类审核模板
         Map<String, Object> categoryAuditTemplate = new HashMap<>();
         categoryAuditTemplate.put("id", "category_audit");
         categoryAuditTemplate.put("name", "分类审核");

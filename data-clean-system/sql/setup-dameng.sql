@@ -402,46 +402,6 @@ CREATE TABLE category_synonym (
 CREATE INDEX idx_cs_category_id ON category_synonym(category_id);
 CREATE INDEX idx_cs_synonym_norm ON category_synonym(synonym_norm);
 
--- 11. 字段映射审核表 (field_mapping_audit)
--- 系统字段映射结果与人工审核记录
-CREATE TABLE field_mapping_audit (
-    id BIGINT IDENTITY(1,1) PRIMARY KEY,
-    standard_title_id BIGINT,
-    temp_data_title_id BIGINT,
-    source_type VARCHAR2(50),
-    source_field VARCHAR2(200),
-    target_field VARCHAR2(200),
-    mapping_type VARCHAR2(50) DEFAULT 'auto',
-    confidence DOUBLE DEFAULT 0,
-    status VARCHAR2(50) DEFAULT 'pending',
-    suggested_target_field VARCHAR2(200),
-    review_comment CLOB,
-    reviewed_by VARCHAR2(50),
-    reviewed_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_by VARCHAR2(50) DEFAULT 'system',
-    updated_by VARCHAR2(50) DEFAULT 'system'
-);
-CREATE INDEX idx_fma_title_id ON field_mapping_audit(temp_data_title_id);
-CREATE INDEX idx_fma_status ON field_mapping_audit(status);
-CREATE INDEX idx_fma_standard_title_id ON field_mapping_audit(standard_title_id);
-
--- 11.x 数据文件-标准字段表头关联表 (title_standard_title)
--- 在数据清洗/结果填充时记录每个数据文件关联的标准字段表头，供结果数据下拉框按文件快速查询
-CREATE TABLE title_standard_title (
-    id BIGINT NOT NULL PRIMARY KEY,
-    temp_data_title_id BIGINT NOT NULL,
-    standard_title_id BIGINT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_by VARCHAR2(50) DEFAULT 'system',
-    updated_by VARCHAR2(50) DEFAULT 'system'
-);
-CREATE UNIQUE INDEX idx_tst_title_std ON title_standard_title(temp_data_title_id, standard_title_id);
-CREATE INDEX idx_tst_title_id ON title_standard_title(temp_data_title_id);
-CREATE INDEX idx_tst_std_id ON title_standard_title(standard_title_id);
-
 -- 12. 审核任务表 (review_task)
 CREATE TABLE review_task (
     id BIGINT IDENTITY(1,1) PRIMARY KEY,

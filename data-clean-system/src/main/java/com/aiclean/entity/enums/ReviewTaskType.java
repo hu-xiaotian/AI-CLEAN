@@ -9,8 +9,7 @@ import lombok.Getter;
  */
 @Getter
 public enum ReviewTaskType {
-    
-    FIELD_MAPPING("field_mapping", "字段映射审核"),
+
     CATEGORY_MATCH("category_match", "分类匹配审核"),
     DATA_VALIDATION("data_validation", "数据验证审核");
     

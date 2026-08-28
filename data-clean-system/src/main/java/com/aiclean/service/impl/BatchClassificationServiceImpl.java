@@ -723,20 +723,7 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
         full.append("【用户提示词】\n").append(userPrompt).append("\n");
         String fullText = full.toString();
 
-        // 1) 写入文件（logs 目录，文件名带时间戳），拿到完整文本
-        String fileName = "logs/prompt-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS")
-                .format(new java.util.Date()) + "-" + tag + ".txt";
-        java.io.File dir = new java.io.File("logs");
-        try {
-            if (!dir.exists()) dir.mkdirs();
-            java.nio.file.Files.write(java.nio.file.Paths.get(fileName),
-                    fullText.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        } catch (Exception e) {
-            log.warn("完整提示词写入文件失败 {}: {}", fileName, e.getMessage());
-        }
-
         // 2) 控制台完整打印
-        System.out.println("========== " + tag + " 发送给大模型的【完整提示词】写入文件：" + fileName + " ==========");
         System.out.println(fullText);
         System.out.println("========== " + tag + " 发送给大模型的【完整提示词】END ==========");
     }
@@ -747,17 +734,6 @@ public class BatchClassificationServiceImpl implements BatchClassificationServic
      */
     private void dumpAiReturn(String tag, String aiText) {
         if (aiText == null) aiText = "";
-        String fileName = "logs/ai-return-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS")
-                .format(new java.util.Date()) + "-" + tag + ".txt";
-        java.io.File dir = new java.io.File("logs");
-        try {
-            if (!dir.exists()) dir.mkdirs();
-            java.nio.file.Files.write(java.nio.file.Paths.get(fileName),
-                    aiText.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        } catch (Exception e) {
-            log.warn("AI 返回写入文件失败 {}: {}", fileName, e.getMessage());
-        }
-        System.out.println("========== " + tag + " 大模型【原始返回】写入文件：" + fileName + " ==========");
         System.out.println(aiText);
         System.out.println("========== " + tag + " 大模型【原始返回】END ==========");
     }
