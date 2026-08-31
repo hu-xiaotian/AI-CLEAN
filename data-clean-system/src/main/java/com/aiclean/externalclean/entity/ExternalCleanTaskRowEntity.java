@@ -39,6 +39,12 @@ public class ExternalCleanTaskRowEntity extends BaseEntity {
     private Integer needsReview;
     private String reviewReason;
 
+    /** 分类判定依据的引用片段(JSON数组) */
+    private String categoryCitationsJson;
+
+    /** 属性提取的引用片段(JSON对象: 属性名->引用) */
+    private String attrCitationsJson;
+
     // ===== 行状态与采纳/修正 =====
     /** 行状态: pending/completed/skipped/accepted/corrected/rejected */
     private String rowStatus;

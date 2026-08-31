@@ -34,10 +34,18 @@ public class ExternalCleanTaskEntity extends BaseEntity {
     private String callbackUrl;
 
     private Integer totalRows;
+
+    /** 已分类行数 */
+    private Integer classifiedRows;
+
     private Integer processedRows;
     private Integer highConfidence;
     private Integer mediumConfidence;
     private Integer lowConfidence;
+
+    /** 置信度累加值，用于计算平均置信度 */
+    private Double confidenceSum;
+
     private Double estimatedAccuracy;
 
     /** 提交时的清洗选项快照(CleanOptions JSON) */

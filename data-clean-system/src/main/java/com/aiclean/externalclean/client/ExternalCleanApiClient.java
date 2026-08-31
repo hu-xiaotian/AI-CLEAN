@@ -169,10 +169,12 @@ public class ExternalCleanApiClient {
             if (stats != null) {
                 ExternalProgressResponse.Stats s = new ExternalProgressResponse.Stats();
                 s.setTotalRows(stats.getInteger("total_rows"));
+                s.setClassifiedRows(stats.getInteger("classified_rows"));
                 s.setProcessedRows(stats.getInteger("processed_rows"));
                 s.setHighConfidence(stats.getInteger("high_confidence"));
                 s.setMediumConfidence(stats.getInteger("medium_confidence"));
                 s.setLowConfidence(stats.getInteger("low_confidence"));
+                s.setConfidenceSum(stats.getDouble("confidence_sum"));
                 s.setEstimatedAccuracy(stats.getDouble("estimated_accuracy"));
                 result.setStats(s);
             }

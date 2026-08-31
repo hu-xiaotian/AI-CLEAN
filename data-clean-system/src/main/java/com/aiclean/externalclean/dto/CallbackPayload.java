@@ -30,10 +30,14 @@ public class CallbackPayload {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Stats {
         private Integer totalRows;
+        /** 已分类行数（v1.3 新增） */
+        private Integer classifiedRows;
         private Integer processedRows;
         private Integer highConfidence;
         private Integer mediumConfidence;
         private Integer lowConfidence;
+        /** 置信度累加值（v1.3 新增），用于计算平均置信度 */
+        private Double confidenceSum;
         private Double estimatedAccuracy;
     }
 
@@ -51,5 +55,11 @@ public class CallbackPayload {
         private List<String> missingAttrs;
         private Boolean needsReview;
         private String reviewReason;
+
+        /** 分类判定依据的引用片段（v1.3 新增） */
+        private List<Object> categoryCitations;
+
+        /** 属性提取的引用片段，key=属性名（v1.3 新增） */
+        private Map<String, Object> attrCitations;
     }
 }

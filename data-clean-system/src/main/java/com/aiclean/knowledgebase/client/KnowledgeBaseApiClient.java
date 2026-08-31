@@ -4,12 +4,16 @@ import com.aiclean.knowledgebase.config.KnowledgeBaseProperties;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
 /**
@@ -42,6 +46,15 @@ public class KnowledgeBaseApiClient {
         return u.endsWith("/") ? u.substring(0, u.length() - 1) : u;
     }
 
+    private String urlEncode(String value) {
+        try {
+            return java.net.URLEncoder.encode(value == null ? "" : value, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException e) {
+            // UTF-8 为标准字符集，正常情况下不会触发
+            throw new RuntimeException(e);
+        }
+    }
+
     private HttpHeaders headers() {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -49,6 +62,109 @@ public class KnowledgeBaseApiClient {
             headers.setBearerAuth(properties.getApiKey());
         }
         return headers;
+    }
+
+    /**
+     * 查询知识库文件入库情况（不落库，直接透传外部接口返回）。
+     *
+     * @return 外部接口原始响应（含 total 与 files 列表），失败时返回 null
+     */
+    public JSONObject listFiles() {
+        String url = baseUrl() + "/api/v1/knowledge/files";
+        HttpEntity<String> entity = new HttpEntity<>(headers());
+        try {
+            org.springframework.http.ResponseEntity<String> resp =
+                    restTemplate.exchange(url, org.springframework.http.HttpMethod.GET, entity, String.class);
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                log.warn("知识库文件列表查询失败 HTTP={}", resp.getStatusCode());
+                return null;
+            }
+            log.info("知识库文件列表查询成功 HTTP={}", resp.getStatusCode());
+            return JSON.parseObject(resp.getBody());
+        } catch (Exception e) {
+            log.error("知识库文件列表查询异常 {}", e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * 上传文件到知识库（multipart/form-data，不落库，直接透传外部接口返回）。
+     *
+     * @param fileName        文件名（用于 fallback，当 relativePath 为空时使用）
+     * @param content         文件二进制内容
+     * @param relativePath    相对 KB_FILE_DIR 的路径，可空（空则外部用文件名）
+     * @return 外部接口原始响应，失败时返回 null
+     */
+    public JSONObject uploadFile(String fileName, byte[] content, String relativePath) {
+        String url = baseUrl() + "/api/v1/knowledge/files";
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        if (properties.getApiKey() != null && !properties.getApiKey().isEmpty()) {
+            headers.setBearerAuth(properties.getApiKey());
+        }
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        final String name = fileName != null ? fileName : "file";
+        ByteArrayResource resource = new ByteArrayResource(content) {
+            @Override
+            public String getFilename() {
+                return name;
+            }
+        };
+        body.add("file", resource);
+        if (relativePath != null && !relativePath.isEmpty()) {
+            body.add("relative_path", relativePath);
+        }
+        HttpEntity<MultiValueMap<String, Object>> entity = new HttpEntity<>(body, headers);
+        try {
+            org.springframework.http.ResponseEntity<String> resp =
+                    restTemplate.exchange(url, org.springframework.http.HttpMethod.POST, entity, String.class);
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                log.warn("知识库文件上传失败 fileName={} HTTP={}", fileName, resp.getStatusCode());
+                return null;
+            }
+            log.info("知识库文件上传成功 fileName={} HTTP={}", fileName, resp.getStatusCode());
+            return JSON.parseObject(resp.getBody());
+        } catch (Exception e) {
+            log.error("知识库文件上传异常 fileName={} {}", fileName, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * 知识库检索（不落库，直接透传外部接口返回）。
+     *
+     * @param query        检索关键词
+     * @param topK         返回条数，默认 5
+     * @param categoryCode 分类代码过滤，可空
+     * @param field        限定字段，可空
+     * @return 外部接口原始响应（含 query 与 hits 列表），失败时返回 null
+     */
+    public JSONObject search(String query, Integer topK, String categoryCode, String field) {
+        StringBuilder url = new StringBuilder(baseUrl()).append("/api/v1/knowledge/search")
+                .append("?q=").append(urlEncode(query));
+        if (topK != null) {
+            url.append("&top_k=").append(topK);
+        }
+        if (categoryCode != null && !categoryCode.isEmpty()) {
+            url.append("&category_code=").append(urlEncode(categoryCode));
+        }
+        if (field != null && !field.isEmpty()) {
+            url.append("&field=").append(urlEncode(field));
+        }
+        HttpEntity<String> entity = new HttpEntity<>(headers());
+        try {
+            org.springframework.http.ResponseEntity<String> resp =
+                    restTemplate.exchange(url.toString(), org.springframework.http.HttpMethod.GET, entity, String.class);
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                log.warn("知识库检索失败 query={} HTTP={}", query, resp.getStatusCode());
+                return null;
+            }
+            log.info("知识库检索成功 query={} HTTP={}", query, resp.getStatusCode());
+            return JSON.parseObject(resp.getBody());
+        } catch (Exception e) {
+            log.error("知识库检索异常 query={} {}", query, e.getMessage(), e);
+            return null;
+        }
     }
 
     /**

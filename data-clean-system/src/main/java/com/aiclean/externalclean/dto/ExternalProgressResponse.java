@@ -25,10 +25,14 @@ public class ExternalProgressResponse {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Stats {
         private Integer totalRows;
+        /** 已分类行数（v1.3 新增） */
+        private Integer classifiedRows;
         private Integer processedRows;
         private Integer highConfidence;
         private Integer mediumConfidence;
         private Integer lowConfidence;
+        /** 置信度累加值（v1.3 新增） */
+        private Double confidenceSum;
         private Double estimatedAccuracy;
     }
 }

@@ -6,15 +6,15 @@ spring:
   # 数据源配置
   datasource:
     # 开发环境使用MySQL (生产环境使用达梦)
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&sessionVariables=transaction_isolation='READ-COMMITTED'}
-    username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:Mysql123456.}
+    #driver-class-name: com.mysql.cj.jdbc.Driver
+    #url: ${DB_URL:jdbc:mysql://8.160.164.52:3306/AI_CLEAN?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&sessionVariables=transaction_isolation='READ-COMMITTED'}
+    #username: ${DB_USERNAME:root}
+    #password: ${DB_PASSWORD:Mysql123456.}
     # 达梦数据库配置示例:
-    #driver-class-name: dm.jdbc.driver.DmDriver
-    #url: jdbc:dm://203.83.238.245:19770?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
-    #username: SYSDBA
-    #password: Dameng123456
+    driver-class-name: dm.jdbc.driver.DmDriver
+    url: jdbc:dm://203.83.238.245:19770?schema=AI_CLEAN&charset=UTF-8&timezone=Asia/Shanghai&compatibleMode=oracle
+    username: SYSDBA
+    password: Dameng123456
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
@@ -393,9 +393,9 @@ app:
     # 是否启用知识库入库（false 时入库按钮不可用）
     enabled: ${KB_ENABLED:true}
     # 知识库服务地址，如 http://kb-service:8000
-    base-url: ${KB_BASE_URL:}
+    base-url: ${KB_BASE_URL:http://203.83.238.245:19772}
     # 调用知识库接口的 API Key（Bearer Token，仅填原始 Key，不要带 "Bearer " 前缀）
-    api-key: ${KB_API_KEY:}
+    api-key: ${KB_API_KEY:test-key-001}
     # 调用超时（秒）
     timeout-seconds: 30
 

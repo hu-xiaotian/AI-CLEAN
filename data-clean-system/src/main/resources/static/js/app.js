@@ -418,6 +418,9 @@ function switchPage(name) {
         },
         'oplog': () => { loadOpLogs(1); },                              // 刷新操作日志
         'file': () => { loadFileList(1); },                            // 刷新文件列表
+        'kbdetail': () => { loadKbDetail(1); },                        // 刷新知识库详情
+        'kbsearch': () => { },                                         // 知识库检索（需手动触发）
+        'kbimport': () => { },                                         // 知识库文件导入（需手动触发）
     };
     if (loaders[name]) loaders[name]();
 }
@@ -6357,7 +6360,7 @@ async function ecViewRows(taskId) {
     if (only) only.checked = false;
     ecOnlyReview = false;
     ecRowPage = 1;
-    $('#ecResultTbody').innerHTML = '<tr><td colspan="7" class="empty-hint">正在加载…</td></tr>';
+    $('#ecResultTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">正在加载…</td></tr>';
     $('#ecResultModal').classList.add('show');
     $('#ecResultOverlay').classList.add('show');
     ecResultOpen = true;
@@ -6393,7 +6396,7 @@ async function ecResultLoadRows(page) {
         const pages = data.pages || 1;
         const tbody = $('#ecResultTbody');
         if (records.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无结果数据</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无结果数据</td></tr>';
         } else {
             tbody.innerHTML = records.map(function (r, idx) {
                 const seq = (ecRowPage - 1) * EC_ROW_SIZE + idx + 1;
@@ -6403,6 +6406,7 @@ async function ecResultLoadRows(page) {
                     '<td>' + esc(cat) + '</td>' +
                     '<td>' + confidenceHtml(r.confidence) + '</td>' +
                     '<td>' + ecAttrsFriendlyHtml(r.extractedAttrsJson, r.missingAttrsJson) + '</td>' +
+                    '<td>' + ecCitationsHtml(r.categoryCitationsJson, r.attrCitationsJson) + '</td>' +
                     '<td>' + (r.needsReview === 1 ? '<span class="badge badge-warning">待复核</span>' : '<span class="badge badge-default">无需</span>') + '</td>' +
                     '<td>' + ecRowStatusBadge(r.rowStatus) + '</td>' +
                     '<td>' + ecResultRowActions(r) + '</td>' +
@@ -6415,7 +6419,7 @@ async function ecResultLoadRows(page) {
         ecResultLoadedTaskId = ecCurrentTaskId;
     } catch (e) {
         console.error('加载外部清洗结果失败', e);
-        $('#ecResultTbody').innerHTML = '<tr><td colspan="7" class="empty-hint">加载失败：' + esc(e.message) + '</td></tr>';
+        $('#ecResultTbody').innerHTML = '<tr><td colspan="8" class="empty-hint">加载失败：' + esc(e.message) + '</td></tr>';
     }
 }
 
@@ -6564,6 +6568,57 @@ function ecAttrsFriendlyHtml(json, missingJson) {
     return '<div style="max-height:200px;overflow:auto">' + rows + '</div>';
 }
 
+// 将单条引用片段转为可读文本（兼容字符串 / {text,source,field,score} 等对象结构）
+function ecCitationText(c) {
+    if (c == null) return '';
+    if (typeof c !== 'object') return String(c);
+    const t = c.text || c.snippet || c.content || c.value || c.evidence || '';
+    const src = c.source || c.field || c.column || c.from || '';
+    const score = (c.score != null) ? c.score : (c.confidence != null ? c.confidence : null);
+    let s = t ? String(t) : JSON.stringify(c);
+    if (src) s = '[' + src + '] ' + s;
+    if (score != null) s += '（' + score + '）';
+    return s;
+}
+
+// 判定依据展示：categoryCitationsJson(数组) + attrCitationsJson(对象: 属性名->引用)
+function ecCitationsHtml(categoryJson, attrJson) {
+    let cats = [], attrs = {};
+    try { cats = JSON.parse(categoryJson || '[]'); } catch (e) { cats = []; }
+    try { attrs = JSON.parse(attrJson || '{}'); } catch (e) { attrs = {}; }
+    if (!Array.isArray(cats)) cats = cats ? [cats] : [];
+    if (!attrs || typeof attrs !== 'object') attrs = {};
+    const attrKeys = Object.keys(attrs);
+    if (cats.length === 0 && attrKeys.length === 0) {
+        return '<span style="color:var(--text-tertiary)">-</span>';
+    }
+    let html = '';
+    if (cats.length > 0) {
+        html += '<div style="margin-bottom:4px">' +
+            '<span style="font-size:12px;color:var(--text-secondary)">分类依据</span>' +
+            cats.map(function (c) {
+                const s = ecCitationText(c);
+                return '<div style="padding:2px 0;word-break:break-all" title="' + esc(s) + '">· ' + esc(s) + '</div>';
+            }).join('') +
+            '</div>';
+    }
+    if (attrKeys.length > 0) {
+        html += '<div>' +
+            '<span style="font-size:12px;color:var(--text-secondary)">属性依据</span>' +
+            attrKeys.map(function (k) {
+                let list = attrs[k];
+                if (!Array.isArray(list)) list = (list == null ? [] : [list]);
+                const s = list.map(ecCitationText).filter(Boolean).join('；');
+                return '<div style="display:flex;gap:8px;padding:2px 0;align-items:baseline" title="' + esc(s) + '">' +
+                    '<span style="flex:0 0 100px;color:var(--text-secondary);font-size:12px;word-break:break-all">' + esc(k) + '</span>' +
+                    '<span style="flex:1;word-break:break-all">' + esc(s || '-') + '</span>' +
+                    '</div>';
+            }).join('') +
+            '</div>';
+    }
+    return '<div style="max-height:200px;overflow:auto;font-size:12px">' + html + '</div>';
+}
+
 // 结果行分页
 async function ecLoadRows(page) {
     if (!ecCurrentTaskId) return;
@@ -6580,7 +6635,7 @@ async function ecLoadRows(page) {
         const pages = data.pages || 1;
         const tbody = $('#ecRowTbody');
         if (records.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" class="empty-hint">暂无结果数据</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="empty-hint">暂无结果数据</td></tr>';
         } else {
             tbody.innerHTML = records.map(function (r, idx) {
                 const seq = (ecRowPage - 1) * EC_ROW_SIZE + idx + 1;
@@ -6591,6 +6646,7 @@ async function ecLoadRows(page) {
                     '<td>' + esc(r.categoryName || '-') + '</td>' +
                     '<td>' + confidenceHtml(r.confidence) + '</td>' +
                     '<td title="' + esc(ecAttrsText(r.extractedAttrsJson)) + '">' + esc(ecAttrsPreview(r.extractedAttrsJson)) + '</td>' +
+                    '<td>' + ecCitationsHtml(r.categoryCitationsJson, r.attrCitationsJson) + '</td>' +
                     '<td>' + (r.needsReview === 1 ? '<span class="badge badge-warning">待复核</span>' : '<span class="badge badge-default">无需</span>') + '</td>' +
                     '<td>' + ecRowStatusBadge(r.rowStatus) + '</td>' +
                     '<td>' + ecRowActions(r) + '</td>' +
@@ -7447,6 +7503,149 @@ function resetFileFilter() {
     if ($('#fileKeyword')) $('#fileKeyword').value = '';
     if ($('#fileStatusFilter')) $('#fileStatusFilter').value = '';
     loadFileList(1);
+}
+
+// ==================== 知识库详情（外部知识库文件查询） ====================
+
+async function loadKbDetail() {
+    try {
+        const kw = ($('#kbFileKeyword') && $('#kbFileKeyword').value || '').trim().toLowerCase();
+        const status = ($('#kbFileStatusFilter') && $('#kbFileStatusFilter').value || '');
+        const data = await api('/file/knowledge-files');
+        let files = (data && data.files) || [];
+        const totalAll = (data && typeof data.total === 'number') ? data.total : files.length;
+        // 前端按关键字与状态过滤（外部接口未提供过滤参数）
+        if (kw) {
+            files = files.filter(f => (f.relative_path || '').toLowerCase().includes(kw));
+        }
+        if (status) {
+            files = files.filter(f => (f.status || '') === status);
+        }
+        const tbody = $('#kbFileTbody');
+        if (!files.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无数据</td></tr>';
+        } else {
+            tbody.innerHTML = files.map(f => {
+                const isActive = (f.status || '') === 'active';
+                const statusBadge = isActive
+                    ? '<span class="badge badge-success">已激活</span>'
+                    : '<span class="badge badge-muted">未激活</span>';
+                return `<tr>
+                    <td title="${escapeHtml(f.relative_path || '')}">${escapeHtml(f.relative_path || '-')}</td>
+                    <td>${statusBadge}</td>
+                    <td>${typeof f.chunk_count === 'number' ? f.chunk_count : '-'}</td>
+                    <td>${formatFileSize(f.file_size)}</td>
+                    <td>${fmtLocalTime(f.uploaded_at)}</td>
+                    <td>${escapeHtml(f.uploaded_by || '-')}</td>
+                    <td style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(f.file_hash || '')}">${escapeHtml(f.file_hash || '-')}</td>
+                </tr>`;
+            }).join('');
+        }
+        $('#kbFileRecordCount').textContent = '共 ' + files.length + ' 个文件（库内总计 ' + totalAll + '）';
+    } catch (e) {
+        console.error(e);
+        showToast('加载知识库文件失败: ' + e.message, 'error');
+    }
+}
+
+function resetKbDetailFilter() {
+    if ($('#kbFileKeyword')) $('#kbFileKeyword').value = '';
+    if ($('#kbFileStatusFilter')) $('#kbFileStatusFilter').value = '';
+    loadKbDetail(1);
+}
+
+// ==================== 知识库检索（外部知识库检索） ====================
+
+async function doKbSearch() {
+    const q = ($('#kbSearchKeyword') && $('#kbSearchKeyword').value || '').trim();
+    const category = ($('#kbSearchCategory') && $('#kbSearchCategory').value || '').trim();
+    const field = ($('#kbSearchField') && $('#kbSearchField').value || '').trim();
+    const topK = ($('#kbSearchTopK') && $('#kbSearchTopK').value) || '5';
+    const box = $('#kbSearchResult');
+    if (!q) {
+        showToast('请输入检索关键词', 'warn');
+        return;
+    }
+    box.innerHTML = '<div class="empty-hint" style="padding:24px 0;text-align:center;color:#888">检索中…</div>';
+    try {
+        let url = '/file/knowledge-search?q=' + encodeURIComponent(q) + '&top_k=' + encodeURIComponent(topK);
+        if (category) url += '&category_code=' + encodeURIComponent(category);
+        if (field) url += '&field=' + encodeURIComponent(field);
+        const data = await api(url);
+        const hits = (data && data.hits) || [];
+        $('#kbSearchCount').textContent = '命中 ' + hits.length + ' 条（关键词：' + q + '）';
+        if (!hits.length) {
+            box.innerHTML = '<div class="empty-hint" style="padding:24px 0;text-align:center;color:#888">未命中任何结果</div>';
+            return;
+        }
+        box.innerHTML = hits.map((h, i) => {
+            const codes = (h.category_codes || []).map(c => '<span class="badge badge-info">' + escapeHtml(c) + '</span>').join(' ');
+            return `<div class="kb-hit-card">
+                <div class="kb-hit-head">
+                    <span class="kb-hit-index">#${i + 1}</span>
+                    <span class="kb-hit-doc" title="${escapeHtml(h.source_doc || '')}">${escapeHtml(h.source_doc || '-')}</span>
+                </div>
+                <div class="kb-hit-meta">
+                    <span class="kb-hit-label">章节：</span><span>${escapeHtml(h.section || '-')}</span>
+                    <span class="kb-hit-label" style="margin-left:12px">标题：</span><span>${escapeHtml(h.heading || '-')}</span>
+                </div>
+                <div class="kb-hit-text"><span class="kb-hit-label">匹配内容：</span>${escapeHtml(h.matched_text || '-')}</div>
+                <div class="kb-hit-codes"><span class="kb-hit-label">分类代码：</span>${codes || '-'}</div>
+                <div class="kb-hit-source">source_id：${escapeHtml(h.source_id || '-')}</div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        console.error(e);
+        box.innerHTML = '<div class="empty-hint" style="padding:24px 0;text-align:center;color:#c0392b">检索失败：' + escapeHtml(e.message) + '</div>';
+        showToast('知识库检索失败: ' + e.message, 'error');
+    }
+}
+
+function resetKbSearch() {
+    if ($('#kbSearchKeyword')) $('#kbSearchKeyword').value = '';
+    if ($('#kbSearchCategory')) $('#kbSearchCategory').value = '';
+    if ($('#kbSearchField')) $('#kbSearchField').value = '';
+    if ($('#kbSearchTopK')) $('#kbSearchTopK').value = '5';
+    $('#kbSearchCount').textContent = '请输入关键词并检索';
+    $('#kbSearchResult').innerHTML = '<div class="empty-hint" style="padding:24px 0;text-align:center;color:#888">暂无检索结果</div>';
+}
+
+// ==================== 知识库文件导入（外部知识库上传） ====================
+
+async function doKbImport() {
+    const input = $('#kbImportFile');
+    if (!input || !input.files || !input.files.length) {
+        showToast('请先选择文件', 'warning');
+        return;
+    }
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+    const rel = ($('#kbImportRelativePath') && $('#kbImportRelativePath').value || '').trim();
+    if (rel) fd.append('relative_path', rel);
+    const box = $('#kbImportResult');
+    box.innerHTML = '<div class="empty-hint" style="padding:24px 0;text-align:center;color:#888">导入中…</div>';
+    try {
+        const data = await api('/file/knowledge-upload', { method: 'POST', body: fd });
+        const detail = (data && data.detail) || data || {};
+        const status = (detail && detail.status) || (detail && detail.message) || '已提交';
+        let html = '<div class="kb-hit-card"><div class="kb-hit-head"><span class="kb-hit-index">OK</span><span class="kb-hit-doc">' + escapeHtml(input.files[0].name) + '</span></div>';
+        html += '<div class="kb-hit-meta"><span class="kb-hit-label">状态：</span><span>' + escapeHtml(String(status)) + '</span></div>';
+        if (detail && detail.relative_path) html += '<div class="kb-hit-text"><span class="kb-hit-label">相对路径：</span>' + escapeHtml(detail.relative_path) + '</div>';
+        if (detail && detail.file_hash) html += '<div class="kb-hit-source">file_hash：' + escapeHtml(detail.file_hash) + '</div>';
+        html += '</div>';
+        box.innerHTML = html;
+        showToast('导入成功', 'success');
+    } catch (e) {
+        console.error(e);
+        box.innerHTML = '<div class="empty-hint" style="padding:24px 0;text-align:center;color:#c0392b">导入失败：' + escapeHtml(e.message) + '</div>';
+        showToast('知识库文件导入失败: ' + e.message, 'error');
+    }
+}
+
+function resetKbImport() {
+    if ($('#kbImportFile')) $('#kbImportFile').value = '';
+    if ($('#kbImportRelativePath')) $('#kbImportRelativePath').value = '';
+    $('#kbImportResult').innerHTML = '<div class="empty-hint" style="padding:24px 0;text-align:center;color:#888">暂无导入结果</div>';
 }
 
 // 上传文件弹窗

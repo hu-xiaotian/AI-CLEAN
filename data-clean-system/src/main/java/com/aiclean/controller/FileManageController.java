@@ -3,6 +3,7 @@ package com.aiclean.controller;
 import com.aiclean.common.R;
 import com.aiclean.common.UserContext;
 import com.aiclean.entity.FileRecordEntity;
+import com.aiclean.knowledgebase.client.KnowledgeBaseApiClient;
 import com.aiclean.service.FileManageService;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.swagger.v3.oas.annotations.Operation;
@@ -34,6 +35,9 @@ public class FileManageController {
 
     @Autowired
     private FileManageService fileManageService;
+
+    @Autowired(required = false)
+    private KnowledgeBaseApiClient knowledgeBaseApiClient;
 
     @PostMapping("/upload")
     @Operation(summary = "上传文件", description = "保存至 kb-dir，同名覆盖并重置导入状态")
@@ -93,6 +97,64 @@ public class FileManageController {
     public R<Boolean> ingest(@PathVariable Long id) {
         boolean success = fileManageService.ingest(id);
         return R.success(success ? "入库成功" : "入库失败", success);
+    }
+
+    @GetMapping("/knowledge-files")
+    @Operation(summary = "知识库详情", description = "直接调用外部知识库 GET /api/v1/knowledge/files 查询入库情况，不落库")
+    public R<com.alibaba.fastjson2.JSONObject> knowledgeFiles() {
+        if (knowledgeBaseApiClient == null) {
+            return R.error("知识库服务未启用（app.knowledge-base.enabled=false 或配置缺失）");
+        }
+        com.alibaba.fastjson2.JSONObject result = knowledgeBaseApiClient.listFiles();
+        if (result == null) {
+            return R.error("查询知识库文件失败，请检查知识库服务是否可用");
+        }
+        return R.success(result);
+    }
+
+    @GetMapping("/knowledge-search")
+    @Operation(summary = "知识库检索", description = "直接调用外部知识库 GET /api/v1/knowledge/search 检索内容，不落库")
+    public R<com.alibaba.fastjson2.JSONObject> knowledgeSearch(
+            @RequestParam("q") String q,
+            @RequestParam(value = "top_k", required = false, defaultValue = "5") Integer topK,
+            @RequestParam(value = "category_code", required = false) String categoryCode,
+            @RequestParam(value = "field", required = false) String field) {
+        if (knowledgeBaseApiClient == null) {
+            return R.error("知识库服务未启用（app.knowledge-base.enabled=false 或配置缺失）");
+        }
+        if (q == null || q.trim().isEmpty()) {
+            return R.error("检索关键词 q 不能为空");
+        }
+        com.alibaba.fastjson2.JSONObject result = knowledgeBaseApiClient.search(q.trim(), topK, categoryCode, field);
+        if (result == null) {
+            return R.error("知识库检索失败，请检查知识库服务是否可用");
+        }
+        return R.success(result);
+    }
+
+    @PostMapping("/knowledge-upload")
+    @Operation(summary = "知识库文件导入", description = "直接调用外部知识库 POST /api/v1/knowledge/files 上传文件，不落库")
+    public R<com.alibaba.fastjson2.JSONObject> knowledgeUpload(
+            @RequestParam("file") org.springframework.web.multipart.MultipartFile file,
+            @RequestParam(value = "relative_path", required = false) String relativePath) {
+        if (knowledgeBaseApiClient == null) {
+            return R.error("知识库服务未启用（app.knowledge-base.enabled=false 或配置缺失）");
+        }
+        if (file == null || file.isEmpty()) {
+            return R.error("上传文件不能为空");
+        }
+        try {
+            byte[] content = file.getBytes();
+            com.alibaba.fastjson2.JSONObject result =
+                    knowledgeBaseApiClient.uploadFile(file.getOriginalFilename(), content, relativePath);
+            if (result == null) {
+                return R.error("知识库文件导入失败，请检查知识库服务是否可用");
+            }
+            return R.success(result);
+        } catch (Exception e) {
+            log.error("知识库文件导入异常 {}", e.getMessage(), e);
+            return R.error("知识库文件导入异常：" + e.getMessage());
+        }
     }
 
     @GetMapping("/download/{id}")

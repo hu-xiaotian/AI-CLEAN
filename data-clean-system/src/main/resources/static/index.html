@@ -131,6 +131,18 @@
                         <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
                         <span class="nav-label">文件管理</span>
                     </a>
+                    <a class="nav-item" data-page="kbdetail" data-perm="page:file" onclick="switchPage('kbdetail')">
+                        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                        <span class="nav-label">知识库详情</span>
+                    </a>
+                    <a class="nav-item" data-page="kbsearch" data-perm="page:file" onclick="switchPage('kbsearch')">
+                        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <span class="nav-label">知识库检索</span>
+                    </a>
+                    <a class="nav-item" data-page="kbimport" data-perm="page:file" onclick="switchPage('kbimport')">
+                        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <span class="nav-label">知识库文件导入</span>
+                    </a>
                 </div>
             </div>
 
@@ -617,6 +629,67 @@
             </div>
         </section>
 
+        <!-- 知识库检索 -->
+        <section class="page" id="page-kbsearch">
+            <h2>知识库检索</h2>
+            <p class="desc">检索知识库内容（实时取自外部知识库系统，不落本地库）</p>
+            <div class="card">
+                <div class="standard-toolbar">
+                    <div class="toolbar-left">
+                        <div class="search-box">
+                            <input type="text" id="kbSearchKeyword" class="form-input" placeholder="检索关键词，如：黑色金属" onkeydown="if(event.key==='Enter')doKbSearch()">
+                        </div>
+                        <input type="text" id="kbSearchCategory" class="form-input" placeholder="分类代码，如：100102" style="width:160px">
+                        <input type="text" id="kbSearchField" class="form-input" placeholder="限定字段，如：规格" style="width:140px">
+                        <select id="kbSearchTopK" class="form-input" style="width:110px">
+                            <option value="3">top_k 3</option>
+                            <option value="5" selected>top_k 5</option>
+                            <option value="10">top_k 10</option>
+                            <option value="20">top_k 20</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="doKbSearch()">检索</button>
+                        <button class="btn btn-default" onclick="resetKbSearch()">重置</button>
+                    </div>
+                    <div class="toolbar-right">
+                        <span class="record-count" id="kbSearchCount">请输入关键词并检索</span>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <h3>检索结果</h3>
+                <div id="kbSearchResult">
+                    <div class="empty-hint" style="padding:24px 0;text-align:center;color:#888">暂无检索结果</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 知识库文件导入 -->
+        <section class="page" id="page-kbimport">
+            <h2>知识库文件导入</h2>
+            <p class="desc">将文件直接上传到外部知识库系统（不落本地库）</p>
+            <div class="card">
+                <div class="form-group">
+                    <label class="form-label">选择文件<span class="required">*</span></label>
+                    <input type="file" id="kbImportFile" class="input">
+                    <div class="form-hint">标准文档文件，必填</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">相对路径 relative_path（可选）</label>
+                    <input type="text" id="kbImportRelativePath" class="form-input" placeholder="相对于 KB_FILE_DIR，如：category/property/a.docx；留空则用文件名">
+                </div>
+                <div class="toolbar-right" style="margin-top:8px">
+                    <button class="btn btn-primary" onclick="doKbImport()">导入</button>
+                    <button class="btn btn-default" onclick="resetKbImport()">重置</button>
+                </div>
+            </div>
+            <div class="card">
+                <h3>导入结果</h3>
+                <div id="kbImportResult">
+                    <div class="empty-hint" style="padding:24px 0;text-align:center;color:#888">暂无导入结果</div>
+                </div>
+            </div>
+        </section>
+
 
 
         <!-- ===== 外部数据清洗 ===== -->
@@ -696,11 +769,12 @@
                             <th>分类名称</th>
                             <th>置信度</th>
                             <th>提取属性</th>
+                            <th>判定依据</th>
                             <th>复核</th>
                             <th>行状态</th>
                             <th style="width:200px">操作</th>
                         </tr></thead>
-                        <tbody id="ecRowTbody"><tr><td colspan="9" class="empty-hint">请选择任务查看结果</td></tr></tbody>
+                        <tbody id="ecRowTbody"><tr><td colspan="10" class="empty-hint">请选择任务查看结果</td></tr></tbody>
                     </table>
                 </div>
                 <div class="pagination" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
@@ -949,6 +1023,49 @@
             </div>
         </section>
 
+        <!-- 知识库详情 -->
+        <section class="page" id="page-kbdetail">
+            <h2>知识库详情</h2>
+            <p class="desc">查询当前知识库文件的入库情况（实时取自外部知识库系统，不落本地库）</p>
+            <div class="card">
+                <div class="standard-toolbar">
+                    <div class="toolbar-left">
+                        <div class="search-box">
+                            <input type="text" id="kbFileKeyword" class="form-input" placeholder="搜索文件名…" onkeydown="if(event.key==='Enter')loadKbDetail(1)">
+                        </div>
+                        <select id="kbFileStatusFilter" class="form-input" onchange="loadKbDetail(1)">
+                            <option value="">全部状态</option>
+                            <option value="active">已激活</option>
+                            <option value="inactive">未激活</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="loadKbDetail(1)">查询</button>
+                        <button class="btn btn-default" onclick="resetKbDetailFilter()">重置</button>
+                    </div>
+                    <div class="toolbar-right">
+                        <span class="record-count" id="kbFileRecordCount">共 0 个文件</span>
+                        <button class="btn btn-primary" onclick="loadKbDetail(1)">刷新</button>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <h3>知识库文件列表</h3>
+                <div class="table-container">
+                    <table class="data-table" id="kbFileTable">
+                        <thead><tr>
+                            <th>文件名</th>
+                            <th>状态</th>
+                            <th>分块数</th>
+                            <th>大小</th>
+                            <th>上传时间</th>
+                            <th>上传者</th>
+                            <th>文件哈希</th>
+                        </tr></thead>
+                        <tbody id="kbFileTbody"><tr><td colspan="7" class="empty-hint">暂无数据，点击「查询」拉取知识库文件</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
     </main>
 </div>
 
@@ -1152,11 +1269,12 @@
                     <th>分类</th>
                     <th style="width:90px">置信度</th>
                     <th>提取属性（清洗结果）</th>
+                    <th>判定依据</th>
                     <th style="width:70px">复核</th>
                     <th style="width:90px">行状态</th>
                     <th style="width:200px">操作</th>
                 </tr></thead>
-                <tbody id="ecResultTbody"><tr><td colspan="7" class="empty-hint">正在加载…</td></tr></tbody>
+                <tbody id="ecResultTbody"><tr><td colspan="8" class="empty-hint">正在加载…</td></tr></tbody>
             </table>
         </div>
     </div>

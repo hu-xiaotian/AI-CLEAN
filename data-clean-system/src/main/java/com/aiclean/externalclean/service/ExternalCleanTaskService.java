@@ -729,10 +729,12 @@ public class ExternalCleanTaskService {
         if (payload.getStats() != null) {
             CallbackPayload.Stats s = payload.getStats();
             task.setTotalRows(s.getTotalRows());
+            task.setClassifiedRows(s.getClassifiedRows());
             task.setProcessedRows(s.getProcessedRows());
             task.setHighConfidence(s.getHighConfidence());
             task.setMediumConfidence(s.getMediumConfidence());
             task.setLowConfidence(s.getLowConfidence());
+            task.setConfidenceSum(s.getConfidenceSum());
             task.setEstimatedAccuracy(s.getEstimatedAccuracy());
         }
         // 任务终态
@@ -769,6 +771,8 @@ public class ExternalCleanTaskService {
                 row.setMissingAttrsJson(item.getMissingAttrs() == null ? null : JSON.toJSONString(item.getMissingAttrs()));
                 row.setNeedsReview(Boolean.TRUE.equals(item.getNeedsReview()) ? 1 : 0);
                 row.setReviewReason(item.getReviewReason());
+                row.setCategoryCitationsJson(item.getCategoryCitations() == null ? null : JSON.toJSONString(item.getCategoryCitations()));
+                row.setAttrCitationsJson(item.getAttrCitations() == null ? null : JSON.toJSONString(item.getAttrCitations()));
                 // 若尚未被人工采纳/修正，则置为 completed
                 if (!"accepted".equals(row.getRowStatus()) && !"corrected".equals(row.getRowStatus()) && !"rejected".equals(row.getRowStatus())) {
                     row.setRowStatus("completed");
@@ -807,10 +811,12 @@ public class ExternalCleanTaskService {
         if (resp.getStats() != null) {
             ExternalProgressResponse.Stats s = resp.getStats();
             if (s.getTotalRows() != null) task.setTotalRows(s.getTotalRows());
+            if (s.getClassifiedRows() != null) task.setClassifiedRows(s.getClassifiedRows());
             if (s.getProcessedRows() != null) task.setProcessedRows(s.getProcessedRows());
             if (s.getHighConfidence() != null) task.setHighConfidence(s.getHighConfidence());
             if (s.getMediumConfidence() != null) task.setMediumConfidence(s.getMediumConfidence());
             if (s.getLowConfidence() != null) task.setLowConfidence(s.getLowConfidence());
+            if (s.getConfidenceSum() != null) task.setConfidenceSum(s.getConfidenceSum());
             if (s.getEstimatedAccuracy() != null) task.setEstimatedAccuracy(s.getEstimatedAccuracy());
         }
         // 同步外部状态；进入终态则记录完成时间

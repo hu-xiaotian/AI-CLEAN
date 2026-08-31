@@ -190,7 +190,7 @@ CREATE TABLE category_vector (
     category_code VARCHAR2(50),
     vector_source CLOB,
     embedding_model VARCHAR2(100),
-    dimension INT,
+    "DIMENSION" INT,
     vector_text CLOB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

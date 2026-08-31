@@ -38,7 +38,9 @@ public class CategoryVectorEntity extends BaseEntity {
 
     /**
      * 向量维度
+     * <p>达梦数据库中 DIMENSION 为保留关键字，必须用双引号转义列名，否则 INSERT/SELECT 会报语法错误。</p>
      */
+    @TableField("\"DIMENSION\"")
     private Integer dimension;
 
     /**
